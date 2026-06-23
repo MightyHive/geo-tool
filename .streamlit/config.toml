@@ -1,0 +1,12 @@
+# Local dev only. HTTP 403 on load is often Streamlit’s XSRF check failing when:
+# - Using Cursor’s Simple Browser, another embedded preview, or a reverse proxy
+# - Hostname alternates between 127.0.0.1 and localhost (cookies don’t match)
+#
+# For a shared or production deployment, remove enableXsrfProtection or set it true
+# and fix the proxy / single canonical URL instead.
+[server]
+enableXsrfProtection = false
+enableCORS = true
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Traffic by Session Source</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f4f6fa;
+    --panel: #ffffff;
+    --panel-2: #fbfcfe;
+    --ink: #14161c;
+    --ink-2: #4a5160;
+    --ink-3: #858da0;
+    --line: #e7eaf1;
+    --line-2: #eef1f6;
+    --grid: #edf0f6;
+
+    --chatgpt: #4f46e5;
+    --gemini:  #0ea5e9;
+    --copilot: #14b8a6;
+    --perplexity: #8b5cf6;
+    --claude:  #ec4899;
+    --other:   #9aa4b8;
+
+    --radius: 16px;
+    --shadow: 0 1px 2px rgba(20,22,28,.04), 0 8px 28px -12px rgba(20,22,28,.12);
+    --shadow-sm: 0 1px 2px rgba(20,22,28,.05), 0 2px 8px -4px rgba(20,22,28,.08);
+  }
+  [data-theme="dark"] {
+    --bg: #0c0e14;
+    --panel: #141822;
+    --panel-2: #11141d;
+    --ink: #f2f4f9;
+    --ink-2: #aab2c5;
+    --ink-3: #707892;
+    --line: #232838;
+    --line-2: #1c2130;
+    --grid: #1d2230;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 14px 40px -14px rgba(0,0,0,.6);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.4), 0 3px 10px -4px rgba(0,0,0,.5);
+
+    --chatgpt: #7c75f0;
+    --gemini:  #38bdf8;
+    --copilot: #2dd4bf;
+    --perplexity: #a78bfa;
+    --claude:  #f472b6;
+    --other:   #6b748c;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1, "ss01" 1;
+    line-height: 1.5;
+    transition: background .35s ease, color .35s ease;
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 32px 64px;
+  }
+
+  /* ---------- Header ---------- */
+  .top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 28px;
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 12px;
+  }
+  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--chatgpt); }
+  h1 {
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 600; font-size: 32px; line-height: 1.12;
+    letter-spacing: -.015em; margin: 0 0 10px; max-width: 18ch;
+  }
+  .sub { color: var(--ink-2); font-size: 14.5px; max-width: 62ch; margin: 0; }
+  .sub code {
+    font-family: "IBM Plex Mono", monospace; font-size: 12.5px;
+    background: var(--line-2); padding: 1px 6px; border-radius: 5px; color: var(--ink-2);
+  }
+  .theme-toggle {
+    flex: none;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 7px 13px 7px 11px;
+    font-family: "IBM Plex Sans"; font-size: 12.5px; font-weight: 600;
+    color: var(--ink-2); cursor: pointer; box-shadow: var(--shadow-sm);
+    transition: all .2s ease;
+  }
+  .theme-toggle:hover { color: var(--ink); border-color: var(--ink-3); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+
+  /* ---------- KPI row ---------- */
+  .kpis {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-bottom: 18px;
+  }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow-sm);
+    position: relative; overflow: hidden;
+  }
+  .kpi .label { font-size: 12px; color: var(--ink-3); font-weight: 600; letter-spacing: .01em; margin-bottom: 8px; }
+  .kpi .val {
+    font-family: "Space Grotesk", sans-serif; font-weight: 600;
+    font-size: 30px; line-height: 1; letter-spacing: -.02em; color: var(--ink);
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .kpi .val .unit { font-size: 15px; color: var(--ink-3); font-weight: 500; }
+  .kpi .delta { font-size: 12.5px; font-weight: 600; margin-top: 9px; display: inline-flex; align-items: center; gap: 5px; }
+  .kpi .delta.up { color: #0f9d6a; }
+  [data-theme="dark"] .kpi .delta.up { color: #34d399; }
+  .kpi .delta .arrow { font-size: 11px; }
+  .kpi .foot { font-size: 12px; color: var(--ink-3); margin-top: 9px; }
+  .kpi .chip-src { display:inline-flex; align-items:center; gap:7px; margin-top: 9px; font-size:12.5px; color: var(--ink-2); font-weight:600;}
+  .kpi .swatch { width:10px;height:10px;border-radius:3px; }
+
+  /* ---------- Chart panel ---------- */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 22px 24px 16px;
+  }
+  .panel-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 20px; flex-wrap: wrap; margin-bottom: 6px;
+  }
+  .panel-title { font-family: "Space Grotesk", sans-serif; font-weight: 600; font-size: 17px; letter-spacing: -.01em; margin: 0 0 3px; }
+  .panel-desc { font-size: 13px; color: var(--ink-2); margin: 0; max-width: 52ch; min-height: 18px; }
+
+  .segmented {
+    display: inline-flex; background: var(--line-2); border-radius: 11px;
+    padding: 4px; gap: 2px; flex: none;
+  }
+  .segmented button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    font-family: "IBM Plex Sans"; font-size: 13px; font-weight: 600; color: var(--ink-2);
+    padding: 7px 15px; border-radius: 8px; transition: all .18s ease; white-space: nowrap;
+  }
+  .segmented button:hover { color: var(--ink); }
+  .segmented button.active { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-sm); }
+
+  /* chart */
+  .chart-wrap { position: relative; margin-top: 14px; }
+  svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-base { stroke: var(--line); stroke-width: 1; }
+  .y-label, .x-label { font-family: "IBM Plex Sans"; font-size: 12px; fill: var(--ink-3); }
+  .x-label { font-weight: 500; }
+  .y-label { text-anchor: end; }
+  .bar-seg { transition: opacity .2s ease; cursor: pointer; }
+  .bandhit { fill: transparent; cursor: pointer; }
+  .bandhit.hot ~ * {}
+  .ln { fill: none; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+  .dot { transition: r .15s ease; }
+
+  .hover-rule { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 4; opacity: 0; }
+
+  /* legend */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 7px 18px; align-items: center;
+    margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--line-2);
+  }
+  .lg {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px;
+    color: var(--ink-2); font-weight: 500; cursor: default; padding: 3px 4px; border-radius: 7px;
+  }
+  .lg .sw { width: 11px; height: 11px; border-radius: 3.5px; flex: none; }
+  .lg .pct { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .lg.muted { opacity: .42; }
+
+  /* tooltip */
+  .tip {
+    position: absolute; pointer-events: none; z-index: 20;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px;
+    min-width: 184px; opacity: 0; transform: translateY(4px);
+    transition: opacity .14s ease, transform .14s ease; font-size: 12.5px;
+  }
+  .tip.show { opacity: 1; transform: translateY(0); }
+  .tip .t-month { font-family: "Space Grotesk"; font-weight: 600; font-size: 13.5px; margin-bottom: 9px; color: var(--ink); display:flex; justify-content:space-between; gap:14px;}
+  .tip .t-month .t-total { color: var(--ink-2); font-weight:600; }
+  .tip .row { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+  .tip .row .sw { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+  .tip .row .nm { color: var(--ink-2); flex: 1; }
+  .tip .row .vl { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tip .row .vp { color: var(--ink-3); font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+
+  .foot-note {
+    margin-top: 18px; font-size: 11.5px; color: var(--ink-3);
+    font-family: "IBM Plex Mono", monospace; letter-spacing: .01em;
+  }
+
+  @media (max-width: 820px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .wrap { padding: 28px 18px 48px; }
+    h1 { font-size: 26px; }
+    .top { flex-direction: column; }
+  }
+</style>
+</head>
+<body data-theme="light">
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <p class="eyebrow"><span class="dot"></span> Monthly &middot; May 2025 – Apr 2026</p>
+        <h1>AI traffic by session source</h1>
+        <p class="sub">Sessions where <code>sessionCustomChannelGroup</code> matches a configured AI channel. The top five providers are shown individually; smaller referrers are combined into <strong>Other</strong>.</p>
+      </div>
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle theme">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+        <span id="themeLabel">Dark</span>
+      </button>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title" id="panelTitle">Total sessions, by source</h2>
+          <p class="panel-desc" id="panelDesc"></p>
+        </div>
+        <div class="segmented" id="seg">
+          <button data-mode="volume" class="active">Volume</button>
+          <button data-mode="share">Share&nbsp;%</button>
+          <button data-mode="challengers">Challengers</button>
+        </div>
+      </div>
+
+      <div class="chart-wrap" id="chartWrap">
+        <svg class="chart" id="chart" viewBox="0 0 960 430" role="img" aria-label="AI traffic chart"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <p class="foot-note" id="footNote"></p>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ----- Data (estimated from source chart) -----
+  const SOURCES = [
+    { key:"chatgpt",    name:"ChatGPT",    cssVar:"--chatgpt" },
+    { key:"gemini",     name:"Gemini",     cssVar:"--gemini" },
+    { key:"copilot",    name:"Copilot",    cssVar:"--copilot" },
+    { key:"perplexity", name:"Perplexity", cssVar:"--perplexity" },
+    { key:"claude",     name:"Claude",     cssVar:"--claude" },
+    { key:"other",      name:"Other",      cssVar:"--other" },
+  ];
+  const CHALLENGERS = ["gemini","copilot","perplexity","claude"];
+
+  const DATA = [
+    { m:"May 2025", chatgpt:940,   gemini:18,  copilot:14,  perplexity:10, claude:8,  other:10 },
+    { m:"Jun 2025", chatgpt:2180,  gemini:45,  copilot:30,  perplexity:18, claude:12, other:15 },
+    { m:"Jul 2025", chatgpt:2500,  gemini:55,  copilot:38,  perplexity:22, claude:15, other:20 },
+    { m:"Aug 2025", chatgpt:2120,  gemini:50,  copilot:33,  perplexity:20, claude:12, other:15 },
+    { m:"Sep 2025", chatgpt:2350,  gemini:60,  copilot:40,  perplexity:24, claude:14, other:12 },
+    { m:"Oct 2025", chatgpt:4300,  gemini:110, copilot:75,  perplexity:35, claude:18, other:12 },
+    { m:"Nov 2025", chatgpt:5750,  gemini:150, copilot:90,  perplexity:35, claude:15, other:10 },
+    { m:"Dec 2025", chatgpt:6320,  gemini:175, copilot:100, perplexity:30, claude:15, other:10 },
+    { m:"Jan 2026", chatgpt:7700,  gemini:210, copilot:120, perplexity:40, claude:18, other:12 },
+    { m:"Feb 2026", chatgpt:6750,  gemini:200, copilot:105, perplexity:25, claude:12, other:8  },
+    { m:"Mar 2026", chatgpt:8950,  gemini:260, copilot:140, perplexity:30, claude:12, other:8  },
+    { m:"Apr 2026", chatgpt:11250, gemini:330, copilot:160, perplexity:40, claude:12, other:8  },
+  ];
+
+  const totalOf = d => SOURCES.reduce((s,src)=> s + d[src.key], 0);
+  DATA.forEach(d => d._total = totalOf(d));
+
+  // ----- helpers -----
+  const NS = "http://www.w3.org/2000/svg";
+  const $ = sel => document.querySelector(sel);
+  const css = v => getComputedStyle(document.body).getPropertyValue(v).trim();
+  const colorOf = key => css(SOURCES.find(s=>s.key===key).cssVar);
+  const fmt = n => Math.round(n).toLocaleString("en-US");
+  const fmtK = n => n>=1000 ? (n/1000).toFixed(n>=10000?0:1)+"K" : ""+Math.round(n);
+  function el(tag, attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+  // chart geometry
+  const VB = { w:960, h:430 };
+  const PAD = { l:54, r:14, t:18, b:42 };
+  const plotW = VB.w - PAD.l - PAD.r;
+  const plotH = VB.h - PAD.t - PAD.b;
+  const band = plotW / DATA.length;
+
+  // ----- KPIs -----
+  function buildKPIs(){
+    const grand = DATA.reduce((s,d)=>s+d._total,0);
+    const cgTotal = DATA.reduce((s,d)=>s+d.chatgpt,0);
+    const cgShare = Math.round(cgTotal/grand*100);
+    const first = DATA[0]._total, last = DATA[DATA.length-1]._total;
+    const growth = Math.round((last-first)/first*100);
+    const cards = [
+      { label:"Total AI sessions (12 mo)", val:fmtK(grand), unit:"sessions", foot:`${fmt(grand)} across all sources` },
+      { label:"Latest month — Apr 2026",   val:fmtK(last),  unit:"sessions", deltaUp:`vs ${fmtK(first)} in May 2025` },
+      { label:"ChatGPT share of traffic",  val:cgShare+"%", unit:"", srcSwatch:"--chatgpt", srcName:`${fmtK(cgTotal)} of ${fmtK(grand)} sessions` },
+      { label:"Growth, May → Apr",         val:"+"+growth+"%", unit:"", deltaPlain:`${(last/first).toFixed(1)}× in 11 months` },
+    ];
+    const wrap = $("#kpis"); wrap.innerHTML="";
+    cards.forEach(c=>{
+      const k = document.createElement("div"); k.className="kpi";
+      let inner = `<div class="label">${c.label}</div>
+        <div class="val">${c.val}${c.unit?`<span class="unit">${c.unit}</span>`:""}</div>`;
+      if(c.deltaUp) inner += `<div class="delta up"><span class="arrow">▲</span>${c.deltaUp}</div>`;
+      if(c.deltaPlain) inner += `<div class="foot">${c.deltaPlain}</div>`;
+      if(c.srcName) inner += `<div class="chip-src"><span class="swatch" style="background:var(${c.srcSwatch})"></span>${c.srcName}</div>`;
+      if(c.foot) inner += `<div class="foot">${c.foot}</div>`;
+      k.innerHTML = inner; wrap.appendChild(k);
+    });
+  }
+
+  // ----- mode meta -----
+  const MODES = {
+    volume: {
+      title: "Total sessions, by source",
+      desc:  "Stacked monthly volume. The story: total AI traffic grew ~12× in a year — and ChatGPT accounts for nearly all of it."
+    },
+    share: {
+      title: "Share of traffic, by source",
+      desc:  "Each month normalised to 100%. ChatGPT holds a remarkably steady ~95% of AI-referred sessions throughout."
+    },
+    challengers: {
+      title: "The challenger race (ChatGPT excluded)",
+      desc:  "ChatGPT removed so the rest are legible. Gemini is pulling away as the clear #2; Copilot follows; Perplexity & Claude trail."
+    }
+  };
+
+  let mode = "volume";
+  const chart = $("#chart");
+  const tip = $("#tip");
+  const chartWrap = $("#chartWrap");
+
+  // y-axis ticks
+  function niceTicks(max, count){
+    const raw = max/count;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw/mag;
+    let step;
+    if(norm<=1) step=1; else if(norm<=2) step=2; else if(norm<=2.5) step=2.5; else if(norm<=5) step=5; else step=10;
+    step*=mag;
+    const top = Math.ceil(max/step)*step;
+    const ticks=[]; for(let v=0; v<=top+1e-6; v+=step) ticks.push(v);
+    return {ticks, top};
+  }
+
+  function clearChart(){ while(chart.firstChild) chart.removeChild(chart.firstChild); }
+
+  function xCenter(i){ return PAD.l + band*i + band/2; }
+
+  // ---------- render ----------
+  function render(animate){
+    clearChart();
+    if(mode==="challengers") renderLines(animate);
+    else renderStacked(animate);
+    buildLegend();
+    $("#panelTitle").textContent = MODES[mode].title;
+    $("#panelDesc").textContent  = MODES[mode].desc;
+  }
+
+  function gridAndAxis(top, isPercent){
+    const {ticks} = niceTicks(top, 5);
+    const realTop = ticks[ticks.length-1];
+    ticks.forEach(v=>{
+      const y = PAD.t + plotH - (v/realTop)*plotH;
+      chart.appendChild(el("line",{class:"grid-line", x1:PAD.l, y1:y, x2:PAD.l+plotW, y2:y}));
+      const t = el("text",{class:"y-label", x:PAD.l-12, y:y+4});
+      t.textContent = isPercent ? v+"%" : fmt(v);
+      chart.appendChild(t);
+    });
+    // x labels
+    DATA.forEach((d,i)=>{
+      const t = el("text",{class:"x-label","text-anchor":"middle", x:xCenter(i), y:PAD.t+plotH+24});
+      const parts = d.m.split(" ");
+      const ts = el("tspan",{}); ts.textContent = parts[0]; t.appendChild(ts);
+      const ts2 = el("tspan",{x:xCenter(i), dy:"14", class:"x-label", style:"fill:var(--ink-3);font-size:10.5px;"}); ts2.textContent = parts[1];
+      t.appendChild(ts2);
+      chart.appendChild(t);
+    });
+    return realTop;
+  }
+
+  function renderStacked(animate){
+    const isPercent = mode==="share";
+    const maxTotal = isPercent ? 100 : Math.max(...DATA.map(d=>d._total));
+    const realTop = gridAndAxis(maxTotal, isPercent);
+
+    const barW = Math.min(46, band*0.62);
+    const radius = 5;
+
+    DATA.forEach((d,i)=>{
+      const cx = xCenter(i);
+      const x = cx - barW/2;
+      let acc = 0;
+      const baseTotal = isPercent ? d._total : realTop;
+      // draw from bottom up; iterate sources in reverse so chatgpt sits at bottom
+      const order = SOURCES.slice().reverse();
+      // we want chatgpt at the bottom -> draw it first (largest acc range at bottom)
+      // build segments using normal order but stack from bottom
+      let cumulative = 0;
+      const segs = SOURCES.map(src=>{
+        const val = d[src.key];
+        const frac = isPercent ? val/d._total : val/realTop;
+        const seg = { key:src.key, val, y0:cumulative, y1:cumulative+frac };
+        cumulative += frac;
+        return seg;
+      });
+      segs.forEach((s, si)=>{
+        const hPx = (s.y1 - s.y0) * plotH;
+        const yTop = PAD.t + plotH - s.y1*plotH;
+        if(hPx <= 0.4) return;
+        const isTop = si === segs.length-1 - segs.slice().reverse().findIndex(z=>z.val>0.4 || true); // approx
+        const r = document.createElementNS(NS,"rect");
+        r.setAttribute("class","bar-seg");
+        r.setAttribute("x", x);
+        r.setAttribute("width", barW);
+        r.setAttribute("fill", colorOf(s.key));
+        // rounded top only for the topmost visible segment
+        const topMost = s.key === topVisibleKey(segs);
+        r.setAttribute("rx", topMost ? radius : 0);
+        r.setAttribute("data-i", i);
+        r.setAttribute("data-key", s.key);
+        r.setAttribute("y", yTop);
+        r.setAttribute("height", Math.max(0,hPx));
+        chart.appendChild(r);
+        if(animate){
+          // animate entrance via transform/opacity ONLY — never CSS-transition
+          // SVG geometry attrs (y/height), which leaves bars stuck collapsed.
+          r.style.transformBox = "fill-box";
+          r.style.transformOrigin = "bottom";
+          r.style.transform = "scaleY(0)";
+          r.style.opacity = "0";
+          r.getBoundingClientRect(); // force reflow from collapsed state
+          r.style.transition = `transform .55s cubic-bezier(.22,.8,.28,1) ${i*0.03}s, opacity .4s ease ${i*0.03}s`;
+          r.style.transform = "scaleY(1)";
+          r.style.opacity = "1";
+          // safety: guarantee final state even if the transition is throttled
+          setTimeout(()=>{ r.style.transform = "none"; r.style.opacity = "1"; }, 700 + i*30);
+        }
+      });
+
+      // invisible hit area for hover (full column)
+      const hit = el("rect",{class:"bandhit", x:PAD.l+band*i, y:PAD.t, width:band, height:plotH, "data-i":i});
+      chart.appendChild(hit);
+    });
+
+    // hover rule
+    const rule = el("line",{class:"hover-rule", id:"rule", x1:0,y1:PAD.t,x2:0,y2:PAD.t+plotH});
+    chart.appendChild(rule);
+
+    attachStackedHover(isPercent, realTop, barW);
+  }
+
+  function topVisibleKey(segs){
+    // the last source with value > 0
+    for(let i=segs.length-1;i>=0;i--){ if(segs[i].val>0.4) return segs[i].key; }
+    return segs[segs.length-1].key;
+  }
+
+  function attachStackedHover(isPercent, realTop, barW){
+    const hits = chart.querySelectorAll(".bandhit");
+    const rule = $("#rule");
+    hits.forEach(h=>{
+      h.addEventListener("mousemove", ev=>{
+        const i = +h.getAttribute("data-i");
+        const d = DATA[i];
+        highlightCol(i);
+        rule.style.opacity = "0"; // bars carry the highlight; rule subtle off for stacked
+        showTip(ev, i, d, isPercent);
+      });
+      h.addEventListener("mouseleave", ()=>{ clearHighlight(); hideTip(); });
+    });
+  }
+
+  function highlightCol(i){
+    chart.querySelectorAll(".bar-seg").forEach(r=>{
+      r.style.opacity = (+r.getAttribute("data-i")===i) ? "1" : ".34";
+    });
+  }
+  function clearHighlight(){ chart.querySelectorAll(".bar-seg").forEach(r=> r.style.opacity="1"); chart.querySelectorAll(".ln").forEach(l=>l.style.opacity="1"); }
+
+  // ---------- lines (challengers) ----------
+  function renderLines(animate){
+    const max = Math.max(...DATA.flatMap(d=>CHALLENGERS.map(k=>d[k])));
+    const realTop = gridAndAxis(max, false);
+
+    const pathFor = key => DATA.map((d,i)=>{
+      const x = xCenter(i);
+      const y = PAD.t + plotH - (d[key]/realTop)*plotH;
+      return (i===0?"M":"L") + x.toFixed(1) + " " + y.toFixed(1);
+    }).join(" ");
+
+    CHALLENGERS.forEach(key=>{
+      const p = el("path",{class:"ln", d:pathFor(key), stroke:colorOf(key), "data-key":key});
+      chart.appendChild(p);
+      if(animate){
+        const len = p.getTotalLength();
+        p.style.strokeDasharray = len; p.style.strokeDashoffset = len;
+        // force reflow so the transition actually fires from the start value
+        p.getBoundingClientRect();
+        p.style.transition = "stroke-dashoffset .85s cubic-bezier(.22,.8,.28,1)";
+        p.style.strokeDashoffset = 0;
+        // safety: guarantee final state even if the transition is dropped
+        setTimeout(()=>{ p.style.strokeDashoffset = 0; p.style.strokeDasharray = "none"; }, 950);
+      }
+      DATA.forEach((d,i)=>{
+        const x=xCenter(i), y=PAD.t+plotH-(d[key]/realTop)*plotH;
+        const c = el("circle",{class:"dot", cx:x, cy:y, r:3, fill:"var(--panel)", stroke:colorOf(key), "stroke-width":2, "data-key":key, "data-i":i});
+        chart.appendChild(c);
+        if(animate){ c.style.opacity=0; setTimeout(()=>{ c.style.transition="opacity .3s"; c.style.opacity=1; }, 500+i*20); }
+      });
+    });
+
+    // end labels
+    CHALLENGERS.forEach(key=>{
+      const last = DATA[DATA.length-1];
+      const x = xCenter(DATA.length-1)+8;
+      const y = PAD.t+plotH-(last[key]/realTop)*plotH;
+      const t = el("text",{x:x, y:y+4, style:`fill:${colorOf(key)};font-size:11.5px;font-weight:600;font-family:'IBM Plex Sans'`});
+      t.textContent = SOURCES.find(s=>s.key===key).name;
+      chart.appendChild(t);
+    });
+
+    // hover
+    const rule = el("line",{class:"hover-rule", id:"rule", x1:0,y1:PAD.t,x2:0,y2:PAD.t+plotH});
+    chart.appendChild(rule);
+    DATA.forEach((d,i)=>{
+      const hit = el("rect",{class:"bandhit", x:PAD.l+band*i, y:PAD.t, width:band, height:plotH, "data-i":i});
+      chart.appendChild(hit);
+      hit.addEventListener("mousemove", ev=>{
+        rule.style.opacity="1"; rule.setAttribute("x1", xCenter(i)); rule.setAttribute("x2", xCenter(i));
+        chart.querySelectorAll(".dot").forEach(c=> c.setAttribute("r", (+c.getAttribute("data-i")===i)?5:3));
+        showTipLines(ev, i, d);
+      });
+      hit.addEventListener("mouseleave", ()=>{ rule.style.opacity="0"; chart.querySelectorAll(".dot").forEach(c=>c.setAttribute("r",3)); hideTip(); });
+    });
+  }
+
+  // ---------- tooltip ----------
+  function rowHTML(key, val, pct){
+    const nm = SOURCES.find(s=>s.key===key).name;
+    return `<div class="row"><span class="sw" style="background:${colorOf(key)}"></span>
+      <span class="nm">${nm}</span><span class="vl">${fmt(val)}</span>${pct!=null?`<span class="vp">${pct}%</span>`:""}</div>`;
+  }
+  function showTip(ev, i, d, isPercent){
+    let rows = SOURCES.filter(s=>d[s.key]>0).map(s=>{
+      const pct = Math.round(d[s.key]/d._total*100);
+      return { key:s.key, val:d[s.key], pct };
+    }).sort((a,b)=>b.val-a.val);
+    let html = `<div class="t-month">${d.m}<span class="t-total">${fmt(d._total)}</span></div>`;
+    html += rows.map(r=> rowHTML(r.key, r.val, r.pct)).join("");
+    placeTip(html, ev);
+  }
+  function showTipLines(ev, i, d){
+    let rows = CHALLENGERS.map(k=>({key:k,val:d[k]})).sort((a,b)=>b.val-a.val);
+    let html = `<div class="t-month">${d.m}<span class="t-total">challengers</span></div>`;
+    html += rows.map(r=> rowHTML(r.key, r.val, null)).join("");
+    placeTip(html, ev);
+  }
+  function placeTip(html, ev){
+    tip.innerHTML = html; tip.classList.add("show");
+    const wrapRect = chartWrap.getBoundingClientRect();
+    let x = ev.clientX - wrapRect.left + 16;
+    let y = ev.clientY - wrapRect.top - 10;
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    if(x + tw > wrapRect.width) x = ev.clientX - wrapRect.left - tw - 16;
+    if(y + th > wrapRect.height) y = wrapRect.height - th - 4;
+    if(y < 0) y = 4;
+    tip.style.left = x+"px"; tip.style.top = y+"px";
+  }
+  function hideTip(){ tip.classList.remove("show"); }
+
+  // ---------- legend ----------
+  function buildLegend(){
+    const grand = DATA.reduce((s,d)=>s+d._total,0);
+    const lg = $("#legend"); lg.innerHTML="";
+    const list = mode==="challengers" ? SOURCES.filter(s=>CHALLENGERS.includes(s.key)) : SOURCES;
+    list.forEach(s=>{
+      const tot = DATA.reduce((acc,d)=>acc+d[s.key],0);
+      const pct = (tot/grand*100);
+      const pctTxt = pct>=1 ? pct.toFixed(0)+"%" : pct.toFixed(1)+"%";
+      const item = document.createElement("span");
+      item.className="lg";
+      item.innerHTML = `<span class="sw" style="background:${colorOf(s.key)}"></span>${s.name}<span class="pct">${mode==="challengers"?fmtK(tot):pctTxt}</span>`;
+      lg.appendChild(item);
+    });
+  }
+
+  // ---------- footnote ----------
+  $("#footNote").textContent = "Figures estimated from source chart · sessionCustomChannelGroup:8454243731 · 13 raw referrers consolidated into 6 groups";
+
+  // ---------- segmented control ----------
+  $("#seg").addEventListener("click", e=>{
+    const b = e.target.closest("button"); if(!b) return;
+    const newMode = b.dataset.mode; if(newMode===mode) return;
+    $("#seg").querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    mode = newMode; hideTip(); render(true);
+  });
+
+  // ---------- theme ----------
+  const themeBtn = $("#themeBtn");
+  function setTheme(t){
+    document.body.setAttribute("data-theme", t);
+    $("#themeLabel").textContent = t==="dark" ? "Light" : "Dark";
+    const ic = $("#themeIcon");
+    ic.innerHTML = t==="dark"
+      ? '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>'
+      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>';
+    try{ localStorage.setItem("aitraffic_theme", t); }catch(e){}
+    buildKPIs(); render(false);
+  }
+  themeBtn.addEventListener("click", ()=> setTheme(document.body.getAttribute("data-theme")==="dark"?"light":"dark"));
+
+  // ---------- init ----------
+  let savedTheme = "light";
+  try{ savedTheme = localStorage.getItem("aitraffic_theme") || "light"; }catch(e){}
+  document.body.setAttribute("data-theme", savedTheme);
+  $("#themeLabel").textContent = savedTheme==="dark" ? "Light" : "Dark";
+  if(savedTheme==="dark") setTheme("dark");
+
+  buildKPIs();
+  render(true);
+})();
+</script>
+</body>
+</html>

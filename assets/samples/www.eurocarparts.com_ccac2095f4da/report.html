@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light"/>
+  <title>GEO audit report — https://www.eurocarparts.com</title>
+  <!-- Design basis: design/use_this_design.html -->
+  <style>
+/* GEO audit report — basis: design/use_this_design.html */
+:root {
+  --brand-red: #e31837;
+  --brand-dark: #1a1a2e;
+  --brand-navy: #0f3460;
+  --bg-white: #ffffff;
+  --bg-light: #f7f8fa;
+  --bg-card: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #555e68;
+  --text-muted: #8a939e;
+  --border: #e2e6ea;
+  --score-green: #00b894;
+  --score-blue: #0984e3;
+  --score-yellow: #fdcb6e;
+  --score-red: #e17055;
+  --severity-critical: #d63031;
+  --severity-high: #e17055;
+  --severity-medium: #fdcb6e;
+  --severity-low: #b2bec3;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Scope all report styling to the report document only. */
+body.geo-report {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-light);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.geo-report code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.92em;
+}
+
+body.geo-report .container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── Header ── */
+body.geo-report .header {
+  background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand-navy) 100%);
+  color: white;
+  padding: 48px 0 60px;
+  position: relative;
+  overflow: hidden;
+}
+body.geo-report .header::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--brand-red);
+}
+body.geo-report .header-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 40px;
+  flex-wrap: wrap;
+}
+body.geo-report .header-meta {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+  margin-top: 10px;
+  margin-bottom: 6px;
+  line-height: 1.45;
+}
+body.geo-report .header-text h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+body.geo-report .header-text .subtitle {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 12px;
+}
+body.geo-report .badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+body.geo-report .badge-type {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+}
+body.geo-report .badge-date {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+  margin-left: 8px;
+}
+
+/* ── Score Gauge ── */
+body.geo-report .score-gauge {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  flex-shrink: 0;
+}
+body.geo-report .score-gauge .gauge-ring {
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body.geo-report .score-gauge .gauge-inner {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: var(--brand-dark);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+body.geo-report .score-gauge .score-number {
+  font-size: 48px;
+  font-weight: 800;
+  color: white;
+  line-height: 1;
+}
+body.geo-report .score-gauge .score-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+body.geo-report .score-gauge .score-max {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 2px;
+}
+
+/* ── Section ── */
+body.geo-report .section {
+  padding: 40px 0;
+}
+body.geo-report .section-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--brand-dark);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+body.geo-report .section-title .icon {
+  font-size: 20px;
+}
+body.geo-report .section-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+/* ── Metric Cards Grid ── */
+body.geo-report .metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+body.geo-report .metric-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+body.geo-report .metric-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+}
+body.geo-report .metric-card.green::before {
+  background: var(--score-green);
+}
+body.geo-report .metric-card.blue::before {
+  background: var(--score-blue);
+}
+body.geo-report .metric-card.yellow::before {
+  background: var(--score-yellow);
+}
+body.geo-report .metric-card.red::before {
+  background: var(--score-red);
+}
+body.geo-report .metric-card .metric-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+body.geo-report .metric-card .metric-value {
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+body.geo-report .metric-card.green .metric-value {
+  color: var(--score-green);
+}
+body.geo-report .metric-card.blue .metric-value {
+  color: var(--score-blue);
+}
+body.geo-report .metric-card.yellow .metric-value {
+  color: var(--score-yellow);
+}
+body.geo-report .metric-card.red .metric-value {
+  color: var(--score-red);
+}
+body.geo-report .metric-card .metric-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ── Tables ── */
+body.geo-report .data-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+body.geo-report .data-table thead th {
+  background: var(--brand-dark);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 14px 16px;
+  text-align: left;
+}
+body.geo-report .data-table tbody td {
+  padding: 12px 16px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+body.geo-report .data-table tbody tr:nth-child(even) {
+  background: var(--bg-light);
+}
+body.geo-report .data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+body.geo-report .data-table .score-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+  vertical-align: middle;
+}
+body.geo-report .pill-green {
+  background: var(--score-green);
+}
+body.geo-report .pill-blue {
+  background: var(--score-blue);
+}
+body.geo-report .pill-yellow {
+  background: var(--score-yellow);
+  color: var(--text-primary);
+}
+body.geo-report .pill-red {
+  background: var(--score-red);
+}
+
+body.geo-report .table-note {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── Details / Samples ── */
+body.geo-report details.sample {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  margin-top: 12px;
+}
+body.geo-report details.sample summary {
+  cursor: pointer;
+  padding: 14px 16px;
+  font-weight: 700;
+  font-size: 14px;
+  background: var(--bg-light);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+body.geo-report details.sample summary::-webkit-details-marker {
+  display: none;
+}
+body.geo-report details.sample .hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+body.geo-report details.sample pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  background: #0b1020;
+  color: #e9eef6;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 420px;
+}
+
+/* ── Minor helpers ── */
+body.geo-report .muted {
+  color: var(--text-muted);
+}
+body.geo-report .small {
+  font-size: 12px;
+}
+
+/* ── Progress Bars ── */
+body.geo-report .progress-bar-container {
+  background: #edf0f2;
+  border-radius: 6px;
+  height: 10px;
+  overflow: hidden;
+  flex: 1;
+}
+body.geo-report .progress-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.6s ease;
+}
+
+/* ── Platform Cards ── */
+body.geo-report .platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+body.geo-report .platform-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+body.geo-report .platform-card .platform-name {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+body.geo-report .platform-card .platform-score {
+  font-size: 28px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+body.geo-report .platform-card .platform-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+body.geo-report .platform-card .platform-gap {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ── Crawler Grid ── */
+body.geo-report .crawler-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+body.geo-report .crawler-tier {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  margin-top: 16px;
+}
+body.geo-report .crawler-tier:first-child {
+  margin-top: 0;
+}
+body.geo-report .crawler-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+body.geo-report .crawler-item .check {
+  color: var(--score-green);
+  font-size: 16px;
+  font-weight: 800;
+}
+body.geo-report .crawler-item .cross {
+  color: var(--severity-critical);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+/* ── E-E-A-T Bars ── */
+body.geo-report .eeat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 820px) {
+  body.geo-report .eeat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+body.geo-report .eeat-item {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+body.geo-report .eeat-item .eeat-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+body.geo-report .eeat-item .eeat-name {
+  font-size: 14px;
+  font-weight: 800;
+}
+body.geo-report .eeat-item .eeat-score {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-secondary);
+}
+
+/* ── Action Plan Grid ── */
+body.geo-report .action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+body.geo-report .action-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+body.geo-report .action-card h3 {
+  font-size: 16px;
+  font-weight: 900;
+  margin-bottom: 6px;
+  color: var(--brand-dark);
+}
+body.geo-report .action-card .small {
+  margin-bottom: 12px;
+}
+
+/* ── Action plan columns (matches design/use_this_design.html) ── */
+body.geo-report .action-columns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+body.geo-report .action-column {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+body.geo-report .action-column-header {
+  padding: 16px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  color: white;
+}
+body.geo-report .action-column-header.quick {
+  background: var(--score-green);
+}
+body.geo-report .action-column-header.medium {
+  background: var(--score-blue);
+}
+body.geo-report .action-column-header.strategic {
+  background: var(--brand-navy);
+}
+body.geo-report .action-column-header .phase-label {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+  display: block;
+  margin-top: 2px;
+}
+body.geo-report .action-item {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+body.geo-report .action-item:last-child {
+  border-bottom: none;
+}
+body.geo-report .action-item--empty {
+  align-items: center;
+}
+body.geo-report .action-num {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+body.geo-report .action-impact {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--score-green);
+  margin-top: 4px;
+}
+
+/* ── Executive summary (reader-friendly) ── */
+body.geo-report .exec-summary {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  max-width: 52rem;
+}
+body.geo-report .exec-summary strong {
+  font-weight: 800;
+  color: var(--brand-navy);
+}
+
+/* ── Score breakdown hierarchy ── */
+body.geo-report .score-breakdown-major .section-desc {
+  font-size: 14px;
+}
+body.geo-report .score-breakdown-subheading {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: -0.01em;
+}
+body.geo-report .score-breakdown-subheading .icon {
+  font-size: 16px;
+}
+body.geo-report .score-breakdown-subdesc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+body.geo-report .score-breakdown-nested {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Insight pair (working vs needs work) ── */
+body.geo-report .insight-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 8px 0 4px;
+}
+@media (max-width: 768px) {
+  body.geo-report .insight-pair {
+    grid-template-columns: 1fr;
+  }
+  body.geo-report .action-columns {
+    grid-template-columns: 1fr;
+  }
+}
+body.geo-report .insight-box {
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  min-height: 120px;
+}
+body.geo-report .insight-box::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+}
+body.geo-report .insight-box--positive {
+  background: linear-gradient(145deg, #ecfdf5 0%, #d1fae5 55%, #ecfdf5 100%);
+  border: 1px solid rgba(0, 184, 148, 0.35);
+}
+body.geo-report .insight-box--positive::before {
+  background: linear-gradient(180deg, #00b894, #00cec9);
+}
+body.geo-report .insight-box--attention {
+  background: linear-gradient(145deg, #fff7ed 0%, #ffedd5 50%, #fffbeb 100%);
+  border: 1px solid rgba(234, 88, 12, 0.38);
+}
+body.geo-report .insight-box--attention::before {
+  background: linear-gradient(180deg, #e17055, #fdcb6e);
+}
+body.geo-report .insight-box__label {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 10px;
+}
+body.geo-report .insight-box--positive .insight-box__label {
+  color: #047857;
+}
+body.geo-report .insight-box--attention .insight-box__label {
+  color: #c2410c;
+}
+body.geo-report .insight-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+body.geo-report .insight-box__empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0;
+}
+
+/* ── Key findings (design/use_this_design.html) ── */
+body.geo-report .findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+body.geo-report .finding-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+body.geo-report .finding-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  color: white;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+body.geo-report .finding-badge.critical {
+  background: var(--severity-critical);
+}
+body.geo-report .finding-badge.high {
+  background: var(--severity-high);
+}
+body.geo-report .finding-badge.medium {
+  background: var(--severity-medium);
+  color: var(--text-primary);
+}
+body.geo-report .finding-badge.low {
+  background: var(--severity-low);
+}
+body.geo-report .finding-text {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ── E-E-A-T explainer ── */
+body.geo-report .eeat-explainer {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+body.geo-report .eeat-explainer strong {
+  color: var(--brand-dark);
+}
+
+/* ── Action plan coloured phases ── */
+body.geo-report .action-card--quick {
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1px solid rgba(0, 184, 148, 0.4);
+}
+body.geo-report .action-card--quick h3 {
+  color: #047857;
+}
+body.geo-report .action-card--medium {
+  background: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 100%);
+  border: 1px solid rgba(14, 165, 233, 0.45);
+}
+body.geo-report .action-card--medium h3 {
+  color: #0369a1;
+}
+body.geo-report .action-card--strategic {
+  background: linear-gradient(145deg, #0f3460 0%, #1a1a2e 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.94);
+}
+body.geo-report .action-card--strategic h3 {
+  color: #fff;
+}
+body.geo-report .action-card--strategic .action-card__meta {
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+body.geo-report .action-card--strategic .action-plan-list {
+  color: rgba(255, 255, 255, 0.92);
+}
+body.geo-report .action-card--strategic .action-plan-list li::marker {
+  color: #7dd3fc;
+}
+body.geo-report .action-card--strategic .action-plan-empty {
+  color: rgba(255, 255, 255, 0.65);
+  font-style: italic;
+  margin: 0;
+  font-size: 14px;
+}
+body.geo-report .action-plan-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 14px;
+  line-height: 1.55;
+}
+body.geo-report .action-plan-empty {
+  font-size: 14px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0;
+}
+body.geo-report .action-card--quick .action-card__meta,
+body.geo-report .action-card--medium .action-card__meta {
+  color: var(--text-secondary) !important;
+}
+
+/* ── Competitor table (matches Summary data-table; expandable rows) ── */
+body.geo-report .cmp-table tbody tr.primary-row td {
+  background: oklch(0.96 0.02 55 / 0.55);
+}
+body.geo-report .cmp-table .cmp-url {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  word-break: break-all;
+}
+body.geo-report .cmp-table tr.cmp-expand-row td {
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-light);
+  vertical-align: top;
+}
+body.geo-report .cmp-table tr.cmp-site-row td {
+  vertical-align: middle;
+}
+body.geo-report .cmp-row-details {
+  margin: 8px 0 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+body.geo-report .cmp-row-details summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--brand-dark);
+  background: var(--bg-light);
+  list-style: none;
+}
+body.geo-report .cmp-row-details summary::-webkit-details-marker {
+  display: none;
+}
+body.geo-report .cmp-row-details summary::before {
+  content: "▸ ";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+  color: var(--text-muted);
+}
+body.geo-report .cmp-row-details[open] summary::before {
+  transform: rotate(90deg);
+}
+body.geo-report .cmp-observations-inner {
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+body.geo-report .cmp-obs-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+body.geo-report .cmp-obs-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+body.geo-report .cmp-diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 768px) {
+  body.geo-report .cmp-diff-grid {
+    grid-template-columns: 1fr;
+  }
+}
+body.geo-report .cmp-diff-col {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+body.geo-report .cmp-diff-col--positive {
+  background: linear-gradient(145deg, #ecfdf5 0%, #d1fae5 50%, #ecfdf5 100%);
+  border-color: rgba(0, 184, 148, 0.35);
+}
+body.geo-report .cmp-diff-col--negative {
+  background: linear-gradient(145deg, #fff5f5 0%, #ffe4e6 45%, #fff8f8 100%);
+  border-color: rgba(214, 48, 49, 0.28);
+}
+body.geo-report .cmp-diff-heading {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+}
+body.geo-report .cmp-diff-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+body.geo-report .cmp-diff-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+  </style>
+</head>
+<body class="geo-report">
+  <header class="header">
+    <div class="container">
+      <div class="header-content">
+        <div class="header-text">
+          <h1>GEO Audit Report</h1>
+          <div class="subtitle">https://www.eurocarparts.com</div>
+          <div class="header-meta">Brand: Euro Car Parts · Industry: Autos &amp; Vehicles</div>
+          <div>
+            <span class="badge badge-type">Full audit</span>
+            <span class="badge badge-date">2026-05-06 13:15 UTC</span>
+          </div>
+        </div>
+        <div class="score-gauge" aria-label="Overall score gauge">
+          <div class="gauge-ring" style="background: conic-gradient(var(--score-red) 0deg, var(--score-red) 89.3deg, rgba(255,255,255,0.12) 89.3deg, rgba(255,255,255,0.12) 360deg);">
+            <div class="gauge-inner">
+              <div class="score-number">24.8</div>
+              <div class="score-label" style="color:var(--score-red)">Critical</div>
+              <div class="score-max">/ 100</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="section" aria-labelledby="exec-heading">
+      <div class="section-title" id="exec-heading"><span class="icon">🧾</span> Executive summary</div>
+      <div class="section-desc exec-summary">For a business in <strong>Autos &amp; Vehicles</strong>, we analyzed <strong>eurocarparts.com</strong> across <strong>80</strong> sampled pages on <strong>May 6, 2026</strong>, focusing on how AI and answer engines can find, trust, and cite your brand. <strong>GEO Readiness Score: 24.8/100</strong>, which places <strong>Euro Car Parts</strong> in the <strong>Poor</strong> tier. The most impactful finding is <strong>Homepage title signal weak—check HTML &lt;title&gt;</strong>. Your top three priorities are <strong>No og:image in sample—hurts previews and AI surface extracts.</strong>, <strong>No JSON-LD in sample—add structured data on key templates.</strong>, and <strong>Off-site scan found no confident matches for “Euro Car Parts”—verify manually (skills/brand-visbility.md).</strong>. This roadmap targets an estimated <strong>32%</strong> lift in AI-driven traffic, approximately <strong>$10,752/month</strong> in incremental sessions at conservative economics against your current pattern of <strong>19,200</strong> sessions per month.</div>
+    </section>
+
+    <section class="section" aria-labelledby="overview-heading">
+      <div class="section-title" id="overview-heading"><span class="icon">🧭</span> Score overview</div>
+      <div class="section-desc">High-level results for the three areas of this audit (AI visibility, technical setup, and content quality).</div>
+      <div class="metrics-grid">
+        <div class="metric-card red">
+  <div class="metric-label">AI visibility · weight 55%</div>
+  <div class="metric-value">23.6</div>
+  <div class="metric-sub">Covers brand clarity, quotable pages, surface readiness, and retrieval-friendly structure.</div>
+</div><div class="metric-card red">
+  <div class="metric-label">Technical setup · weight 25%</div>
+  <div class="metric-value">27.8</div>
+  <div class="metric-sub">Covers crawler permissions, machine-readable site guidance, and technical reliability.</div>
+</div><div class="metric-card red">
+  <div class="metric-label">Content quality &amp; structure · weight 20%</div>
+  <div class="metric-value">24.2</div>
+  <div class="metric-sub">Combines trust-and-expertise signals with structured data coverage.</div>
+</div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="summary-heading">
+      <div class="section-title" id="summary-heading"><span class="icon">📊</span> Summary</div>
+      <div class="section-desc">Weights reflect how much each area contributes to the overall score. Together they total 100%.</div>
+      <table class="data-table" aria-label="Category summary table">
+        <thead><tr><th>Area</th><th>Weight</th><th>Score</th><th>Weighted points</th></tr></thead>
+        <tbody><tr><td>AI visibility</td><td>55%</td><td><span class='score-pill pill-red'>23.6</span></td><td>13.0</td></tr><tr><td>Technical setup</td><td>25%</td><td><span class='score-pill pill-red'>27.8</span></td><td>7.0</td></tr><tr><td>Content quality &amp; structure</td><td>20%</td><td><span class='score-pill pill-red'>24.2</span></td><td>4.9</td></tr><tr><td><strong>Overall (weighted)</strong></td><td>100%</td><td><span class='score-pill pill-red'>24.8</span></td><td>24.8</td></tr></tbody>
+      </table>
+      <div class="table-note">Output folder: <code>/Users/katewheatley/Desktop/seo-geo-tool/skills/audit_output/www.eurocarparts.com_ccac2095f4da</code></div>
+    </section>
+
+    <section class="section agent-category-block score-breakdown-major" aria-labelledby="agent-ai_visibility">
+  <div class="section-title" id="agent-ai_visibility"><span class="icon">🤖</span> AI visibility <span class="muted">(55%)</span> <span class="score-pill pill-red">23.6</span></div>
+  <div class="section-desc">Covers brand clarity, quotable pages, surface readiness, and retrieval-friendly structure.</div>
+  <div class="insight-pair">
+  <div class="insight-box insight-box--positive">
+    <div class="insight-box__label">What is working well</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>AI citability: Basic homepage metadata evaluated.</li><li>Platform readiness: Basic homepage metadata evaluated.</li><li>AI search success: Basic homepage metadata evaluated.</li></ul></div>
+  </div>
+  <div class="insight-box insight-box--attention">
+    <div class="insight-box__label">What needs work</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>AI citability: Homepage title signal weak—check HTML &lt;title&gt;.</li><li>AI citability: No og:image in sample—hurts previews and AI surface extracts.</li><li>AI citability: No JSON-LD in sample—add structured data on key templates.</li><li>Brand visibility: Off-site scan found no confident matches for “Euro Car Parts”—verify manually (skills/brand-visbility.md).</li><li>Brand visibility: Add or update Organization JSON-LD sameAs so on-site structured data matches verified profile URLs (not used to build this table).</li><li>Brand visibility: No sameAs URLs in crawl yet—publish them once profiles are confirmed.</li><li>Brand visibility: Strengthen authoritative footprint (Wikipedia when eligible, key socials) where it fits brand strategy.</li><li>Platform readiness: No og:image in sample—hurts previews and AI surface extracts.</li><li>Platform readiness: No sameAs URLs—strengthen organization linkage in structured data.</li><li>Platform readiness: Homepage title signal weak—check HTML &lt;title&gt;.</li><li>AI search success: No JSON-LD in sample—add structured data on key templates.</li><li>AI search success: No og:image in sample—hurts previews and AI surface extracts.</li><li>AI search success: Homepage title signal weak—check HTML &lt;title&gt;.</li></ul></div>
+  </div>
+</div>
+
+<div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="platform-readiness-heading">
+  <h3 class="score-breakdown-subheading" id="platform-readiness-heading"><span class="icon">🧠</span> AI platform readiness</h3>
+  <p class="score-breakdown-subdesc">Approximate readiness on major AI and search surfaces, based on this audit.</p>
+  <div class="platform-grid">
+    <div class="platform-card">
+  <div class="platform-name">🤖 ChatGPT</div>
+  <div class="platform-score"><span class="score-pill pill-red">15</span></div>
+  <div class="platform-bar">
+    <div class="progress-bar-container"><div class="progress-bar-fill" style="width:14.8%; background:var(--score-red)"></div></div>
+    <div class="small muted">15/100</div>
+  </div>
+  <div class="platform-gap">Boost structured data + llms.txt clarity for summarisation and citations.</div>
+</div><div class="platform-card">
+  <div class="platform-name">🔎 Perplexity</div>
+  <div class="platform-score"><span class="score-pill pill-red">14</span></div>
+  <div class="platform-bar">
+    <div class="progress-bar-container"><div class="progress-bar-fill" style="width:13.9%; background:var(--score-red)"></div></div>
+    <div class="small muted">14/100</div>
+  </div>
+  <div class="platform-gap">Strengthen quotable passages and external entity corroboration.</div>
+</div><div class="platform-card">
+  <div class="platform-name">✨ Gemini / AI Overviews</div>
+  <div class="platform-score"><span class="score-pill pill-red">15</span></div>
+  <div class="platform-bar">
+    <div class="progress-bar-container"><div class="progress-bar-fill" style="width:15.2%; background:var(--score-red)"></div></div>
+    <div class="small muted">15/100</div>
+  </div>
+  <div class="platform-gap">Prioritise indexability, structured data, and content depth on key pages.</div>
+</div><div class="platform-card">
+  <div class="platform-name">🧠 Claude</div>
+  <div class="platform-score"><span class="score-pill pill-red">14</span></div>
+  <div class="platform-bar">
+    <div class="progress-bar-container"><div class="progress-bar-fill" style="width:14.5%; background:var(--score-red)"></div></div>
+    <div class="small muted">14/100</div>
+  </div>
+  <div class="platform-gap">Improve page-level clarity and durable sources; ensure crawlers can access.</div>
+</div><div class="platform-card">
+  <div class="platform-name">🧭 Bing Copilot</div>
+  <div class="platform-score"><span class="score-pill pill-red">14</span></div>
+  <div class="platform-bar">
+    <div class="progress-bar-container"><div class="progress-bar-fill" style="width:14.0%; background:var(--score-red)"></div></div>
+    <div class="small muted">14/100</div>
+  </div>
+  <div class="platform-gap">Improve brand/entity signals + citations; ensure technical crawl friendliness.</div>
+</div>
+  </div>
+</div>
+</section>
+
+    <section class="section agent-category-block score-breakdown-major" aria-labelledby="agent-technical_setup">
+  <div class="section-title" id="agent-technical_setup"><span class="icon">⚙️</span> Technical setup <span class="muted">(25%)</span> <span class="score-pill pill-red">27.8</span></div>
+  <div class="section-desc">Covers crawler permissions, machine-readable site guidance, and technical reliability.</div>
+  <div class="insight-pair">
+  <div class="insight-box insight-box--positive">
+    <div class="insight-box__label">What is working well</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>Technical audit: robots.txt fetched successfully.</li><li>Technical audit: Most sampled pages return HTTP 200 (80/80).</li><li>Technical audit: TLS verification mode suitable for reliable crawl.</li></ul></div>
+  </div>
+  <div class="insight-box insight-box--attention">
+    <div class="insight-box__label">What needs work</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>AI crawler access: No robots.txt text available—cannot verify whether AI crawlers are allowed.</li><li>llms.txt: No live llms.txt—publish a concise machine-readable guide for AI systems.</li><li>llms.txt: No generated llms.txt path recorded.</li></ul></div>
+  </div>
+</div>
+
+<div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="crawler-heading">
+  <h3 class="score-breakdown-subheading" id="crawler-heading"><span class="icon">🕷️</span> AI crawler access</h3>
+  <p class="score-breakdown-subdesc">Whether major AI crawlers are allowed to fetch your site according to your robots rules.</p>
+  <p class='table-note'>robots.txt not available to score crawler access.</p>
+  <div style="margin-top:12px"></div>
+  <div class="insight-pair">
+  <div class="insight-box insight-box--positive">
+    <div class="insight-box__label">What is working well</div>
+    <div class="insight-box__body"><p class="insight-box__empty">—</p></div>
+  </div>
+  <div class="insight-box insight-box--attention">
+    <div class="insight-box__label">What needs work</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>No robots.txt text available—cannot verify whether AI crawlers are allowed.</li></ul></div>
+  </div>
+</div>
+</div>
+</section>
+
+    <section class="section agent-category-block score-breakdown-major" aria-labelledby="agent-content_structure">
+  <div class="section-title" id="agent-content_structure"><span class="icon">✍️</span> Content quality &amp; structure <span class="muted">(20%)</span> <span class="score-pill pill-red">24.2</span></div>
+  <div class="section-desc">Combines trust-and-expertise signals with structured data coverage.</div>
+  <div class="insight-pair">
+  <div class="insight-box insight-box--positive">
+    <div class="insight-box__label">What is working well</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>E-E-A-T / content quality: Basic homepage metadata evaluated.</li><li>E-E-A-T / content quality: robots.txt fetched successfully.</li><li>E-E-A-T / content quality: Most sampled pages return HTTP 200 (80/80).</li></ul></div>
+  </div>
+  <div class="insight-box insight-box--attention">
+    <div class="insight-box__label">What needs work</div>
+    <div class="insight-box__body"><ul class='insight-list'><li>E-E-A-T / content quality: Homepage title signal weak—check HTML &lt;title&gt;.</li><li>E-E-A-T / content quality: No og:image in sample—hurts previews and AI surface extracts.</li><li>JSON-LD / structured data: No JSON-LD in sample—add structured data on key templates.</li></ul></div>
+  </div>
+</div>
+
+<div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="eeat-heading">
+  <h3 class="score-breakdown-subheading" id="eeat-heading"><span class="icon">🧑‍⚖️</span> E-E-A-T proxy breakdown</h3>
+  <p class="score-breakdown-subdesc">Approximate pillars derived from technical and content signals we can measure automatically.</p>
+  <p class="eeat-explainer"><strong>E-E-A-T</strong> stands for <strong>E</strong>xperience, <strong>E</strong>xpertise, <strong>A</strong>uthoritativeness, and <strong>T</strong>rustworthiness—how well your content demonstrates real-world experience, subject-matter depth, credible sourcing, and reliability. Search and AI systems use these signals to decide what to surface and cite. The scores below are <em>approximate indicators</em> from this crawl; they complement—not replace—a full editorial and fact-check review.</p>
+  <div class="eeat-grid">
+    <div class="eeat-item">
+  <div class="eeat-label"><span class="eeat-name">Experience</span><span class="eeat-score">13/100</span></div>
+  <div class="progress-bar-container"><div class="progress-bar-fill" style="width:13.3%; background:var(--score-red)"></div></div>
+  <div class="table-note">Based on content depth signals, preview metadata, and structured data detected in the crawl.</div>
+</div><div class="eeat-item">
+  <div class="eeat-label"><span class="eeat-name">Expertise</span><span class="eeat-score">11/100</span></div>
+  <div class="progress-bar-container"><div class="progress-bar-fill" style="width:10.9%; background:var(--score-red)"></div></div>
+  <div class="table-note">Based on structured content coverage and signals that show subject-matter clarity.</div>
+</div><div class="eeat-item">
+  <div class="eeat-label"><span class="eeat-name">Authoritativeness</span><span class="eeat-score">13/100</span></div>
+  <div class="progress-bar-container"><div class="progress-bar-fill" style="width:13.2%; background:var(--score-red)"></div></div>
+  <div class="table-note">Based on brand linkage and corroborating entity references found on the site.</div>
+</div><div class="eeat-item">
+  <div class="eeat-label"><span class="eeat-name">Trust</span><span class="eeat-score">25/100</span></div>
+  <div class="progress-bar-container"><div class="progress-bar-fill" style="width:25.3%; background:var(--score-red)"></div></div>
+  <div class="table-note">Based on secure access, crawler permissions, and technical reliability signals.</div>
+</div>
+  </div>
+</div><div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="brand-vis-heading">
+  <h3 class="score-breakdown-subheading" id="brand-vis-heading"><span class="icon">🏷️</span> Brand visibility</h3>
+  <p class="score-breakdown-subdesc">Automated checks for whether a <strong>page, channel, or listing</strong> likely exists for <strong>Euro Car Parts</strong> on each surface (source: report_fallback). This table does <em>not</em> use on-site JSON-LD <code>sameAs</code>—after you verify URLs, add them to <code>sameAs</code> (see Recommendations).</p>
+  <p class="table-note">Automated probes use API + common URL patterns; social sites may block bots. Confirm URLs in a browser. Trustpilot row uses the audited site domain, not the brand string.</p>
+  <table class='data-table' aria-label='Brand visibility off-site scan'><thead><tr><th>Platform</th><th>Presence</th><th>Channel / page</th><th>Impact on AI visibility</th></tr></thead><tbody><tr><td><strong>Wikipedia</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>No Wikipedia search results for this query.</td><td>Very high — frequent citation source for ChatGPT and other models.</td></tr><tr><td><strong>Wikidata</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>No Wikidata entities for this query.</td><td>High — structured entity graph used in knowledge panels and grounding.</td></tr><tr><td><strong>YouTube</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>No @handle /c/ /user/ URL matched; search YouTube manually.</td><td>Medium–high — rich media and entity linkage.</td></tr><tr><td><strong>Reddit</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>No r/slug match for generated slugs; search Reddit manually.</td><td>Medium — community discussions models may weight.</td></tr><tr><td><strong>LinkedIn</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>No LinkedIn /company/ slug matched or page blocked; verify in browser.</td><td>High — company and executive verification signals.</td></tr><tr><td><strong>X (Twitter)</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>Request failed.</td><td>Medium — news and brand conversation.</td></tr><tr><td><strong>Facebook</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>Request failed.</td><td>Medium — social corroboration for brands.</td></tr><tr><td><strong>Instagram</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>Request failed.</td><td>Medium — visual brand presence.</td></tr><tr><td><strong>Trustpilot</strong></td><td><span class="score-pill pill-red">No / unclear</span></td><td>Trustpilot page unclear; check manually.</td><td>Medium — third-party review corroboration.</td></tr></tbody></table>
+</div>
+</section>
+
+    <section class="section" aria-labelledby="findings-heading">
+      <div class="section-title" id="findings-heading"><span class="icon">⚠️</span> Key findings</div>
+      <div class="section-desc">12 finding(s) ranked by severity — 3 critical, 6 high, 0 medium, 3 low. Industry context: <strong>Autos &amp; Vehicles</strong>.</div>
+      <div class="findings-list">
+      <div class="finding-card">
+        <span class="finding-badge critical">critical</span>
+        <span class="finding-text">No JSON-LD in sample—add structured data on key templates.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge critical">critical</span>
+        <span class="finding-text">No sameAs URLs in crawl yet—publish them once profiles are confirmed.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge critical">critical</span>
+        <span class="finding-text">No sameAs URLs—strengthen organization linkage in structured data.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">Add or update Organization JSON-LD sameAs so on-site structured data matches verified profile URLs (not used to build this table).</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">Homepage title signal weak—check HTML &lt;title&gt;.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">No generated llms.txt path recorded.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">No live llms.txt—publish a concise machine-readable guide for AI systems.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">No og:image in sample—hurts previews and AI surface extracts.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">high</span>
+        <span class="finding-text">No robots.txt text available—cannot verify whether AI crawlers are allowed.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge low">low</span>
+        <span class="finding-text">No comparison.json—run crawl with --competitor for peer scores.</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge low">low</span>
+        <span class="finding-text">Off-site scan found no confident matches for “Euro Car Parts”—verify manually (skills/brand-visbility.md).</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge low">low</span>
+        <span class="finding-text">Strengthen authoritative footprint (Wikipedia when eligible, key socials) where it fits brand strategy.</span>
+      </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="plan-heading">
+      <div class="section-title" id="plan-heading"><span class="icon">🗺️</span> Prioritized action plan</div>
+      <div class="section-desc">Up to five priorities per phase so work stays realistic; later phases include items deferred from earlier buckets when many fixes compete for the same window. <strong>Estimated lift</strong> lines are illustrative ranges on the composite GEO Readiness score (0–100) if the action is implemented well—validate with a follow-up audit.</div>
+      <div class="action-columns"><div class="action-column"><div class="action-column-header quick">Quick wins<span class="phase-label">0–30 days · highest return</span></div><div class="action-item"><span class="action-num">1</span><div>Homepage title signal weak—check HTML &lt;title&gt;.<br><span class="action-impact">Est. +2–8 pts overall</span></div></div><div class="action-item"><span class="action-num">2</span><div>No og:image in sample—hurts previews and AI surface extracts.<br><span class="action-impact">Est. +2–7 pts overall</span></div></div><div class="action-item"><span class="action-num">3</span><div>Add or update Organization JSON-LD sameAs so on-site structured data matches verified profile URLs (not used to build this table).<br><span class="action-impact">Est. +5–14 pts overall</span></div></div><div class="action-item"><span class="action-num">4</span><div>No sameAs URLs in crawl yet—publish them once profiles are confirmed.<br><span class="action-impact">Est. +3–9 pts overall</span></div></div><div class="action-item"><span class="action-num">5</span><div>No og:image in sample—hurts previews and AI surface extracts.<br><span class="action-impact">Est. +2–7 pts overall</span></div></div></div><div class="action-column"><div class="action-column-header medium">Medium term<span class="phase-label">30–90 days · high impact</span></div><div class="action-item"><span class="action-num">1</span><div>No JSON-LD in sample—add structured data on key templates.<br><span class="action-impact">Est. +5–14 pts overall</span></div></div><div class="action-item"><span class="action-num">2</span><div>Off-site scan found no confident matches for “Euro Car Parts”—verify manually (skills/brand-visbility.md).<br><span class="action-impact">Est. +2–6 pts overall</span></div></div><div class="action-item"><span class="action-num">3</span><div>No sameAs URLs—strengthen organization linkage in structured data.<br><span class="action-impact">Est. +5–14 pts overall</span></div></div><div class="action-item"><span class="action-num">4</span><div>Homepage title signal weak—check HTML &lt;title&gt;.<br><span class="action-impact">Est. +2–8 pts overall</span></div></div><div class="action-item"><span class="action-num">5</span><div>No JSON-LD in sample—add structured data on key templates.<br><span class="action-impact">Est. +5–14 pts overall</span></div></div></div><div class="action-column"><div class="action-column-header strategic">Strategic<span class="phase-label">90+ days · long-term growth</span></div><div class="action-item"><span class="action-num">1</span><div>Strengthen authoritative footprint (Wikipedia when eligible, key socials) where it fits brand strategy.<br><span class="action-impact">Est. +3–9 pts overall</span></div></div><div class="action-item"><span class="action-num">2</span><div>No og:image in sample—hurts previews and AI surface extracts.<br><span class="action-impact">Est. +2–7 pts overall</span></div></div><div class="action-item"><span class="action-num">3</span><div>Homepage title signal weak—check HTML &lt;title&gt;.<br><span class="action-impact">Est. +2–8 pts overall</span></div></div><div class="action-item"><span class="action-num">4</span><div>No robots.txt text available—cannot verify whether AI crawlers are allowed.<br><span class="action-impact">Est. +4–9 pts overall</span></div></div><div class="action-item"><span class="action-num">5</span><div>No live llms.txt—publish a concise machine-readable guide for AI systems.<br><span class="action-impact">Est. +2–6 pts overall</span></div></div></div></div>
+    </section>
+
+    <section class="section" aria-labelledby="comp-heading">
+      <div class="section-title" id="comp-heading"><span class="icon">🏁</span> Competitor comparison</div>
+      <div class="section-desc">Overall and category scores. Expand a competitor for <strong>what they are doing differently</strong> vs your site (green = their edge, red = your edge). Your row has no expandable notes.</div>
+      <p><em>No competitor crawl data.</em></p>
+    </section>
+
+    <section class="section" aria-labelledby="ga4-heading">
+      <div class="section-title" id="ga4-heading"><span class="icon">📈</span> GA4 — AI traffic</div>
+      <div class="section-desc">Optional appendix from <code>ga4_traffic.json</code>.</div>
+      <p class="table-note"><em>No <code>ga4_traffic.json</code> in this audit folder. Run the report tool with <code>--ga4-property</code> (and optional <code>--ga4-ai-channels</code>), or add an exported JSON file from your analytics workflow, then re-run with <code>--only-report …</code>.</em></p>
+<p class="table-note">Expected shape: <code>has_ai_channel</code>, <code>ai_channel_names</code>, <code>weekly</code> [{<code>iso_week</code>, <code>total_sessions</code>, <code>ai_sessions</code>}], <code>source_medium_gaps</code>.</p>
+    </section>
+
+    <section class="section" aria-labelledby="samples-heading">
+      <div class="section-title" id="samples-heading"><span class="icon">📄</span> Sample files</div>
+      <div class="section-desc">Collapsed by default; expand to scroll and copy.</div>
+      <details class="sample" id="sample-robots.txt (merged suggestion)"><summary><span>robots.txt (merged suggestion)</span><span class="hint">Not available</span></summary></details><details class="sample" id="sample-json-ld.txt (WebSite sample)"><summary><span>json-ld.txt (WebSite sample)</span><span class="hint">Not available</span></summary></details><details class="sample" id="sample-llms.txt (generated)"><summary><span>llms.txt (generated)</span><span class="hint">Not available</span></summary></details>
+    </section>
+
+    <section class="section" aria-label="Footer">
+      <div class="table-note">Produced by <code>create-report.py</code>. Scores are heuristic; validate with live checks and analytics.</div>
+    </section>
+  </main>
+</body>
+</html>

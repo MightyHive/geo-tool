@@ -1,0 +1,53 @@
+# GEO reference template — merge with your live robots.txt in crawl output.
+# Tier 1–2: allow for AI search visibility; Bytespider blocked; CCBot blocked (training corpus).
+
+# AI Crawlers - ALLOWED for AI search visibility
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: GoogleOther
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Amazonbot
+Allow: /
+
+User-agent: FacebookBot
+Allow: /
+
+# AI Crawlers - BLOCKED (aggressive/low value)
+User-agent: Bytespider
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+# Optional: Tier 3 training-only — allow or block per org policy (not used in GEO alignment score).
+# User-agent: cohere-ai
+# Disallow: /
+
+User-agent: *
+Disallow: /admin/
+Disallow: /internal/
+
+# Sitemap: https://www.example.com/sitemap.xml

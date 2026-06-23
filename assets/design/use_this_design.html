@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GEO Audit Report — Euro Car Parts</title>
+<style>
+  :root {
+    --brand-red: #e31837;
+    --brand-dark: #1a1a2e;
+    --brand-navy: #0f3460;
+    --bg-white: #ffffff;
+    --bg-light: #f7f8fa;
+    --bg-card: #ffffff;
+    --text-primary: #1a1a2e;
+    --text-secondary: #555e68;
+    --text-muted: #8a939e;
+    --border: #e2e6ea;
+    --score-green: #00b894;
+    --score-blue: #0984e3;
+    --score-yellow: #fdcb6e;
+    --score-red: #e17055;
+    --severity-critical: #d63031;
+    --severity-high: #e17055;
+    --severity-medium: #fdcb6e;
+    --severity-low: #b2bec3;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.1);
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg-light);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand-navy) 100%);
+    color: white;
+    padding: 48px 0 60px;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 4px;
+    background: var(--brand-red);
+  }
+  .header-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 40px;
+    flex-wrap: wrap;
+  }
+  .header-text h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .header-text .subtitle {
+    font-size: 16px;
+    color: rgba(255,255,255,0.7);
+    margin-bottom: 12px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-type { background: rgba(255,255,255,0.15); color: white; }
+  .badge-date { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.8); margin-left: 8px; }
+
+  /* ── Score Gauge ── */
+  .score-gauge {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    flex-shrink: 0;
+  }
+  .score-gauge .gauge-ring {
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    background: conic-gradient(
+      var(--score-red) 0deg,
+      var(--score-red) 151.2deg,
+      rgba(255,255,255,0.1) 151.2deg,
+      rgba(255,255,255,0.1) 360deg
+    );
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .score-gauge .gauge-inner {
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;
+    background: var(--brand-dark);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .score-gauge .score-number {
+    font-size: 48px;
+    font-weight: 800;
+    color: white;
+    line-height: 1;
+  }
+  .score-gauge .score-label {
+    font-size: 11px;
+    color: var(--score-red);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  .score-gauge .score-max {
+    font-size: 12px;
+    color: rgba(255,255,255,0.4);
+    margin-top: 2px;
+  }
+
+  /* ── Section ── */
+  .section {
+    padding: 40px 0;
+  }
+  .section-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--brand-dark);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title .icon {
+    font-size: 20px;
+  }
+  .section-desc {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+  }
+
+  /* ── Metric Cards Grid ── */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+  .metric-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+  .metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .metric-card.green::before { background: var(--score-green); }
+  .metric-card.blue::before { background: var(--score-blue); }
+  .metric-card.yellow::before { background: var(--score-yellow); }
+  .metric-card.red::before { background: var(--score-red); }
+
+  .metric-card .metric-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .metric-card .metric-value {
+    font-size: 36px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .metric-card.green .metric-value { color: var(--score-green); }
+  .metric-card.blue .metric-value { color: var(--score-blue); }
+  .metric-card.yellow .metric-value { color: var(--score-yellow); }
+  .metric-card.red .metric-value { color: var(--score-red); }
+
+  .metric-card .metric-sub {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  /* ── Tables ── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+  }
+  .data-table thead th {
+    background: var(--brand-dark);
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 14px 16px;
+    text-align: left;
+  }
+  .data-table tbody td {
+    padding: 12px 16px;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .data-table tbody tr:nth-child(even) {
+    background: var(--bg-light);
+  }
+  .data-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  .data-table .score-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+    color: white;
+  }
+  .pill-green { background: var(--score-green); }
+  .pill-blue { background: var(--score-blue); }
+  .pill-yellow { background: var(--score-yellow); color: var(--text-primary); }
+  .pill-red { background: var(--score-red); }
+
+  /* ── Progress Bars ── */
+  .progress-bar-container {
+    background: #edf0f2;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.6s ease;
+  }
+
+  /* ── Platform Cards ── */
+  .platform-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+  .platform-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+  }
+  .platform-card .platform-name {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .platform-card .platform-score {
+    font-size: 28px;
+    font-weight: 800;
+    margin-bottom: 8px;
+  }
+  .platform-card .platform-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .platform-card .platform-gap {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  /* ── Crawler Grid ── */
+  .crawler-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+  }
+  .crawler-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .crawler-item .check {
+    color: var(--score-green);
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .crawler-tier {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    margin-top: 16px;
+  }
+  .crawler-tier:first-child { margin-top: 0; }
+
+  /* ── Brand Authority Cards ── */
+  .brand-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+  }
+  .brand-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--score-green);
+  }
+  .brand-card .brand-platform {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .brand-card .brand-status {
+    font-size: 13px;
+    color: var(--score-green);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .brand-card .brand-detail {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ── E-E-A-T Bars ── */
+  .eeat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .eeat-item {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+  }
+  .eeat-item .eeat-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .eeat-item .eeat-name {
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .eeat-item .eeat-score {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--score-red);
+  }
+  .eeat-bar {
+    background: #edf0f2;
+    border-radius: 6px;
+    height: 12px;
+    overflow: hidden;
+  }
+  .eeat-bar-fill {
+    height: 100%;
+    border-radius: 6px;
+  }
+
+  /* ── Findings ── */
+  .findings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .finding-card {
+    background: var(--bg-card);
+    border-radius: var(--radius-sm);
+    padding: 16px 20px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .finding-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    color: white;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .finding-badge.critical { background: var(--severity-critical); }
+  .finding-badge.high { background: var(--severity-high); }
+  .finding-badge.medium { background: var(--severity-medium); color: var(--text-primary); }
+  .finding-badge.low { background: var(--severity-low); }
+  .finding-text {
+    font-size: 14px;
+    color: var(--text-primary);
+    line-height: 1.5;
+  }
+
+  /* ── Action Plan ── */
+  .action-columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+  .action-column {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .action-column-header {
+    padding: 16px 20px;
+    font-size: 14px;
+    font-weight: 700;
+    color: white;
+  }
+  .action-column-header.quick { background: var(--score-green); }
+  .action-column-header.medium { background: var(--score-blue); }
+  .action-column-header.strategic { background: var(--brand-navy); }
+  .action-column-header .phase-label {
+    font-size: 11px;
+    font-weight: 400;
+    opacity: 0.85;
+    display: block;
+    margin-top: 2px;
+  }
+  .action-item {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    gap: 10px;
+  }
+  .action-item:last-child { border-bottom: none; }
+  .action-num {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+  }
+  .action-impact {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--score-green);
+    margin-top: 4px;
+  }
+
+  /* ── Projected Score ── */
+  .projection-track {
+    display: flex;
+    align-items: center;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 32px 24px;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border);
+    gap: 0;
+    position: relative;
+  }
+  .projection-step {
+    flex: 1;
+    text-align: center;
+    position: relative;
+    z-index: 1;
+  }
+  .projection-dot {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 800;
+    color: white;
+    margin-bottom: 8px;
+  }
+  .projection-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .projection-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .projection-line {
+    position: absolute;
+    top: 55px;
+    left: 12%;
+    right: 12%;
+    height: 3px;
+    background: linear-gradient(to right, var(--score-red), var(--score-yellow), var(--score-blue), var(--score-green));
+    border-radius: 2px;
+    z-index: 0;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    background: var(--brand-dark);
+    color: rgba(255,255,255,0.6);
+    padding: 32px 0;
+    margin-top: 20px;
+    font-size: 13px;
+    text-align: center;
+    line-height: 1.8;
+  }
+  .footer strong { color: rgba(255,255,255,0.9); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .header-content { flex-direction: column; text-align: center; }
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    .platform-grid { grid-template-columns: 1fr; }
+    .eeat-grid { grid-template-columns: 1fr; }
+    .action-columns { grid-template-columns: 1fr; }
+    .brand-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Print ── */
+  @media print {
+    body { background: white; }
+    .header { background: var(--brand-dark) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .section { page-break-inside: avoid; }
+    .action-columns { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════ -->
+<!-- HEADER / HERO                           -->
+<!-- ════════════════════════════════════════ -->
+<header class="header">
+  <div class="container">
+    <div class="header-content">
+      <div class="header-text">
+        <h1>GEO-SEO Audit Report</h1>
+        <p class="subtitle">eurocarparts.com — Euro Car Parts</p>
+        <span class="badge badge-type">E-commerce</span>
+        <span class="badge badge-date">25 March 2026</span>
+      </div>
+      <div class="score-gauge">
+        <div class="gauge-ring">
+          <div class="gauge-inner">
+            <span class="score-number">42</span>
+            <span class="score-label">Poor</span>
+            <span class="score-max">/ 100</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════ -->
+<!-- EXECUTIVE SUMMARY                       -->
+<!-- ════════════════════════════════════════ -->
+<div class="container">
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9672;</span> Executive Summary</div>
+    <p class="section-desc" style="max-width:900px; font-size:15px; line-height:1.7; color:var(--text-primary);">
+      Euro Car Parts has a <strong>strong brand foundation</strong> — present on Wikipedia, YouTube, Reddit, and LinkedIn, with all 14 AI crawlers allowed. However, the site is <strong>severely underperforming on content and structured data</strong>, the two signals AI systems rely on most. <strong>Zero JSON-LD</strong>, no llms.txt, and just 494 words on the homepage. The gap between current performance (42) and potential (80+) represents an exceptional ROI opportunity for GEO investment.
+    </p>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- SCORE BREAKDOWN                         -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9635;</span> Score Overview</div>
+    <p class="section-desc">Key metrics at a glance — 6-category weighted scoring framework.</p>
+
+    <div class="metrics-grid">
+      <div class="metric-card red">
+        <div class="metric-label">GEO Score</div>
+        <div class="metric-value">42</div>
+        <div class="metric-sub">Major barriers to AI discovery</div>
+      </div>
+      <div class="metric-card green">
+        <div class="metric-label">Brand Authority</div>
+        <div class="metric-value">100</div>
+        <div class="metric-sub">All 4 platforms confirmed</div>
+      </div>
+      <div class="metric-card red">
+        <div class="metric-label">Content & E-E-A-T</div>
+        <div class="metric-value">31</div>
+        <div class="metric-sub">Thin content, no author signals</div>
+      </div>
+      <div class="metric-card yellow">
+        <div class="metric-label">Technical</div>
+        <div class="metric-value">66</div>
+        <div class="metric-sub">Missing H1, partial SSR</div>
+      </div>
+    </div>
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Weight</th>
+          <th>Score</th>
+          <th>Rating</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>AI Citability & Visibility</td>
+          <td>25%</td>
+          <td>51/100</td>
+          <td><span class="score-pill pill-yellow">Moderate</span></td>
+        </tr>
+        <tr>
+          <td>Brand Authority Signals</td>
+          <td>20%</td>
+          <td>100/100</td>
+          <td><span class="score-pill pill-green">Excellent</span></td>
+        </tr>
+        <tr>
+          <td>Content Quality & E-E-A-T</td>
+          <td>20%</td>
+          <td>31/100</td>
+          <td><span class="score-pill pill-red">Poor</span></td>
+        </tr>
+        <tr>
+          <td>Technical Foundations</td>
+          <td>15%</td>
+          <td>66/100</td>
+          <td><span class="score-pill pill-blue">Good</span></td>
+        </tr>
+        <tr>
+          <td>Structured Data</td>
+          <td>10%</td>
+          <td>10/100</td>
+          <td><span class="score-pill pill-red">Critical</span></td>
+        </tr>
+        <tr>
+          <td>Platform Optimization</td>
+          <td>10%</td>
+          <td>40/100</td>
+          <td><span class="score-pill pill-yellow">Moderate</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- AI PLATFORM READINESS                   -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9881;</span> AI Platform Readiness</div>
+    <p class="section-desc">Only 11% of domains appear in citations from both ChatGPT and Google AI Overviews for identical queries.</p>
+
+    <div class="platform-grid">
+      <div class="platform-card">
+        <div class="platform-name">&#127760; Google AI Overviews</div>
+        <div class="platform-score" style="color:var(--score-yellow);">41</div>
+        <div class="platform-bar">
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width:41%; background:var(--score-yellow);"></div>
+          </div>
+        </div>
+        <div class="platform-gap">Gap: No JSON-LD schema, thin content</div>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name">&#129302; ChatGPT</div>
+        <div class="platform-score" style="color:var(--score-red);">38</div>
+        <div class="platform-bar">
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width:38%; background:var(--score-red);"></div>
+          </div>
+        </div>
+        <div class="platform-gap">Gap: No entity assertions (sameAs)</div>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name">&#128269; Perplexity</div>
+        <div class="platform-score" style="color:var(--score-red);">36</div>
+        <div class="platform-bar">
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width:36%; background:var(--score-red);"></div>
+          </div>
+        </div>
+        <div class="platform-gap">Gap: No community validation schema</div>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name">&#10024; Gemini</div>
+        <div class="platform-score" style="color:var(--score-yellow);">44</div>
+        <div class="platform-bar">
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width:44%; background:var(--score-yellow);"></div>
+          </div>
+        </div>
+        <div class="platform-gap">Gap: No GBP for 250+ stores</div>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name">&#128187; Bing Copilot</div>
+        <div class="platform-score" style="color:var(--score-yellow);">40</div>
+        <div class="platform-bar">
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" style="width:40%; background:var(--score-yellow);"></div>
+          </div>
+        </div>
+        <div class="platform-gap">Gap: No IndexNow, no product feed</div>
+      </div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- CRAWLER ACCESS                          -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128274;</span> AI Crawler Access</div>
+    <p class="section-desc">All 14 AI crawlers are allowed — better than most competitors. This is the site's strongest technical asset.</p>
+
+    <div class="crawler-tier">Tier 1 — Critical</div>
+    <div class="crawler-grid">
+      <div class="crawler-item"><span class="check">&#10003;</span> GPTBot</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> OAI-SearchBot</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> ChatGPT-User</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> ClaudeBot</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> PerplexityBot</div>
+    </div>
+
+    <div class="crawler-tier">Tier 2 — Important</div>
+    <div class="crawler-grid">
+      <div class="crawler-item"><span class="check">&#10003;</span> Google-Extended</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> Applebot-Extended</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> Amazonbot</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> FacebookBot</div>
+    </div>
+
+    <div class="crawler-tier">Tier 3 — Training</div>
+    <div class="crawler-grid">
+      <div class="crawler-item"><span class="check">&#10003;</span> CCBot</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> anthropic-ai</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> cohere-ai</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> Bytespider</div>
+      <div class="crawler-item"><span class="check">&#10003;</span> meta-externalagent</div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- BRAND AUTHORITY                         -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#127942;</span> Brand Authority — 100/100</div>
+    <p class="section-desc">Euro Car Parts is present on all 4 major platforms that AI systems reference for entity recognition.</p>
+
+    <div class="brand-grid">
+      <div class="brand-card">
+        <div class="brand-platform">&#9654; YouTube</div>
+        <div class="brand-status">&#10003; Found</div>
+        <div class="brand-detail">Channel detected. Optimize transcripts, add timestamps, create playlists.</div>
+      </div>
+      <div class="brand-card">
+        <div class="brand-platform">&#128172; Reddit</div>
+        <div class="brand-status">&#10003; Found — 10 mentions</div>
+        <div class="brand-detail">Mentioned in r/CarTalkUK, r/Audi, r/CarsAustralia. Subreddit exists (1 subscriber).</div>
+      </div>
+      <div class="brand-card">
+        <div class="brand-platform">&#128214; Wikipedia</div>
+        <div class="brand-status">&#10003; Article + Wikidata Q23782692</div>
+        <div class="brand-detail">"Distributor of car parts and accessories with locations across the United Kingdom"</div>
+      </div>
+      <div class="brand-card">
+        <div class="brand-platform">&#128188; LinkedIn</div>
+        <div class="brand-status">&#10003; Company page exists</div>
+        <div class="brand-detail">Publish thought leadership, ensure employee profiles link to company.</div>
+      </div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- E-E-A-T BREAKDOWN                       -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128200;</span> E-E-A-T Breakdown — 34/100</div>
+    <p class="section-desc">Trustworthiness is the only relatively strong dimension. Expertise is the weakest and most strategically damaging.</p>
+
+    <div class="eeat-grid">
+      <div class="eeat-item">
+        <div class="eeat-label">
+          <span class="eeat-name">Experience</span>
+          <span class="eeat-score">7 / 25</span>
+        </div>
+        <div class="eeat-bar">
+          <div class="eeat-bar-fill" style="width:28%; background:var(--score-red);"></div>
+        </div>
+      </div>
+      <div class="eeat-item">
+        <div class="eeat-label">
+          <span class="eeat-name">Expertise</span>
+          <span class="eeat-score">5 / 25</span>
+        </div>
+        <div class="eeat-bar">
+          <div class="eeat-bar-fill" style="width:20%; background:var(--score-red);"></div>
+        </div>
+      </div>
+      <div class="eeat-item">
+        <div class="eeat-label">
+          <span class="eeat-name">Authoritativeness</span>
+          <span class="eeat-score">9 / 25</span>
+        </div>
+        <div class="eeat-bar">
+          <div class="eeat-bar-fill" style="width:36%; background:var(--score-red);"></div>
+        </div>
+      </div>
+      <div class="eeat-item">
+        <div class="eeat-label">
+          <span class="eeat-name">Trustworthiness</span>
+          <span class="eeat-score" style="color:var(--score-yellow);">13 / 25</span>
+        </div>
+        <div class="eeat-bar">
+          <div class="eeat-bar-fill" style="width:52%; background:var(--score-yellow);"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- KEY FINDINGS                            -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9888;</span> Key Findings</div>
+    <p class="section-desc">12 findings ranked by severity — 3 critical, 4 high, 3 medium, 2 low.</p>
+
+    <div class="findings-list">
+      <div class="finding-card">
+        <span class="finding-badge critical">Critical</span>
+        <span class="finding-text">Zero JSON-LD structured data across the site — AI systems cannot identify Euro Car Parts as an entity</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge critical">Critical</span>
+        <span class="finding-text">No H1 on homepage — primary topic signal invisible to crawlers</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge critical">Critical</span>
+        <span class="finding-text">Only 494 words on homepage — almost nothing for AI systems to cite</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">High</span>
+        <span class="finding-text">No llms.txt — no AI crawler guidance for site structure</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">High</span>
+        <span class="finding-text">No sameAs links connecting brand to Wikipedia (Q23782692), YouTube, LinkedIn, Trustpilot</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">High</span>
+        <span class="finding-text">No author bylines, credentials, or published dates — zero E-E-A-T signals</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge high">High</span>
+        <span class="finding-text">No og:image — invisible in AI visual previews and social sharing</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge medium">Medium</span>
+        <span class="finding-text">No question-based headings for AI citation matching (What/How/Why format)</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge medium">Medium</span>
+        <span class="finding-text">No buying guides or editorial content on category pages</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge medium">Medium</span>
+        <span class="finding-text">No FAQ schema or product comparison content for AI extraction</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge low">Low</span>
+        <span class="finding-text">250+ Google Business Profiles likely underoptimized for Gemini local visibility</span>
+      </div>
+      <div class="finding-card">
+        <span class="finding-badge low">Low</span>
+        <span class="finding-text">No IndexNow implementation for Bing Copilot real-time indexing</span>
+      </div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- ACTION PLAN                             -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9989;</span> Prioritized Action Plan</div>
+    <p class="section-desc">14 actions across three phases — estimated to raise the GEO Score from 42 to 82-90.</p>
+
+    <div class="action-columns">
+      <div class="action-column">
+        <div class="action-column-header quick">
+          Quick Wins
+          <span class="phase-label">0–30 days • Highest ROI</span>
+        </div>
+        <div class="action-item">
+          <span class="action-num">1</span>
+          <div>Add Organization JSON-LD with sameAs to Wikipedia, Wikidata, YouTube, LinkedIn, Trustpilot<br><span class="action-impact">+15-20 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">2</span>
+          <div>Deploy llms.txt file at domain root<br><span class="action-impact">+5 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">3</span>
+          <div>Add H1 to homepage in server-rendered HTML<br><span class="action-impact">+5 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">4</span>
+          <div>Add og:image (1200x630) to homepage<br><span class="action-impact">+3 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">5</span>
+          <div>Add WebSite + SearchAction schema<br><span class="action-impact">+3 pts</span></div>
+        </div>
+      </div>
+
+      <div class="action-column">
+        <div class="action-column-header medium">
+          Medium-Term
+          <span class="phase-label">30–90 days • High impact</span>
+        </div>
+        <div class="action-item">
+          <span class="action-num">6</span>
+          <div>Add Product + Offer schema on all product pages<br><span class="action-impact">+10 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">7</span>
+          <div>Create buying guides on top 10 category pages (1,200-1,500 words each)<br><span class="action-impact">+10 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">8</span>
+          <div>Add Article + Author schema with expert bylines<br><span class="action-impact">+5 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">9</span>
+          <div>Implement BreadcrumbList schema sitewide<br><span class="action-impact">+3 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">10</span>
+          <div>Register Bing Webmaster Tools + IndexNow<br><span class="action-impact">+3 pts</span></div>
+        </div>
+      </div>
+
+      <div class="action-column">
+        <div class="action-column-header strategic">
+          Strategic
+          <span class="phase-label">90+ days • Long-term growth</span>
+        </div>
+        <div class="action-item">
+          <span class="action-num">11</span>
+          <div>Optimize 250+ Google Business Profiles for Gemini<br><span class="action-impact">+5-8 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">12</span>
+          <div>Build topical content clusters per category<br><span class="action-impact">+8-12 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">13</span>
+          <div>Develop original research content (UK car maintenance data)<br><span class="action-impact">+5-10 pts</span></div>
+        </div>
+        <div class="action-item">
+          <span class="action-num">14</span>
+          <div>Active Reddit engagement in r/CarTalkUK, r/MechanicAdvice<br><span class="action-impact">+5 pts</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<!-- ════════════════════════════════════════ -->
+<!-- PROJECTED SCORE                         -->
+<!-- ════════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128640;</span> Projected GEO Score Growth</div>
+    <p class="section-desc">From 42 to 82-90 with full implementation across all three phases.</p>
+
+    <div class="projection-track">
+      <div class="projection-line"></div>
+      <div class="projection-step">
+        <div class="projection-dot" style="background:var(--score-red);">42</div>
+        <div class="projection-label">Current</div>
+        <div class="projection-sub">Today</div>
+      </div>
+      <div class="projection-step">
+        <div class="projection-dot" style="background:var(--score-blue);">63</div>
+        <div class="projection-label">Quick Wins</div>
+        <div class="projection-sub">30 days</div>
+      </div>
+      <div class="projection-step">
+        <div class="projection-dot" style="background:var(--score-blue);">75</div>
+        <div class="projection-label">Medium-Term</div>
+        <div class="projection-sub">90 days</div>
+      </div>
+      <div class="projection-step">
+        <div class="projection-dot" style="background:var(--score-green);">86</div>
+        <div class="projection-label">Strategic</div>
+        <div class="projection-sub">6+ months</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<!-- ════════════════════════════════════════ -->
+<!-- FOOTER                                  -->
+<!-- ════════════════════════════════════════ -->
+<footer class="footer">
+  <div class="container">
+    <strong>GEO-SEO Analysis Report</strong> — eurocarparts.com<br>
+    Generated 25 March 2026 &middot; Methodology: 6-category weighted framework with 5 parallel subagent analysis<br>
+    Scoring: AI Citability 25% &middot; Brand Authority 20% &middot; Content E-E-A-T 20% &middot; Technical 15% &middot; Schema 10% &middot; Platform 10%<br>
+    <span style="opacity:0.5;">Confidential — prepared for Euro Car Parts</span>
+  </div>
+</footer>
+
+</body>
+</html>

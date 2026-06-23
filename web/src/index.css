@@ -1,0 +1,97 @@
+@import url("https://fonts.googleapis.com/css2?family=Google+Sans:wght@300;400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-light: #e8e5e0;
+  --brand-dark: #2d2d2d;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-brand-light text-brand-dark font-sans antialiased;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 bg-brand-dark hover:bg-brand-dark/90 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 bg-white hover:bg-gray-50 text-brand-dark border border-gray-300 px-6 py-3 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 text-brand-dark hover:bg-black/5 px-4 py-2 rounded-lg font-medium transition-colors;
+  }
+
+  .card-surface {
+    @apply bg-white/80 backdrop-blur-sm rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 border border-gray-200/50;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-brand-accent focus:ring-2 focus:ring-brand-accent/20 transition-all duration-200 bg-white/90 text-brand-dark placeholder:text-gray-400 outline-none;
+  }
+
+  .page-container {
+    @apply max-w-6xl mx-auto w-full p-6 md:p-8 animate-fade-in;
+  }
+
+  .alert-error {
+    @apply text-red-700 font-medium px-4 py-3 bg-red-50 border border-red-200 rounded-lg mb-4;
+  }
+
+  .alert-success {
+    @apply text-emerald-800 px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-lg mb-4;
+  }
+
+  .alert-info {
+    @apply text-blue-800 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg mb-4 text-sm;
+  }
+
+  .url-autocomplete-container .aa-Form {
+    @apply rounded-lg border border-gray-300 bg-white/90;
+  }
+
+  .url-autocomplete-container .aa-InputWrapperPrefix,
+  .url-autocomplete-container .aa-InputWrapperSuffix {
+    @apply hidden;
+  }
+
+  .url-autocomplete-container .aa-Input {
+    @apply w-full px-4 py-3 text-brand-dark outline-none;
+  }
+
+  .url-autocomplete-container .aa-Panel {
+    @apply mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden z-20;
+  }
+
+  .url-autocomplete-container .aa-Item {
+    @apply px-4 py-2 text-sm cursor-pointer;
+  }
+
+  .url-autocomplete-container .aa-Item[aria-selected="true"] {
+    @apply bg-blue-50;
+  }
+
+  .url-autocomplete-container .aa-PromptMessage {
+    @apply cursor-default pointer-events-none;
+  }
+
+  .prompt-reply-html > div {
+    @apply whitespace-pre-wrap leading-relaxed border border-gray-200 rounded-lg p-3 max-h-[26rem] overflow-auto text-sm;
+  }
+
+  .prompt-reply-html mark {
+    @apply rounded-sm px-0.5;
+  }
+}

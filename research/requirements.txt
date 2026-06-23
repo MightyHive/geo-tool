@@ -1,0 +1,8 @@
+pandas
+numpy
+statsmodels
+matplotlib
+google-analytics-data>=0.18.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+scipy

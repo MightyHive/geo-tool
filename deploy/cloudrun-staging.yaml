@@ -1,0 +1,39 @@
+# Reference spec for geo-audit-staging (applied via scripts/deploy_cloud_run_staging.sh).
+# Single Cloud Run *service* runs UI + API + audit pipeline (SSE, up to 60m).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: geo-audit-staging
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/timeout: "3600"
+        run.googleapis.com/cpu-throttling: "false"
+    spec:
+      serviceAccountName: geo-audit-tool@emea-ds-sandbox.iam.gserviceaccount.com
+      containerConcurrency: 2
+      timeoutSeconds: 3600
+      containers:
+        - image: REGION-docker.pkg.dev/emea-ds-sandbox/geo-audit/web:staging
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_ENV
+              value: staging
+            - name: GEO_DATA_ROOT
+              value: /var/geo-data
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: geo-data
+              mountPath: /var/geo-data
+      volumes:
+        - name: geo-data
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: emea-ds-sandbox-geo-audit-staging

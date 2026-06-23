@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GEO Audit Report — design reference</title>
+  <link rel="stylesheet" href="report-styles.css" />
+</head>
+<body class="geo-report">
+  <header class="header">
+    <div class="container">
+      <div class="header-content">
+        <div class="header-text">
+          <h1>GEO Audit Report</h1>
+          <div class="subtitle">Design reference page (matches generated `report.html` layout)</div>
+          <div>
+            <span class="badge badge-type">Design system</span>
+            <span class="badge badge-date">Static sample</span>
+          </div>
+        </div>
+        <div class="score-gauge" aria-label="Overall score gauge">
+          <div class="gauge-ring" style="background: conic-gradient(var(--score-blue) 0deg, var(--score-blue) 252deg, rgba(255,255,255,0.12) 252deg, rgba(255,255,255,0.12) 360deg);">
+            <div class="gauge-inner">
+              <div class="score-number">70.0</div>
+              <div class="score-label" style="color:var(--score-blue)">Good</div>
+              <div class="score-max">/ 100</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="section">
+      <div class="section-title"><span class="icon">📊</span> Summary</div>
+      <div class="section-desc">Metric cards + a summary table.</div>
+      <div class="metrics-grid">
+        <div class="metric-card blue">
+          <div class="metric-label">AI citability · weight 32%</div>
+          <div class="metric-value">72.0</div>
+          <div class="metric-sub">Example description for layout.</div>
+        </div>
+        <div class="metric-card yellow">
+          <div class="metric-label">Brand visibility · weight 18%</div>
+          <div class="metric-value">55.0</div>
+          <div class="metric-sub">Example description for layout.</div>
+        </div>
+        <div class="metric-card red">
+          <div class="metric-label">Content quality · weight 25%</div>
+          <div class="metric-value">38.0</div>
+          <div class="metric-sub">Example description for layout.</div>
+        </div>
+        <div class="metric-card yellow">
+          <div class="metric-label">Technical setup · weight 25%</div>
+          <div class="metric-value">60.0</div>
+          <div class="metric-sub">Example description for layout.</div>
+        </div>
+      </div>
+
+      <table class="data-table">
+        <thead><tr><th>Category</th><th>Weight</th><th>Score</th><th>Weighted points</th></tr></thead>
+        <tbody>
+          <tr><td>AI citability</td><td>32%</td><td><span class="score-pill pill-blue">72.0</span></td><td>23.0</td></tr>
+          <tr><td>Brand visibility</td><td>18%</td><td><span class="score-pill pill-yellow">55.0</span></td><td>9.9</td></tr>
+          <tr><td>Content quality</td><td>25%</td><td><span class="score-pill pill-red">38.0</span></td><td>9.5</td></tr>
+          <tr><td>Technical setup</td><td>25%</td><td><span class="score-pill pill-yellow">60.0</span></td><td>15.0</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-title"><span class="icon">📄</span> Sample files</div>
+      <div class="section-desc">Collapsed by default.</div>
+      <details class="sample">
+        <summary><span>robots.txt (example)</span><span class="hint">Expand · scroll inside · copy</span></summary>
+        <pre>User-agent: *
+Allow: /
+
+# …</pre>
+      </details>
+    </section>
+  </main>
+</body>
+</html>

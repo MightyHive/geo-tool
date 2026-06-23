@@ -1,0 +1,8 @@
+streamlit>=1.42.0
+streamlit-searchbox>=0.1.21
+Authlib>=1.3.2
+google-analytics-data>=0.18.0
+google-auth-oauthlib>=1.2.0
+certifi>=2024.2.2
+# Optional: live OpenAI probe on Prompt performance (OPENAI_API_KEY); urllib-only, no package required.
+# Optional Reddit ML sentiment (DistilBERT): pip install -r requirements-brand-sentiment.txt

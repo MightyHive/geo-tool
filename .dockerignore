@@ -1,0 +1,38 @@
+# Python / tooling
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.git
+.gitignore
+.cursor
+*.md
+!deploy/README.md
+!skills/**/*.md
+
+# Local audits & secrets (mounted from GCS on Cloud Run)
+audit_output
+audit_archive
+.streamlit/secrets.toml
+env/.env.*
+!.env.*.example
+
+# Legacy Streamlit UI (not used by Cloud Run service)
+legacy/
+requirements.txt
+requirements-brand-sentiment.txt
+
+# Research sandbox (offline econometrics; not part of Cloud Run image)
+research/
+
+# Web dev artifacts (dist built in Docker; keep web/src)
+web/node_modules
+web/dist
+
+# Large / optional local data
+assets/samples/geo-audit-sample-*
+assets/samples/.venv
+*.log

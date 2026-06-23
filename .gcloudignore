@@ -1,0 +1,15 @@
+# Cloud Build upload — align with .dockerignore (keep image lean)
+.venv
+venv
+__pycache__
+.git
+.cursor
+audit_output
+audit_archive
+.streamlit/secrets.toml
+env/.env.*
+web/node_modules
+web/dist
+*.md
+!deploy/README.md
+local-auth/

@@ -1,0 +1,54 @@
+# Reference spec for geo-audit-dev (applied via scripts/deploy_cloud_run_dev.sh).
+# Mirrors geo-audit-staging; adds ANTHROPIC_API_KEY for Claude live probes.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: geo-audit-dev
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/timeout: "3600"
+        run.googleapis.com/cpu-throttling: "false"
+    spec:
+      serviceAccountName: geo-audit-tool@emea-ds-sandbox.iam.gserviceaccount.com
+      containerConcurrency: 2
+      timeoutSeconds: 3600
+      containers:
+        - image: europe-west1-docker.pkg.dev/emea-ds-sandbox/geo-audit/web:dev
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_ENV
+              value: dev
+            - name: GEO_DATA_ROOT
+              value: /var/geo-data
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ANTHROPIC_API_KEY
+                  key: latest
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: GEMINI_API_KEY
+                  key: latest
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: OPENAI_API_KEY
+                  key: latest
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: geo-data
+              mountPath: /var/geo-data
+      volumes:
+        - name: geo-data
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: emea-ds-sandbox-geo-audit-dev

@@ -1,0 +1,4 @@
+# Reddit brand visibility: DistilBERT SST-2 on thread title + top comments (CPU).
+# First run downloads model weights from Hugging Face (~250MB).
+transformers>=4.38.0
+torch>=2.1.0

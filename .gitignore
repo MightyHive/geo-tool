@@ -1,0 +1,61 @@
+# Service account keys (never commit)
+general-sa.json
+*-sa.json
+*credentials*.json
+
+# Environment & secrets
+.env
+env/.env.development
+env/.env.staging
+env/.env.production
+!env/.env.*.example
+.streamlit/secrets.toml
+local-auth/
+
+# GA4 OAuth token cache (CLI research scripts)
+research/.ga4_oauth_token.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / web UI
+web/node_modules/
+web/dist/
+
+# Audit outputs (local dev; GCS on Cloud Run)
+audit_output/
+audit_archive/
+
+# Research sandbox generated outputs
+research/*.csv
+research/.ga4_oauth_token.json
+assets/samples/.venv/
+
+# Prompt development scratch
+prompt_dev/
+
+# IDE & editor
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+# Cloud Run image: API + audit pipeline (no Streamlit / PyTorch).
+-r requirements-api.txt
+certifi>=2024.2.2

@@ -20,9 +20,7 @@ audit_archive
 env/.env.*
 !.env.*.example
 
-# Legacy Streamlit UI (not used by Cloud Run service)
-legacy/
-requirements.txt
+# Optional heavy deps (PyTorch); not installed in Cloud Run image
 requirements-brand-sentiment.txt
 
 # Research sandbox (offline econometrics; not part of Cloud Run image)
@@ -33,6 +31,5 @@ web/node_modules
 web/dist
 
 # Large / optional local data
-assets/samples/geo-audit-sample-*
-assets/samples/.venv
+assets/samples/
 *.log

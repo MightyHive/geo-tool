@@ -46,7 +46,7 @@ PLATFORM_IMPACT_BLURB: dict[str, str] = {
 
 
 def derive_brand_from_base(base_url: str) -> str:
-    """Best-effort display name from hostname (e.g. eurocarparts.com → Eurocarparts)."""
+    """Best-effort display name from hostname (e.g. example-parts.com → Example Parts)."""
     u = base_url.strip()
     if not u:
         return "Brand"
@@ -105,7 +105,6 @@ def _search_variants_for_brand(brand: str, base_url: str) -> list[str]:
     if label:
         add(label.replace("-", " ").title())
         compact = _alnum_compact(label)
-        # eurocarparts → Euro Car Parts
         m = re.match(r"^([a-z]+)(carparts)$", compact)
         if m:
             add(f"{m.group(1).title()} Car Parts")
@@ -114,9 +113,7 @@ def _search_variants_for_brand(brand: str, base_url: str) -> list[str]:
             frag = m2.group(0)
             if "carparts" in frag:
                 add(f"{m2.group(1).title()} Car Parts")
-        if compact.startswith("euro") and "carparts" in compact:
-            add("Euro Car Parts")
-    # Prefer spaced trade names (e.g. "Euro Car Parts") before compact host tokens for slugs / API order.
+    # Prefer spaced trade names before compact host tokens for slugs / API order.
     spaced = [x for x in out if " " in x]
     rest = [x for x in out if " " not in x]
     return spaced + rest
@@ -759,7 +756,7 @@ def scan_brand_platforms(
         "top-scoring comments when requirements-brand-sentiment.txt deps are installed; else subreddit slug fallback), "
         "LinkedIn (expanded /company/ slugs). "
         "Pass an accurate --brand and use the audited domain so host-based guesses "
-        "(e.g. eurocarparts → Euro Car Parts) apply. Confirm in browser if a site blocks bots."
+        "(e.g. autopartsdirect → Auto Parts Direct) apply. Confirm in browser if a site blocks bots."
     )
     return {
         "brand_query": brand,

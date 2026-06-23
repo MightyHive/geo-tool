@@ -40,8 +40,7 @@ _cors_origins = list(
         _web_origin,
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://localhost:8501",
-        os.environ.get("STREAMLIT_PUBLIC_ORIGIN", "").rstrip("/"),
+        os.environ.get("DEPLOY_PUBLIC_ORIGIN", "").rstrip("/"),
     }
 )
 _cors_origins = [o for o in _cors_origins if o]

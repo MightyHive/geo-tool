@@ -1,7 +1,7 @@
 """
 Google OAuth for GA4 (Data API + Admin API read-only).
 
-Used by the Streamlit app and the deployed FastAPI + TypeScript web UI so users can
+Used by the deployed FastAPI + TypeScript web UI so users can
 connect a Google account, pick a property they can access, and run reports with user
 credentials (instead of a service account JSON).
 
@@ -40,8 +40,8 @@ _DEFAULT_CLI_TOKEN_PATH = _REPO_ROOT / "research" / ".ga4_oauth_token.json"
 _LOCAL_CALLBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
 # Data + Admin list (accountSummaries) — read-only, plus OpenID scopes when the same
-# Web OAuth client is used for Streamlit [auth] and GA4. Google then returns a combined
-# scope set; oauthlib errors if the requested set does not match (RFC 6749 §3.3).
+# Web OAuth client is used for sign-in and GA4. Google returns a combined scope set;
+# oauthlib errors if the requested set does not match (RFC 6749 §3.3).
 GA4_OAUTH_SCOPES: tuple[str, ...] = (
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -57,7 +57,7 @@ class OAuthClientConfig:
     redirect_uri: str
 
 
-def _read_streamlit_secrets(path: Path | None = None) -> dict[str, Any]:
+def _read_repo_secrets(path: Path | None = None) -> dict[str, Any]:
     secrets_path = path or _DEFAULT_SECRETS_PATH
     if not secrets_path.is_file():
         return {}
@@ -77,7 +77,7 @@ def ga4_redirect_uri_default(secrets_path: Path | None = None) -> str:
     explicit = (os.environ.get("GA4_OAUTH_REDIRECT_URI") or "").strip()
     if explicit:
         return explicit
-    raw = _read_streamlit_secrets(secrets_path)
+    raw = _read_repo_secrets(secrets_path)
     ga4_table = raw.get("ga4_oauth") if isinstance(raw.get("ga4_oauth"), dict) else {}
     from_secrets = (ga4_table.get("redirect_uri") or "").strip()
     if from_secrets:
@@ -133,7 +133,7 @@ def load_oauth_config(secrets_path: Path | None = None) -> OAuthClientConfig | N
     except ImportError:
         pass
 
-    raw = _read_streamlit_secrets(secrets_path)
+    raw = _read_repo_secrets(secrets_path)
     ga4_table = raw.get("ga4_oauth") if isinstance(raw.get("ga4_oauth"), dict) else {}
     auth_table = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
     cid, csec = _oauth_client_from_env_or_tables(ga4_table, auth_table)

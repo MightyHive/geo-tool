@@ -451,11 +451,11 @@ COMMON_INDUSTRIES: tuple[str, ...] = (
 
 
 def _default_sample_robots() -> Path:
-    return ASSETS_ROOT / "samples" / "robots.txt"
+    return ASSETS_ROOT / "reference" / "robots.txt"
 
 
 def _default_sample_llms() -> Path:
-    return ASSETS_ROOT / "samples" / "llms-txt-skeleton.txt"
+    return ASSETS_ROOT / "reference" / "llms-txt-skeleton.txt"
 
 
 def normalize_base(url: str) -> str:
@@ -7585,13 +7585,13 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
         "--sample-robots",
         type=Path,
         default=_default_sample_robots(),
-        help="Reference robots.txt for merge (default: samples/robots.txt)",
+        help="Reference robots.txt for merge (default: assets/reference/robots.txt)",
     )
     p.add_argument(
         "--sample-llms",
         type=Path,
         default=_default_sample_llms(),
-        help="Reference llms skeleton (default: samples/llms-txt-skeleton.txt)",
+        help="Reference llms skeleton (default: assets/reference/llms-txt-skeleton.txt)",
     )
     p.add_argument(
         "--competitor",

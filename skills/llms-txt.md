@@ -479,7 +479,7 @@ Related files:
 |---|---|
 | `llms_fetched.txt` | Verbatim live file, if found |
 | `llms.txt` | Generated sample |
-| `samples/llms-txt-skeleton.txt` | Layout reference |
+| `assets/reference/llms-txt-skeleton.txt` | Layout reference |
 | `robots.txt` / `robots_fetched.txt` | Discovery and access policy |
 | `same_as_urls.txt` | Candidate entity profile links |
 | `audit_summary.json` | Summary flags |
@@ -492,7 +492,7 @@ Related files:
 Example:
 
 ```bash
-python3 create-report.py "https://example.com" --sample-llms samples/llms-txt-skeleton.txt
+python3 create-report.py "https://example.com" --sample-llms assets/reference/llms-txt-skeleton.txt
 ```
 
 ---

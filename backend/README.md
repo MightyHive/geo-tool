@@ -18,7 +18,7 @@ Python modules for GEO audit crawling, scoring, report generation, GA4 integrati
 | `insights_llm.py` | GA4 narratives and probe-reply sentiment |
 | `geo_setup_llm.py` | Wizard Gemini helpers (products, competitors, prompts) |
 | `competitor_suggest.py` | Gemini transport for competitor suggestions |
-| `domain_suggest.py` | URL searchbox / favicon helpers |
+| `domain_suggest.py` | Tranco domain autocomplete and favicon helpers |
 | `executive_summary_llm.py` | On-demand Gemini executive summary |
 | `recommendations_llm.py` | On-demand Gemini action plan |
 | `report_llm_util.py` | Shared LLM report utilities |
@@ -53,5 +53,4 @@ cd backend && python create-report.py https://www.example.com --out ../audit_out
 - `api/` — FastAPI HTTP layer; spawns `create-report.py` as a subprocess
 - `assets/` — design templates, sample crawl files, static reference data
 - `skills/` — markdown rubrics referenced by scoring and LLM copy
-- `legacy/streamlit_app.py` — legacy Streamlit UI (local only)
 - `research/` — offline econometric scripts (not part of production audit UI)

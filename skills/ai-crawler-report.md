@@ -1000,7 +1000,7 @@ State these where relevant:
 |---|---|
 | `{audit}/robots_fetched.txt` | Preferred source for live `robots.txt` |
 | `{audit}/robots.txt` | May include merged template suggestions; compare but do not treat as live unless confirmed |
-| `samples/robots.txt` | Reference allow/block patterns |
+| `assets/reference/robots.txt` | Reference allow/block patterns |
 | `{audit}/llms_fetched.txt` | Live `llms.txt` evidence |
 | `{audit}/llms.txt` | Generated/recommended `llms.txt` |
 | Crawl HTML/header files | Meta robots and `X-Robots-Tag` checks |

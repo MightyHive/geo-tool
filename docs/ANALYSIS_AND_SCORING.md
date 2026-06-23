@@ -72,7 +72,7 @@ Key functions: `_passage_citability_proxy_for_audit()`, `score_brand_visibility(
 
 | Subscore | Method |
 |----------|--------|
-| **AI crawler robots** | `score_ai_crawler_robots()` — parses robots.txt against known AI bots (GPTBot, ClaudeBot, Google-Extended, etc.); tiered allow list aligned with `samples/robots.txt` |
+| **AI crawler robots** | `score_ai_crawler_robots()` — parses robots.txt against known AI bots (GPTBot, ClaudeBot, Google-Extended, etc.); tiered allow list aligned with `assets/reference/robots.txt` |
 | **Crawl infrastructure** | Redirect chains, status code ratio, crawl depth signals (`_subscore_crawl_infra`) |
 | **TLS / HTTP** | Certificate verification mode + 200 OK ratio |
 | **SSR / HTML completeness** | `_ssr_html_completeness_proxy()` — detects JS-shell vs server-rendered content |

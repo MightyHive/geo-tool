@@ -91,19 +91,18 @@ def load_app_environment() -> str:
     return env_name
 
 
-_LEGACY_STREAMLIT_ORIGIN = "https://automated-posted-carmaker.ngrok-free.dev"
+_LEGACY_DEPLOY_ORIGIN = "https://automated-posted-carmaker.ngrok-free.dev"
 
 
-def default_streamlit_public_origin() -> str:
+def default_deploy_public_origin() -> str:
     """
-    Public origin for OAuth redirects (no trailing slash).
+    Public origin for OAuth redirects when ``WEB_PUBLIC_ORIGIN`` is unset (no trailing slash).
 
-    Precedence: ``STREAMLIT_PUBLIC_ORIGIN`` → ``http://localhost:8501`` in **development** only
+    Precedence: ``DEPLOY_PUBLIC_ORIGIN`` → ``STREAMLIT_PUBLIC_ORIGIN`` (deprecated alias)
     → legacy shared default (replace via ``env/.env.staging`` / ``env/.env.production`` for real deploys).
     """
-    explicit = (os.environ.get("STREAMLIT_PUBLIC_ORIGIN") or "").strip().rstrip("/")
-    if explicit:
-        return explicit
-    if current_app_env() == "development":
-        return "http://localhost:8501"
-    return _LEGACY_STREAMLIT_ORIGIN.rstrip("/")
+    for key in ("DEPLOY_PUBLIC_ORIGIN", "STREAMLIT_PUBLIC_ORIGIN"):
+        explicit = (os.environ.get(key) or "").strip().rstrip("/")
+        if explicit:
+            return explicit
+    return _LEGACY_DEPLOY_ORIGIN.rstrip("/")

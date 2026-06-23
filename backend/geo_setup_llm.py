@@ -124,8 +124,8 @@ avoid unrelated global brands unless they directly compete on these lines.
 def build_genai_client() -> genai.Client:
     """Prefer API key (Google AI Studio); else Vertex with ADC.
 
-    Resolves keys the same way as :mod:`competitor_suggest` (``os.environ``, ``st.secrets`` top-level
-    and ``[llm]`` / related tables, then repo ``.streamlit/secrets.toml``) so nested TOML keys work.
+    Resolves keys the same way as :mod:`competitor_suggest` (``os.environ`` and nested tables in
+    repo ``.streamlit/secrets.toml``) so nested TOML keys work.
     """
     from competitor_suggest import _gemini_api_key, _get_config, _truthy_env as _cfg_truthy
 

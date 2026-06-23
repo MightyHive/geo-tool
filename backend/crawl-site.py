@@ -331,7 +331,7 @@ def merge_robots_with_sample(
     if base_body:
         lines_out.append(base_body)
         lines_out.append("")
-    lines_out.append("# --- Added from reference template (samples/robots.txt) ---")
+    lines_out.append("# --- Added from reference template (assets/reference/robots.txt) ---")
     lines_out.append("")
     if added_groups:
         lines_out.append("\n\n".join(render_robots_group(g) for g in added_groups))
@@ -348,7 +348,7 @@ from geo_app_env import ASSETS_ROOT
 
 
 def default_sample_robots_path() -> Path:
-    return ASSETS_ROOT / "samples" / "robots.txt"
+    return ASSETS_ROOT / "reference" / "robots.txt"
 
 
 def parse_sitemap_xml(data: bytes) -> tuple[list[str], list[str]]:
@@ -613,7 +613,7 @@ def build_json_ld_txt(
 
 
 def default_llms_skeleton_path() -> Path:
-    return ASSETS_ROOT / "samples" / "llms-txt-skeleton.txt"
+    return ASSETS_ROOT / "reference" / "llms-txt-skeleton.txt"
 
 
 def _llms_link_label_for_page(url: str, base: str) -> str:
@@ -1968,13 +1968,13 @@ def main() -> int:
         "--sample-robots",
         type=Path,
         default=default_sample_robots_path(),
-        help="Reference robots.txt used to suggest missing directives (default: samples/robots.txt)",
+        help="Reference robots.txt used to suggest missing directives (default: assets/reference/robots.txt)",
     )
     parser.add_argument(
         "--sample-llms",
         type=Path,
         default=default_llms_skeleton_path(),
-        help="Optional reference file for authors (not embedded into generated llms.txt). Default: samples/llms-txt-skeleton.txt",
+        help="Optional reference file for authors (not embedded into generated llms.txt). Default: assets/reference/llms-txt-skeleton.txt",
     )
     parser.add_argument(
         "--competitor",

@@ -18,7 +18,7 @@ from typing import Any
 from ga4_data_api import GA4_SCOPES, ga4_log
 
 # Channel-bucket gap rows: session sources must match known AI *agent* / product referrers.
-# User-agent lineup is aligned with ``samples/robots.txt`` (Tier 1–2 allow list). Training-only /
+# User-agent lineup is aligned with ``assets/reference/robots.txt`` (Tier 1–2 allow list). Training-only /
 # low-value crawlers from that file (e.g. Bytespider, CCBot) are intentionally omitted here.
 # Brand-owned domains (Facebook, Amazon, Apple) count only when ``bot`` appears in the source
 # string (e.g. FacebookBot-style identifiers), never bare ``facebook.com`` human referrals.
@@ -205,7 +205,7 @@ def _channel_set(names: list[str]) -> set[str]:
 def _session_source_is_ai_agent_referrer(source: str, _medium: str) -> bool:
     """
     True only for session sources that look like known AI agent / product hostnames
-    (see ``samples/robots.txt``). Excludes generic ``facebook.com`` / ``amazon.`` / ``apple.``
+    (see ``assets/reference/robots.txt``). Excludes generic ``facebook.com`` / ``amazon.`` / ``apple.``
     unless ``bot`` appears in the source (e.g. FacebookBot-style values GA4 may surface).
     Session medium is not used for fuzzy matching (only ``session_source`` is evaluated).
     """

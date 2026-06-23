@@ -1,4 +1,4 @@
-"""GA4 OAuth client settings (mirrors ``streamlit_app.ga4_oauth_client_config``)."""
+"""GA4 OAuth client settings for the FastAPI web UI."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.auth_config import _auth_table, _read_secrets_toml, default_web_public_origin
-from geo_app_env import default_streamlit_public_origin, load_app_environment
+from geo_app_env import load_app_environment
 
 load_app_environment()
 
@@ -34,7 +34,6 @@ def ga4_redirect_uri_default() -> str:
     from_secrets = (table.get("redirect_uri") or "").strip()
     if from_secrets:
         return from_secrets
-    # Web UI callback (proxied via Vite); add to Google Cloud redirect URIs.
     return f"{default_web_public_origin()}/api/ga4/callback"
 
 
@@ -81,8 +80,3 @@ def ga4_redirect_uri_for_request(web_origin: str) -> str:
     if origin:
         return f"{origin}/api/ga4/callback"
     return ga4_redirect_uri_default()
-
-
-def streamlit_ga4_redirect_hint() -> str:
-    """Legacy Streamlit root redirect (for docs only)."""
-    return f"{default_streamlit_public_origin().rstrip('/')}/"

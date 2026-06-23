@@ -2,8 +2,8 @@
 Suggest competitor site URLs via a short **Google Gemini** request.
 
 **API key (typical for a GCP project key)**  
-Set ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY`` in the environment, or in ``.streamlit/secrets.toml`` (read
-automatically here and in Streamlit). Enable **Generative Language API** (Gemini) on that project.  
+Set ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY`` in the environment, or in ``.streamlit/secrets.toml``.
+Enable **Generative Language API** (Gemini) on that project.  
 Optional: ``GEMINI_COMPETITOR_MODEL`` (default ``gemini-3.5-flash``).
 
 **Vertex AI (same project, service account / ADC — no browser API key)**  
@@ -80,7 +80,7 @@ _SECRETS_TOML_CACHE: dict[str, Any] | None = None
 
 
 def _secrets_toml_parsed() -> dict[str, Any]:
-    """Parse repo ``.streamlit/secrets.toml`` once (CLI / subprocesses have no ``st.secrets``)."""
+    """Parse repo ``.streamlit/secrets.toml`` once."""
     global _SECRETS_TOML_CACHE
     if _SECRETS_TOML_CACHE is not None:
         return _SECRETS_TOML_CACHE
@@ -121,13 +121,8 @@ def _get_from_toml_tree(data: dict[str, Any], name: str) -> str:
     return ""
 
 
-def ensure_llm_env_from_streamlit_secrets() -> None:
-    """Copy LLM / cloud keys from nested ``st.secrets`` tables into ``os.environ`` when unset.
-
-    Streamlit only promotes **top-level** string/number secrets to the process environment.
-    Values under ``[llm]`` and similar are available via ``st.secrets`` but not ``os.environ``,
-    so any code that checks ``os.environ`` first (including some library paths) can miss them.
-    """
+def ensure_llm_env_from_secrets() -> None:
+    """Copy LLM / cloud keys from nested ``secrets.toml`` tables into ``os.environ`` when unset."""
     names = (
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
@@ -139,13 +134,8 @@ def ensure_llm_env_from_streamlit_secrets() -> None:
         "GOOGLE_CLOUD_LOCATION",
         "GEMINI_USE_VERTEX_AI",
     )
-    try:
-        import streamlit as st
-
-        sec = getattr(st, "secrets", None)
-    except Exception:
-        return
-    if sec is None:
+    data = _secrets_toml_parsed()
+    if not data:
         return
 
     def consider(mapping: Any) -> None:
@@ -158,60 +148,32 @@ def ensure_llm_env_from_streamlit_secrets() -> None:
             if v:
                 os.environ[k] = v
 
-    try:
-        consider(sec)
-    except Exception:
-        pass
+    consider(data)
     for section in ("llm", "api", "gemini", "google", "keys", "openai", "google_ai", "secrets", "env", "credentials"):
-        try:
-            if section in sec:
-                consider(sec[section])
-        except Exception:
-            continue
+        node = data.get(section)
+        if isinstance(node, dict):
+            consider(node)
 
 
 def _get_config(name: str) -> str:
-    """Environment first, then ``st.secrets`` when in a Streamlit app, then ``.streamlit/secrets.toml``.
-
-    ``create-report.py`` and ``crawl-site.py`` run as plain subprocesses: ``st.secrets`` is empty, so
-    keys only in ``secrets.toml`` are read via **tomllib** from the repo ``.streamlit/`` folder.
-    """
+    """Environment first, then ``.streamlit/secrets.toml`` (including nested tables)."""
     v = (os.environ.get(name) or "").strip()
     if v:
         return v
-    try:
-        import streamlit as st
+    v2 = _get_from_toml_tree(_secrets_toml_parsed(), name)
+    if v2:
+        return v2
+    return ""
 
-        sec = getattr(st, "secrets", None)
-        if sec is not None:
-            v2 = _secrets_pick_scalar(sec, name)
-            if v2:
-                return v2
 
-            for section in ("llm", "api", "gemini", "keys", "google", "openai", "google_ai", "secrets", "env", "credentials"):
-                try:
-                    if section not in sec:
-                        continue
-                    node = sec[section]
-                except Exception:
-                    continue
-                v3 = _secrets_pick_scalar(node, name)
-                if v3:
-                    return v3
-
-            try:
-                if "auth" in sec:
-                    v4 = _secrets_pick_scalar(sec["auth"], name)
-                    if v4:
-                        return v4
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    v5 = _get_from_toml_tree(_secrets_toml_parsed(), name)
-    if v5:
-        return v5
+def _api_key_from_toml_tree(data: dict[str, Any]) -> str:
+    for section in ("llm", "gemini", "google", "api", "keys", "secrets", "env", "credentials"):
+        node = data.get(section)
+        if isinstance(node, dict):
+            for leaf in ("api_key", "API_KEY", "key", "gemini_api_key"):
+                s = _secrets_pick_scalar(node, leaf)
+                if s:
+                    return s
     return ""
 
 
@@ -221,7 +183,7 @@ def _truthy_env(name: str) -> bool:
 
 
 def _gemini_api_key() -> str:
-    ensure_llm_env_from_streamlit_secrets()
+    ensure_llm_env_from_secrets()
     for k in (
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
@@ -232,26 +194,7 @@ def _gemini_api_key() -> str:
         v = _get_config(k)
         if v:
             return v
-    try:
-        import streamlit as st
-
-        sec = getattr(st, "secrets", None)
-        if sec is None:
-            return ""
-        for section in ("llm", "gemini", "google", "api", "keys", "secrets", "env", "credentials"):
-            if section not in sec:
-                continue
-            try:
-                node = sec[section]
-            except Exception:
-                continue
-            for leaf in ("api_key", "API_KEY", "key", "gemini_api_key"):
-                s = _secrets_pick_scalar(node, leaf)
-                if s:
-                    return s
-    except Exception:
-        pass
-    return ""
+    return _api_key_from_toml_tree(_secrets_toml_parsed())
 
 
 def _default_model_vertex() -> str:
@@ -389,8 +332,8 @@ def suggest_competitor_urls(
     else:
         raise ValueError(
             "Configure Gemini for competitor search: set **GEMINI_API_KEY** or **GOOGLE_API_KEY** "
-            "(``export …`` for CLI runs, or top-level / ``[llm]`` in ``.streamlit/secrets.toml`` — "
-            "``create-report.py`` reads that file even outside Streamlit), or set **GEMINI_USE_VERTEX_AI=1** "
+            "(``export …`` for CLI runs, or top-level / ``[llm]`` in ``.streamlit/secrets.toml``), "
+            "or set **GEMINI_USE_VERTEX_AI=1** "
             "with **GOOGLE_CLOUD_PROJECT** and Application Default Credentials (e.g. **GOOGLE_APPLICATION_CREDENTIALS**). "
             "**OPENAI_API_KEY** is only used for Prompt performance live probes, not competitor search."
         )

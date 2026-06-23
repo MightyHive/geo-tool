@@ -23,11 +23,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-api.txt requirements-cloud.txt ./
-RUN pip install --no-cache-dir -r requirements-cloud.txt
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium --with-deps
 
-# Application code (see .dockerignore — no audit_output, venv, or legacy streamlit)
+# Application code (see .dockerignore — no audit_output, venv, or local secrets)
 COPY backend ./backend
 COPY assets ./assets
 COPY api ./api

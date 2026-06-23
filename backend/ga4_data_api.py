@@ -26,7 +26,7 @@ from google.auth import default
 # GA4 Data API requires this scope; default ADC often only has cloud-platform.
 GA4_SCOPES: tuple[str, ...] = ("https://www.googleapis.com/auth/analytics.readonly",)
 
-property_id = os.environ.get("GA4_PROPERTY_ID", "241379560")
+property_id = (os.environ.get("GA4_PROPERTY_ID") or "").strip()
 starting_date = os.environ.get("GA4_START_DATE", "366daysAgo")
 ending_date = os.environ.get("GA4_END_DATE", "yesterday")
 
@@ -543,6 +543,9 @@ def run_ai_traffic_audit(property_id: str | None = None) -> None:
 
 
 if __name__ == "__main__":
+    if not property_id:
+        print("Set GA4_PROPERTY_ID to run ga4_data_api.py from the CLI.", file=sys.stderr)
+        sys.exit(1)
     if len(sys.argv) > 1 and sys.argv[1] == "metadata":
         list_custom_channel_groups(property_id)
     elif len(sys.argv) > 1 and sys.argv[1] == "full-metadata":

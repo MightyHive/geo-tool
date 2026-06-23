@@ -15,7 +15,7 @@ fi
 
 if ! "$PYTHON" -c "import fastapi, google_auth_oauthlib" 2>/dev/null; then
   echo "Installing API dependencies…"
-  "$PYTHON" -m pip install -r requirements-api.txt -q
+  "$PYTHON" -m pip install -r requirements.txt -q
 fi
 
 if [[ ! -d web/node_modules ]]; then

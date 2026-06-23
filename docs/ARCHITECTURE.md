@@ -11,7 +11,6 @@ flowchart TB
   subgraph ui [User interfaces]
     Web[React web / web/]
     CLI[backend/create-report.py CLI]
-    ST[legacy/streamlit_app.py]
   end
 
   subgraph api [FastAPI api/]
@@ -33,7 +32,6 @@ flowchart TB
   end
 
   Web --> Main
-  ST --> CR
   CLI --> CR
   Main --> Geo
   Geo -->|subprocess| CR
@@ -61,7 +59,6 @@ flowchart TB
 | **FastAPI** | `api/main.py` | Production Cloud Run service |
 | **CLI audit** | `backend/create-report.py` | Headless runs, debugging scoring/crawl |
 | **Crawl only** | `backend/crawl-site.py` | Isolate crawl issues |
-| **Streamlit** | `legacy/streamlit_app.py` | Legacy UI; not deployed to Cloud Run |
 
 ### Web audit flow
 
@@ -80,7 +77,7 @@ export PYTHONPATH=backend
 python backend/create-report.py https://example.com \
   --competitor https://peer.com \
   --out audit_output \
-  --ga4-property 241379560 \
+  --ga4-property 123456789 \
   --ga4-ai-channels "AI"
 ```
 
@@ -151,7 +148,8 @@ See [backend/README.md](../backend/README.md) for the full module list.
 | Path | Role |
 |------|------|
 | `assets/design/` | Report CSS and HTML design references |
-| `assets/samples/` | Sample `robots.txt`, `llms-txt-skeleton.txt`, demo audit folders |
+| `assets/reference/` | Reference `robots.txt`, `llms-txt-skeleton.txt` for crawl merge |
+| `assets/samples/` | Local-only demo audits (gitignored) |
 | `assets/data/` | Static reference data (e.g. Tranco domain list) |
 
 ### `web/` — frontend

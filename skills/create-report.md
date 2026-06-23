@@ -65,7 +65,7 @@ Implementation:
 |---|---|
 | `create-report.py` | Orchestrates crawl, scoring, synthesis, HTML reports |
 | `crawl-site.py` | Crawl-only pipeline and artifact generation |
-| `streamlit_app.py` | Browser interface/archive wrapper |
+| `api/` + `web/` | React UI and FastAPI audit/archive API |
 
 `create-report.py` runs the crawl, reads generated artifacts, calculates proxy scores, renders HTML, and writes report files into the primary audit directory.
 
@@ -1169,23 +1169,23 @@ Expected keys may include:
 
 ---
 
-# Streamlit UI
+# Web UI
 
 Run:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/streamlit run streamlit_app.py
+./scripts/run_web_dev.sh
 ```
 
-Streamlit should provide:
+The React UI (`web/`) + FastAPI (`api/`) provide:
 
-- Sidebar inputs for crawl/report generation
-- Competitor URL inputs
+- Setup wizard (brand URL, market, competitors, prompts, GA4 connect)
+- Audit run with live progress
 - Archive of previous audits
-- Main area embedding `report.html`
-- Optional demo data if available
+- Embedded `report.html` and slide deck views
+- Optional demo/sample audits when available
 
 ---
 

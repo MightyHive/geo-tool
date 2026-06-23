@@ -112,7 +112,7 @@ Run a **single-metric** request for the same date range with **no channel dimens
 3. **AI gap table:** From Report B—**source/medium rows not in the AI channel** that match heuristics, with session counts.
 4. **Recommendations:** Point to **Channel group rule order**, missing referrers, or **UTM hygiene** if gaps are large.
 
-### Automated fetch in `create-report.py` (CLI / Streamlit)
+### Automated fetch in `create-report.py` (CLI / web UI)
 
 The HTML pipeline can call the **same Google Analytics Data API** as this MCP (not the MCP itself — MCP runs only inside Cursor). Requirements:
 
@@ -128,7 +128,7 @@ Then either:
   python3 create-report.py --only-report audit_output/example.com_abc123 --ga4-property 123456789
   ```
 
-- **Environment (e.g. Streamlit):** set **`GA4_PROPERTY_ID`** and optionally **`GA4_AI_CHANNEL_NAMES`** (comma-separated). The Streamlit “Run full pipeline” command passes these through to `create-report.py`.
+- **Environment or wizard:** set **`GA4_PROPERTY_ID`** and optionally **`GA4_AI_CHANNEL_NAMES`** (comma-separated). The web UI audit runner passes these through to `create-report.py`.
 
 This writes **`ga4_traffic.json`** next to **`audit_summary.json`** before **`report.html`** is generated.
 
@@ -140,7 +140,7 @@ Save next to `audit_summary.json` so `create-report.py` can render the GA4 appen
 
 - `has_ai_channel` (bool), `ai_channel_names` (list of strings)
 - `monthly_sessions`: list of `{ "year_month", "label", "total_sessions", "ai_sessions" }` (calendar `yearMonth` from GA4, e.g. label `Jan 2025`; legacy `weekly` / `iso_week` exports still render)
-- `source_medium_gaps`: rows with `session_source`, `session_medium`, channel bucket, `sessions` — only **known AI agent / product hostnames** (see repo `samples/robots.txt`); brand hosts (Facebook, Amazon, Apple) require `bot` in `session_source` (e.g. FacebookBot), not generic social domains; Bytespider/CCBot excluded. Rows are referrers attributed **outside** your configured AI channel bucket. In `report.html` this block is titled **Possible channel bucket gaps** with a short reader note before the table.
+- `source_medium_gaps`: rows with `session_source`, `session_medium`, channel bucket, `sessions` — only **known AI agent / product hostnames** (see repo `assets/reference/robots.txt`); brand hosts (Facebook, Amazon, Apple) require `bot` in `session_source` (e.g. FacebookBot), not generic social domains; Bytespider/CCBot excluded. Rows are referrers attributed **outside** your configured AI channel bucket. In `report.html` this block is titled **Possible channel bucket gaps** with a short reader note before the table.
 
 See **`create-report.md`** for the full pipeline.
 

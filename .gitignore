@@ -43,7 +43,9 @@ audit_archive/
 # Research sandbox generated outputs
 research/*.csv
 research/.ga4_oauth_token.json
-assets/samples/.venv/
+
+# Local sample audits and scratch HTML (reference templates live in assets/reference/)
+assets/samples/
 
 # Prompt development scratch
 prompt_dev/

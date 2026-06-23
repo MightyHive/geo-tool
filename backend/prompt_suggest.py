@@ -4,7 +4,7 @@ per query, **mention-based %** for brand vs competitors in each reply, and **on-
 (using **live probe** aggregates only).
 
 Uses the same Gemini auth as :mod:`competitor_suggest` (``GEMINI_API_KEY`` / Vertex).
-OpenAI live answers use ``OPENAI_API_KEY`` (environment or ``st.secrets`` via :func:`competitor_suggest._get_config`).
+OpenAI live answers use ``OPENAI_API_KEY`` (environment or ``secrets.toml`` via :func:`competitor_suggest._get_config`).
 
 **Live probes** call real APIs (usage billed to your keys); mention counts are heuristic substring matches.
 """

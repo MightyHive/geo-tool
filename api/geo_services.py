@@ -1,4 +1,4 @@
-"""Shared audit/archive helpers for the FastAPI layer (mirrors streamlit_app.py)."""
+"""Shared audit/archive helpers for the FastAPI layer."""
 
 from __future__ import annotations
 
@@ -616,9 +616,9 @@ def create_report_cmd_env(
         "--delay",
         str(delay),
         "--sample-robots",
-        str(ASSETS_ROOT / "samples" / "robots.txt"),
+        str(ASSETS_ROOT / "reference" / "robots.txt"),
         "--sample-llms",
-        str(ASSETS_ROOT / "samples" / "llms-txt-skeleton.txt"),
+        str(ASSETS_ROOT / "reference" / "llms-txt-skeleton.txt"),
     ]
     if brand_name.strip():
         cmd.extend(["--brand", brand_name.strip()])

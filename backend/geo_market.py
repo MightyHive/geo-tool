@@ -1,7 +1,7 @@
 """
 Primary **market / geography** for all Gemini and OpenAI generation in this repo.
 
-Precedence when resolving from call sites (e.g. Streamlit :func:`streamlit_app._session_primary_market`):
+Precedence when resolving from call sites (e.g. wizard session or CLI arguments):
 
 1. Explicit session/UI or CLI arguments (country name and/or ISO-3166-1 alpha-2 code)
 2. GA4-derived primary country (when connected)

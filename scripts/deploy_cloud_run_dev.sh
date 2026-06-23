@@ -189,7 +189,7 @@ echo "==> Service URL: ${SERVICE_URL}"
 gcloud run services update "${SERVICE}" \
   --project="${PROJECT}" \
   --region="${REGION}" \
-  --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},STREAMLIT_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback"
+  --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback"
 
 echo ""
 echo "Deployed ${SERVICE} → ${SERVICE_URL}"

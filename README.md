@@ -31,7 +31,7 @@ A Generative Engine Optimization (GEO) audit platform that crawls websites, scor
 cd seo-geo-tool
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-api.txt
+pip install -r requirements.txt
 
 cp env/.env.development.example env/.env.development
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
@@ -85,8 +85,9 @@ seo-geo-tool/
 │   ├── create-report.py # Audit orchestrator: crawl → score → HTML
 │   ├── crawl-site.py    # HTTP crawl and on-site artifact collection
 │   └── geo_app_env.py   # BACKEND_ROOT, REPO_ROOT, ASSETS_ROOT, env loading
-├── assets/              # Design CSS, sample files, static reference data
-├── legacy/              # Legacy Streamlit UI (streamlit_app.py)
+├── assets/              # Design CSS, reference templates, static data
+│   ├── reference/       # robots.txt + llms.txt skeleton (tracked)
+│   └── samples/         # Local demo audits (gitignored)
 ├── research/            # Offline research scripts (econometrics, bulk GA4 export)
 ├── skills/              # Markdown rubrics for each scoring pillar
 ├── audit_output/        # Per-run artifacts (local dev)
@@ -129,22 +130,9 @@ Full route list: `api/main.py`.
 
 | File | Use |
 |------|-----|
-| `requirements-api.txt` | FastAPI backend + Cloud Run image |
-| `requirements.txt` | Streamlit app (legacy UI) |
-| `requirements-cloud.txt` | Cloud image (`-r requirements-api.txt`) |
-| `requirements-brand-sentiment.txt` | Optional Reddit DistilBERT sentiment |
+| `requirements.txt` | Web API, audit pipeline, local dev, and Cloud Run image |
+| `requirements-brand-sentiment.txt` | Optional Reddit DistilBERT sentiment (PyTorch; not in Cloud Run) |
 | `research/requirements.txt` | Offline econometric / GA4 export scripts |
-
----
-
-## Legacy Streamlit UI
-
-`legacy/streamlit_app.py` remains for local use and embeds `report.html`. The deployed Cloud Run service uses the React UI only. New feature work should target `web/` + `api/`.
-
-```bash
-./scripts/run_streamlit_dev.sh
-# or: PYTHONPATH=backend streamlit run legacy/streamlit_app.py
-```
 
 ---
 

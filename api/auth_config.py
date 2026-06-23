@@ -10,7 +10,7 @@ from typing import Any
 from geo_app_env import (
     REPO_ROOT,
     current_app_env,
-    default_streamlit_public_origin,
+    default_deploy_public_origin,
     load_app_environment,
 )
 
@@ -37,7 +37,7 @@ def default_web_public_origin() -> str:
         return explicit
     if current_app_env() == "development":
         return "http://localhost:5173"
-    return default_streamlit_public_origin()
+    return default_deploy_public_origin()
 
 
 def allowed_web_origins() -> frozenset[str]:
@@ -47,7 +47,7 @@ def allowed_web_origins() -> frozenset[str]:
         "http://127.0.0.1:5173",
         default_web_public_origin(),
     }
-    for key in ("WEB_PUBLIC_ORIGIN", "STREAMLIT_PUBLIC_ORIGIN"):
+    for key in ("WEB_PUBLIC_ORIGIN", "DEPLOY_PUBLIC_ORIGIN", "STREAMLIT_PUBLIC_ORIGIN"):
         v = (os.environ.get(key) or "").strip().rstrip("/")
         if v:
             origins.add(v)
@@ -114,8 +114,8 @@ def load_auth_config() -> AuthConfig | None:
     """
   Return OAuth settings when sign-in is configured.
 
-  Uses ``[auth]`` from ``.streamlit/secrets.toml`` (same keys as Streamlit ``st.login``)
-  plus optional env overrides. Web redirect URI is always
+  Uses ``[auth]`` from ``.streamlit/secrets.toml`` plus optional env overrides.
+  Web redirect URI is always
   ``{WEB_PUBLIC_ORIGIN}/api/auth/callback`` — add that URI in Google Cloud Console.
   """
     table = _auth_table(_read_secrets_toml())

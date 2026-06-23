@@ -60,7 +60,7 @@ SERVICE_URL="$(gcloud run services describe "${SERVICE}" \
 
 GA4_REDIRECT="${SERVICE_URL}/api/ga4/callback"
 
-ENV_UPDATE="WEB_PUBLIC_ORIGIN=${SERVICE_URL},STREAMLIT_PUBLIC_ORIGIN=${SERVICE_URL},GA4_OAUTH_REDIRECT_URI=${GA4_REDIRECT}"
+ENV_UPDATE="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},GA4_OAUTH_REDIRECT_URI=${GA4_REDIRECT}"
 if [[ -n "${COOKIE_SECRET}" ]]; then
   if ! gcloud secrets describe auth-cookie-secret-geo-tool --project="${PROJECT}" >/dev/null 2>&1; then
     gcloud secrets create auth-cookie-secret-geo-tool --project="${PROJECT}" --replication-policy=automatic

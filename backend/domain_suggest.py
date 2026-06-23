@@ -1,4 +1,4 @@
-"""Public-site URL hints for Streamlit (Tranco-derived hostname list + favicon thumbnails)."""
+"""Public-site URL hints (Tranco-derived hostname list + favicon thumbnails)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ import functools
 import re
 import urllib.parse
 from pathlib import Path
-from typing import Any
 
-from geo_app_env import ASSETS_ROOT, REPO_ROOT
+from geo_app_env import ASSETS_ROOT
 
 _DEFAULT_DOMAIN_FILE = ASSETS_ROOT / "data" / "public_domains_tranco_head.txt"
 
@@ -90,19 +89,8 @@ def hostname_for_display_url(raw: str) -> str:
     return _hostname_from_any_url(raw)
 
 
-def default_domain_option_tuples(*, limit: int = 12) -> list[tuple[str, str]]:
-    """First Tranco rows as (dropdown label, normalized https URL) for initial searchbox menu."""
-    from geo_urls import normalize_competitor_url
-
-    out: list[tuple[str, str]] = []
-    for d in public_domains_sorted()[:limit]:
-        url = normalize_competitor_url(f"https://{d}")
-        out.append((f"🌐 {d}", url))
-    return out
-
-
 def domain_search_tuple_options(searchterm: str, *, limit: int = 12) -> list[tuple[str, str]]:
-    """Search callback for ``streamlit_searchbox``: (label, url) rows."""
+    """Return (label, normalized https URL) rows for domain autocomplete."""
     from geo_urls import normalize_competitor_url
 
     t = (searchterm or "").strip()
@@ -112,129 +100,3 @@ def domain_search_tuple_options(searchterm: str, *, limit: int = 12) -> list[tup
     else:
         doms = suggest_public_domains(hint, limit=limit)
     return [(f"🌐 {d}", normalize_competitor_url(f"https://{d}")) for d in doms]
-
-
-def render_public_url_suggestions_below_input(
-    *,
-    session_key: str,
-    limit: int = 8,
-    caption: str = "Popular sites (Tranco top list)—click a row to fill the URL field:",
-) -> None:
-    """
-    Fallback: favicon + hostname buttons that set ``session_key`` to a normalized https URL.
-
-    Call **before** ``st.text_input(..., key=session_key)`` so button handlers do not mutate
-    a widget-bound session key in the same run (Streamlit forbids that).
-    """
-    import streamlit as st
-
-    from geo_urls import normalize_competitor_url
-
-    raw = str(st.session_state.get(session_key) or "")
-    hint = prefix_hint_for_suggest(raw)
-    sugs = suggest_public_domains(hint, limit=limit)
-    if not sugs:
-        return
-    st.caption(caption)
-    safe_key = re.sub(r"[^0-9a-zA-Z_]+", "_", session_key) or "url"
-    for i, domain in enumerate(sugs):
-        ic, bc = st.columns((1, 12), gap="small")
-        with ic:
-            st.image(public_site_favicon_url(domain), width=22)
-        with bc:
-            if st.button(domain, key=f"domsug_{safe_key}_{i}", type="secondary"):
-                st.session_state[session_key] = normalize_competitor_url(f"https://{domain}")
-                st.rerun()
-
-
-def render_url_searchbox(
-    *,
-    session_key: str,
-    label: str,
-    help: str | None = None,
-    placeholder: str = "Type to search popular sites…",
-    default_options_limit: int = 12,
-    search_limit: int = 14,
-    rerun_on_update: bool = True,
-) -> None:
-    """
-    Optional Tranco ``streamlit-searchbox`` first (when installed), then ``st.text_input`` on
-    ``session_key``. Picking a suggestion writes the normalized URL **before** the text field
-    is instantiated so Streamlit does not reject the update.
-
-    When ``streamlit-searchbox`` is not installed, Tranco suggestion buttons are rendered
-    **before** the text field (same session-state rule).
-    """
-    import inspect
-    import streamlit as st
-
-    from geo_urls import normalize_competitor_url
-
-    try:
-        from streamlit_searchbox import st_searchbox
-    except ImportError:
-        render_public_url_suggestions_below_input(
-            session_key=session_key,
-            caption="Popular sites (Tranco)—click a row to fill the URL field below:",
-        )
-        st.text_input(
-            label,
-            key=session_key,
-            help=help,
-            placeholder="https://example.com",
-        )
-        host = _hostname_from_any_url(str(st.session_state.get(session_key) or ""))
-        if host:
-            ic, tx = st.columns((1, 14), gap="small")
-            with ic:
-                st.image(public_site_favicon_url(host), width=26)
-            with tx:
-                st.caption(f"Favicon preview · **{host}**")
-        return
-
-    sb_key = f"{session_key}_url_sb"
-
-    def _search(term: str) -> list[tuple[str, str]]:
-        return domain_search_tuple_options(term, limit=search_limit)
-
-    _sb_kw: dict[str, Any] = dict(
-        placeholder=placeholder,
-        label="Look up popular sites (optional)",
-        help=(help or "")
-        + " Suggestions appear while you type. The URL field below is the canonical value for this row.",
-        default_options=default_domain_option_tuples(limit=default_options_limit),
-        clear_on_submit=False,
-        edit_after_submit="option",
-        key=sb_key,
-        debounce=120,
-    )
-    try:
-        if "rerun_on_update" in inspect.signature(st_searchbox).parameters:
-            _sb_kw["rerun_on_update"] = rerun_on_update
-    except (TypeError, ValueError, OSError):
-        pass
-    sel = st_searchbox(_search, **_sb_kw)
-    if sel is not None:
-        if isinstance(sel, tuple) and len(sel) >= 2:
-            url = str(sel[1]).strip()
-        else:
-            url = str(sel).strip()
-        if url:
-            norm = normalize_competitor_url(url)
-            if norm != str(st.session_state.get(session_key) or "").strip():
-                st.session_state[session_key] = norm
-                st.rerun()
-
-    st.text_input(
-        label,
-        key=session_key,
-        help=help,
-        placeholder="https://example.com",
-    )
-    host = _hostname_from_any_url(str(st.session_state.get(session_key) or ""))
-    if host:
-        ic, tx = st.columns((1, 14), gap="small")
-        with ic:
-            st.image(public_site_favicon_url(host), width=26)
-        with tx:
-            st.caption(f"Favicon preview · **{host}**")

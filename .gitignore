@@ -10,6 +10,7 @@ env/.env.staging
 env/.env.production
 !env/.env.*.example
 .streamlit/secrets.toml
+.streamlit/client_secret.json
 local-auth/
 
 # GA4 OAuth token cache (CLI research scripts)

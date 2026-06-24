@@ -16,6 +16,7 @@ import type {
   PromptPerformanceContext,
   PromptSentimentResponse,
   VerifiedSite,
+  ProbeSiteProtection,
 } from "../types";
 
 const API = "/api";
@@ -110,11 +111,20 @@ export function disconnectGa4(): Promise<{ ok: boolean }> {
   return json("/ga4/disconnect", { method: "POST" });
 }
 
+export function probeSiteProtection(url: string): Promise<ProbeSiteProtection> {
+  return json("/wizard/probe-site-protection", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(15_000),
+  });
+}
+
 export function verifyBrandSite(url: string): Promise<VerifiedSite> {
+  // Cloudflare-protected sites need Playwright (warm + challenge wait); allow up to 2 min.
   return json("/wizard/verify-site", {
     method: "POST",
     body: JSON.stringify({ url }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(120_000),
   });
 }
 

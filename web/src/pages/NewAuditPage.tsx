@@ -8,6 +8,7 @@ import {
   fetchGa4Status,
   fetchIndustries,
   startAuditBackground,
+  probeSiteProtection,
   verifyBrandSite,
 } from "../api/client";
 import { AuditRunProgress } from "../components/AuditRunProgress";
@@ -102,6 +103,7 @@ export function NewAuditPage() {
   const [ga4PropertyId, setGa4PropertyId] = useState("");
   const [ga4AiChannels, setGa4AiChannels] = useState("");
   const [sitePreviewPhase, setSitePreviewPhase] = useState<SitePreviewPhase>("form");
+  const [siteVerifyMessage, setSiteVerifyMessage] = useState("Checking site…");
   const [verifiedSite, setVerifiedSite] = useState<VerifiedSite | null>(null);
   const previewUnlocked = sitePreviewPhase !== "form";
   const [running, setRunning] = useState(false);
@@ -420,16 +422,31 @@ export function NewAuditPage() {
       return;
     }
     setError(null);
+    setSiteVerifyMessage("Checking site…");
     setSitePreviewPhase("loading");
     try {
+      const probe = await probeSiteProtection(website);
+      if (probe.bot_wall && probe.provider === "cloudflare") {
+        setSiteVerifyMessage(
+          "Site is protected by Cloudflare, this may take up to a minute…",
+        );
+      } else if (probe.bot_wall) {
+        setSiteVerifyMessage("Site uses bot protection, this may take up to a minute…");
+      } else {
+        setSiteVerifyMessage("Verifying site…");
+      }
       const result = await verifyBrandSite(website);
       setBrandWebsite(result.canonical_url);
       setVerifiedSite(result);
       setSitePreviewPhase("confirmed");
     } catch (err) {
       setSitePreviewPhase("form");
-      const msg = err instanceof Error ? err.message : "Could not verify that site";
-      setError(parseApiDetail(msg));
+      const raw = err instanceof Error ? err.message : "Could not verify that site";
+      const msg =
+        raw.includes("timed out") || raw.includes("TimeoutError")
+          ? "Site verification is taking longer than expected (common with Cloudflare). Try again — it can take up to a minute."
+          : parseApiDetail(raw);
+      setError(msg);
     }
   }
 
@@ -547,7 +564,7 @@ export function NewAuditPage() {
           {sitePreviewPhase === "loading" && (
             <p className="alert-info flex items-center gap-2 mb-4" role="status">
               <Loader2 className="w-5 h-5 shrink-0 animate-spin text-brand-accent" />
-              Searching for your site…
+              {siteVerifyMessage}
             </p>
           )}
 

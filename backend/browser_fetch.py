@@ -33,24 +33,31 @@ _lock = threading.Lock()
 _session: _PlaywrightSession | None = None
 
 
+def waf_provider(
+    status: int | None,
+    headers: Mapping[str, str] | None = None,
+    body: bytes | str = b"",
+) -> str | None:
+    """Return a WAF vendor label when the response looks like a bot wall."""
+    if status not in (401, 403, 429, 503):
+        return None
+    hdrs = {k.lower(): v for k, v in (headers or {}).items()}
+    if "cloudflare" in (hdrs.get("server") or "").lower() or hdrs.get("cf-ray") or hdrs.get("cf-mitigated"):
+        return "cloudflare"
+    raw = body if isinstance(body, bytes) else body.encode("utf-8", errors="ignore")
+    sample = raw[:12000].lower()
+    if any(marker.encode() in sample for marker in _CHALLENGE_BODY_MARKERS):
+        return "cloudflare"
+    return None
+
+
 def is_bot_wall(
     status: int | None,
     headers: Mapping[str, str] | None = None,
     body: bytes | str = b"",
 ) -> bool:
     """True when the response looks like a WAF/bot wall rather than a real page denial."""
-    if status not in (401, 403, 429, 503):
-        return False
-    hdrs = {k.lower(): v for k, v in (headers or {}).items()}
-    if "cloudflare" in (hdrs.get("server") or "").lower():
-        return True
-    if hdrs.get("cf-mitigated"):
-        return True
-    if hdrs.get("cf-ray"):
-        return True
-    raw = body if isinstance(body, bytes) else body.encode("utf-8", errors="ignore")
-    sample = raw[:12000].lower()
-    return any(marker.encode() in sample for marker in _CHALLENGE_BODY_MARKERS)
+    return waf_provider(status, headers, body) is not None
 
 
 def _looks_like_challenge_html(html: str) -> bool:
@@ -68,7 +75,7 @@ def _resolve_status(http_status: int | None, html: str) -> int:
 
 
 def _wait_past_challenge(page: Any, *, timeout_ms: int) -> None:
-    deadline = time.monotonic() + min(timeout_ms / 1000.0, 28.0)
+    deadline = time.monotonic() + min(timeout_ms / 1000.0, 45.0)
     while time.monotonic() < deadline:
         title = (page.title() or "").lower()
         html = page.content()
@@ -187,13 +194,38 @@ def fetch_with_browser_fallback(
             return None
 
 
-def fetch_once_with_browser(url: str, *, timeout_ms: int = 45000) -> tuple[int, bytes, str]:
+def fetch_once_with_browser(
+    url: str,
+    *,
+    timeout_ms: int = 45000,
+    max_attempts: int = 2,
+) -> tuple[int, bytes, str]:
     """One-off browser fetch (wizard probe); does not reuse the shared crawl session."""
-    session = _PlaywrightSession()
-    try:
-        return session.fetch(url, timeout_ms=timeout_ms)
-    finally:
-        session.close()
+    last: tuple[int, bytes, str] = (403, b"", url)
+    for attempt in range(max(1, max_attempts)):
+        session = _PlaywrightSession()
+        try:
+            status, body, final_url = session.fetch(url, timeout_ms=timeout_ms)
+            if status < 400:
+                return status, body, final_url
+            html = body.decode("utf-8", errors="replace")
+            if not _looks_like_challenge_html(html):
+                return status, body, final_url
+            last = (status, body, final_url)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Playwright fetch attempt %s failed for %s: %s",
+                attempt + 1,
+                url,
+                exc,
+            )
+        finally:
+            session.close()
+        if attempt + 1 < max_attempts:
+            time.sleep(1.5)
+    return last
 
 
 def close_browser_session() -> None:

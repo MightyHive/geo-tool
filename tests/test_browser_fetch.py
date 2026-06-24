@@ -1,6 +1,12 @@
 from browser_fetch import is_bot_wall
 
 
+def test_waf_provider_cloudflare():
+    from browser_fetch import waf_provider
+
+    assert waf_provider(403, {"server": "cloudflare"}, b"") == "cloudflare"
+
+
 def test_is_bot_wall_cloudflare_headers():
     assert is_bot_wall(
         403,

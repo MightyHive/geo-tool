@@ -144,6 +144,16 @@ export interface VerifiedSite {
   hostname: string;
   favicon_url: string;
   warning?: string | null;
+  bot_wall?: boolean;
+  provider?: string | null;
+  browser_verified?: boolean;
+}
+
+export interface ProbeSiteProtection {
+  canonical_url: string;
+  bot_wall: boolean;
+  provider?: string | null;
+  status_code?: number | null;
 }
 
 export interface CompetitorDetail {

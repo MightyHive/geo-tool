@@ -43,8 +43,10 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
     favicon = public_site_favicon_url(host)
     status_code: int | None = None
     warning: str | None = None
+    response_headers: dict[str, str] = {}
+    response_body = b""
 
-    timeout = httpx.Timeout(8.0, connect=4.0)
+    timeout = httpx.Timeout(12.0, connect=4.0)
     headers = {"User-Agent": "GEO-Audit-Setup/1.0 (site verification)"}
     try:
         with httpx.Client(follow_redirects=True, timeout=timeout) as client:
@@ -55,6 +57,8 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
             if resp.status_code in (405, 501) or resp.status_code >= 400:
                 resp = client.get(url, headers=headers)
             status_code = resp.status_code
+            response_headers = {k.lower(): v for k, v in resp.headers.items()}
+            response_body = resp.content
     except httpx.TimeoutException:
         warning = (
             "Could not confirm the site responded in time; we'll still use this URL for the audit."
@@ -63,9 +67,29 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
         warning = f"Could not reach that site ({exc}); we'll still use this URL for the audit."
 
     if status_code is not None and status_code >= 400:
-        warning = (
-            f"Site responded with HTTP {status_code}; we'll still use this URL for the audit."
-        )
+        try:
+            from browser_fetch import fetch_once_with_browser, is_bot_wall
+
+            if is_bot_wall(status_code, response_headers, response_body):
+                pw_status, _, _ = fetch_once_with_browser(url, timeout_ms=35000)
+                if pw_status is not None and pw_status < 400:
+                    status_code = pw_status
+                    warning = (
+                        "Site uses bot protection (e.g. Cloudflare); verified with a browser fetch."
+                    )
+                else:
+                    warning = (
+                        f"Site blocks automated access (HTTP {status_code}); "
+                        "we'll still use this URL, but the audit may be limited."
+                    )
+            else:
+                warning = (
+                    f"Site responded with HTTP {status_code}; we'll still use this URL for the audit."
+                )
+        except Exception:
+            warning = (
+                f"Site responded with HTTP {status_code}; we'll still use this URL for the audit."
+            )
 
     return VerifySiteResponse(
         canonical_url=url,

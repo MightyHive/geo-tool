@@ -84,7 +84,7 @@ class FetchResult:
     headers: dict[str, str] | None = None
 
 
-def _request(url: str) -> FetchResult:
+def _request_urllib(url: str) -> FetchResult:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
@@ -119,6 +119,22 @@ def _request(url: str) -> FetchResult:
         )
     except Exception as e:  # noqa: BLE001 — surface any network failure
         return FetchResult(url=url, status=None, error=str(e))
+
+
+def _request(url: str) -> FetchResult:
+    fr = _request_urllib(url)
+    try:
+        from browser_fetch import fetch_with_browser_fallback
+
+        fallback = fetch_with_browser_fallback(
+            url, status=fr.status, headers=fr.headers, body=fr.body
+        )
+    except Exception:
+        fallback = None
+    if fallback is None:
+        return fr
+    status, body, final_url = fallback
+    return FetchResult(url=url, status=status, body=body, final_url=final_url, headers=None)
 
 
 def normalize_base(url: str) -> str:
@@ -2017,6 +2033,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    try:
+        from browser_fetch import close_browser_session
+    except ImportError:
+        close_browser_session = None  # type: ignore[assignment,misc]
+
     if len(args.competitors) > 5:
         print("Error: at most 5 --competitor URLs allowed.", file=sys.stderr)
         return 2
@@ -2041,65 +2062,70 @@ def main() -> int:
     site_dir = safe_dir_name(primary_base)
     out_dir = os.path.join(out_root, site_dir)
 
-    primary_report = run_site_audit(
-        args,
-        primary_base,
-        out_dir,
-        audit_label="primary",
-        tls_info=tls_info,
-    )
-
-    competitor_bundle: list[tuple[str, dict[str, Any]]] = []
-    for i, comp_raw in enumerate(args.competitors, start=1):
-        try:
-            comp_base = normalize_base(comp_raw)
-        except ValueError as e:
-            print(f"Skipping competitor ({comp_raw}): {e}", file=sys.stderr)
-            continue
-        if comp_base.rstrip("/") == primary_base.rstrip("/"):
-            print(f"Skipping competitor {i}: same origin as primary.", file=sys.stderr)
-            continue
-        comp_out = os.path.join(out_dir, "competitors", safe_dir_name(comp_base))
-        label = f"Competitor {i}"
-        print(f"{label} ({comp_base}) …", file=sys.stderr)
-        comp_report = run_site_audit(
+    try:
+        primary_report = run_site_audit(
             args,
-            comp_base,
-            comp_out,
-            audit_label=f"competitor_{i}",
+            primary_base,
+            out_dir,
+            audit_label="primary",
             tls_info=tls_info,
         )
-        competitor_bundle.append((label, comp_report))
 
-    if competitor_bundle:
-        _cj, cmp_md = write_comparison_files(out_dir, primary_report, competitor_bundle)
-        primary_report["comparison"] = {
-            "markdown_path": cmp_md,
-            "json_path": _cj,
-            "competitors": [rep.get("base_url") for _, rep in competitor_bundle],
-        }
-        write_text(out_dir, "audit_summary.json", json.dumps(primary_report, indent=2, ensure_ascii=False))
+        competitor_bundle: list[tuple[str, dict[str, Any]]] = []
+        for i, comp_raw in enumerate(args.competitors, start=1):
+            try:
+                comp_base = normalize_base(comp_raw)
+            except ValueError as e:
+                print(f"Skipping competitor ({comp_raw}): {e}", file=sys.stderr)
+                continue
+            if comp_base.rstrip("/") == primary_base.rstrip("/"):
+                print(f"Skipping competitor {i}: same origin as primary.", file=sys.stderr)
+                continue
+            comp_out = os.path.join(out_dir, "competitors", safe_dir_name(comp_base))
+            label = f"Competitor {i}"
+            print(f"{label} ({comp_base}) …", file=sys.stderr)
+            comp_report = run_site_audit(
+                args,
+                comp_base,
+                comp_out,
+                audit_label=f"competitor_{i}",
+                tls_info=tls_info,
+            )
+            competitor_bundle.append((label, comp_report))
 
-    report = primary_report
-    base = primary_base
+        if competitor_bundle:
+            _cj, cmp_md = write_comparison_files(out_dir, primary_report, competitor_bundle)
+            primary_report["comparison"] = {
+                "markdown_path": cmp_md,
+                "json_path": _cj,
+                "competitors": [rep.get("base_url") for _, rep in competitor_bundle],
+            }
+            write_text(out_dir, "audit_summary.json", json.dumps(primary_report, indent=2, ensure_ascii=False))
 
-    print(f"Base: {base}")
-    print(f"Output: {report['output_dir']}")
-    print(f"robots.txt: {'yes' if report['robots_txt']['exists'] else 'no'}")
-    print(f"llms.txt (live): {'yes' if report['llms_txt']['exists'] else 'no'}")
-    print(f"llms.txt (generated): {report['llms_txt']['generated_path']}")
-    print(f"Pages scanned: {report['sitemap_pages_scanned']}")
-    print(f"json-ld.txt: {report['json_ld_txt']['path']}")
-    print(f"JSON-LD found on any page: {report['summary']['any_json_ld']}")
-    print(f"og:image found on any page: {report['summary']['any_og_image']}")
-    print(f"sameAs links found: {report['summary']['any_same_as']}")
-    if report["summary"]["unique_same_as_urls"]:
-        print("sameAs URLs:")
-        for u in report["summary"]["unique_same_as_urls"]:
-            print(f"  - {u}")
-    if competitor_bundle:
-        print(f"comparison.md: {report.get('comparison', {}).get('markdown_path', '')}")
-        print(f"comparison.json: {report.get('comparison', {}).get('json_path', '')}")
+        report = primary_report
+        base = primary_base
+
+        print(f"Base: {base}")
+        print(f"Output: {report['output_dir']}")
+        print(f"robots.txt: {'yes' if report['robots_txt']['exists'] else 'no'}")
+        print(f"llms.txt (live): {'yes' if report['llms_txt']['exists'] else 'no'}")
+        print(f"llms.txt (generated): {report['llms_txt']['generated_path']}")
+        print(f"Pages scanned: {report['sitemap_pages_scanned']}")
+        print(f"json-ld.txt: {report['json_ld_txt']['path']}")
+        print(f"JSON-LD found on any page: {report['summary']['any_json_ld']}")
+        print(f"og:image found on any page: {report['summary']['any_og_image']}")
+        print(f"sameAs links found: {report['summary']['any_same_as']}")
+        if report["summary"]["unique_same_as_urls"]:
+            print("sameAs URLs:")
+            for u in report["summary"]["unique_same_as_urls"]:
+                print(f"  - {u}")
+        if competitor_bundle:
+            print(f"comparison.md: {report.get('comparison', {}).get('markdown_path', '')}")
+            print(f"comparison.json: {report.get('comparison', {}).get('json_path', '')}")
+    finally:
+        if close_browser_session is not None:
+            close_browser_session()
+
     return 0
 
 

@@ -46,16 +46,11 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
     response_headers: dict[str, str] = {}
     response_body = b""
 
-    timeout = httpx.Timeout(12.0, connect=4.0)
+    timeout = httpx.Timeout(8.0, connect=4.0)
     headers = {"User-Agent": "GEO-Audit-Setup/1.0 (site verification)"}
     try:
         with httpx.Client(follow_redirects=True, timeout=timeout) as client:
-            try:
-                resp = client.head(url, headers=headers)
-            except httpx.HTTPError:
-                resp = client.get(url, headers=headers)
-            if resp.status_code in (405, 501) or resp.status_code >= 400:
-                resp = client.get(url, headers=headers)
+            resp = client.get(url, headers=headers)
             status_code = resp.status_code
             response_headers = {k.lower(): v for k, v in resp.headers.items()}
             response_body = resp.content
@@ -71,7 +66,7 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
             from browser_fetch import fetch_once_with_browser, is_bot_wall
 
             if is_bot_wall(status_code, response_headers, response_body):
-                pw_status, _, _ = fetch_once_with_browser(url, timeout_ms=35000)
+                pw_status, _, _ = fetch_once_with_browser(url, timeout_ms=55000)
                 if pw_status is not None and pw_status < 400:
                     status_code = pw_status
                     warning = (

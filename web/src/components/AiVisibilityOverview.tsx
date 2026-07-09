@@ -2,17 +2,12 @@ import { useEffect, useState } from "react";
 import { Loader2, TrendingUp, Eye, BarChart2, Award } from "lucide-react";
 import { fetchPromptPerformanceContext } from "../api/client";
 import type { PromptPerformanceContext, TopCitedSite } from "../types";
+import { PlatformLogo, PLATFORM_META } from "./PlatformLogo";
 
 interface AiVisibilityOverviewProps {
   auditDirOrSlug: string;
 }
 
-const PLATFORM_CONFIG: Record<string, { label: string; color: string }> = {
-  gemini: { label: "Gemini", color: "#4285F4" },
-  openai: { label: "ChatGPT", color: "#10a37f" },
-  claude: { label: "Claude", color: "#D97706" },
-  google_aio: { label: "Google AI", color: "#EA4335" },
-};
 
 function pct(val: number | undefined): string {
   if (val == null) return "—";
@@ -50,20 +45,23 @@ function ScoreCard({
 }
 
 function PlatformBar({
-  label,
-  color,
+  platform,
   brandPct,
   compPct,
 }: {
-  label: string;
-  color: string;
+  platform: string;
   brandPct: number;
   compPct: number;
 }) {
+  const meta = PLATFORM_META[platform];
+  const color = meta?.color ?? "#6b7280";
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
-        <span className="font-medium text-[#0d0d0d]">{label}</span>
+        <div className="flex items-center gap-1.5">
+          <PlatformLogo platform={platform} size={16} />
+          <span className="font-medium text-[#0d0d0d]">{meta?.label ?? platform}</span>
+        </div>
         <span className="text-gray-400">{pct(brandPct)} brand · {pct(compPct)} competitor</span>
       </div>
       <div className="flex gap-1 h-2 rounded-full overflow-hidden bg-gray-100">
@@ -111,15 +109,9 @@ function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
                 {s.count}
               </td>
               <td className="px-6 py-3">
-                <div className="flex flex-wrap gap-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   {(s.platforms ?? []).map((p) => (
-                    <span
-                      key={p}
-                      className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
-                      style={{ background: PLATFORM_CONFIG[p]?.color ?? "#888" }}
-                    >
-                      {PLATFORM_CONFIG[p]?.label ?? p}
-                    </span>
+                    <PlatformLogo key={p} platform={p} size={18} />
                   ))}
                 </div>
               </td>
@@ -273,15 +265,13 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
           <h3 className="text-sm font-semibold text-[#0d0d0d] mb-5">Brand visibility by platform</h3>
           <div className="space-y-4">
             {platforms.map((p) => {
-              const cfg = PLATFORM_CONFIG[p];
               const share = agg?.[p]?.brand_share_pct;
               const compShare = agg?.[p]?.competitor_share_pct;
               if (share == null) return null;
               return (
                 <PlatformBar
                   key={p}
-                  label={cfg.label}
-                  color={cfg.color}
+                  platform={p}
                   brandPct={share}
                   compPct={compShare ?? 0}
                 />
@@ -305,8 +295,10 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
                   <th className="px-6 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-400 min-w-[200px]">Prompt</th>
                   {platforms.map((p) => (
                     agg?.[p] != null ? (
-                      <th key={p} className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
-                        {PLATFORM_CONFIG[p].label}
+                      <th key={p} className="px-4 py-2 text-center">
+                        <div className="flex items-center justify-end gap-1">
+                          <PlatformLogo platform={p} size={16} />
+                        </div>
                       </th>
                     ) : null
                   ))}

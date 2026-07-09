@@ -4,6 +4,7 @@ import { ChevronRight, Loader2 } from "lucide-react";
 import { fetchAudit, fetchConfig, reportHtmlUrl, reportAllPagesHtmlUrl, reportPdfUrl } from "../api/client";
 import { AiVisibilityOverview } from "../components/AiVisibilityOverview";
 import { CitationsPage } from "../components/CitationsPage";
+import { CompetitorComparisonSection } from "../components/CompetitorComparisonSection";
 import { ConfigSection } from "../components/ConfigSection";
 import { PromptPerformanceSection } from "../components/PromptPerformanceSection";
 import { ReportHeader } from "../components/ReportHeader";
@@ -29,11 +30,12 @@ const DEFAULT_SECTIONS: SectionDef[] = [
   { id: "ga4-traffic", label: "AI Traffic Dashboard", group: "Overview" },
   { id: "ai-visibility-overview", label: "Overview", group: "AI visibility" },
   { id: "prompt_performance", label: "Prompts", group: "AI visibility" },
-  { id: "competitors", label: "Competitor comparison", group: "AI visibility" },
+  { id: "competitor-performance", label: "Competitor comparison", group: "AI visibility" },
   { id: "citations", label: "Citations", group: "AI visibility" },
   { id: "technical-overview", label: "Overview", group: "Technical setup" },
   { id: "technical", label: "Crawler access", group: "Technical setup" },
   { id: "ai-visibility", label: "Citability", group: "Technical setup" },
+  { id: "competitors", label: "Competitor sites", group: "Technical setup" },
   { id: "platform-readiness", label: "Platform readiness", group: "Technical setup" },
   { id: "content-overview", label: "Overview", group: "Content quality" },
   { id: "content", label: "EEAT & Brand visibility", group: "Content quality" },
@@ -57,6 +59,7 @@ const REACT_SECTIONS = new Set([
   "citations",
   "config",
   "ai-visibility-overview",
+  "competitor-performance",
   "technical-overview",
   "content-overview",
   "reddit-insights",
@@ -319,6 +322,10 @@ export function ReportPage() {
           ) : section === "ai-visibility-overview" ? (
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <AiVisibilityOverview auditDirOrSlug={auditRef} />
+            </div>
+          ) : section === "competitor-performance" ? (
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <CompetitorComparisonSection auditDirOrSlug={auditRef} />
             </div>
           ) : WIP_SECTIONS.has(section) ? (
             <div className="max-w-[1200px] mx-auto px-6 py-8">

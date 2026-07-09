@@ -8,20 +8,11 @@ import type {
   TopCitedUrl,
 } from "../types";
 import { Card, CardDescription, CardTitle } from "./ui/Card";
+import { CompetitorFavicon, PlatformLogoRow } from "./PlatformLogo";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PLATFORM_GEMINI = "#4285F4";
-const PLATFORM_OPENAI = "#10a37f";
-const PLATFORM_CLAUDE = "#D97706";
-const PLATFORM_AIO = "#EA4335";
-
-const PLATFORM_META: Record<string, { label: string; color: string }> = {
-  gemini: { label: "Gemini", color: PLATFORM_GEMINI },
-  openai: { label: "OpenAI", color: PLATFORM_OPENAI },
-  claude: { label: "Claude", color: PLATFORM_CLAUDE },
-  google_aio: { label: "Google AIO", color: PLATFORM_AIO },
-};
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -68,24 +59,6 @@ function YesNo({ value, trueLabel = "Yes" }: { value: boolean; trueLabel?: strin
     : <span className="text-gray-300">—</span>;
 }
 
-function PlatformChips({ platforms }: { platforms: string[] }) {
-  return (
-    <div className="flex flex-wrap gap-1">
-      {platforms.map((p) => {
-        const m = PLATFORM_META[p] ?? { label: p, color: "#6b7280" };
-        return (
-          <span
-            key={p}
-            className="inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-            style={{ background: `${m.color}18`, color: m.color }}
-          >
-            {m.label}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 function formatViews(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -93,9 +66,43 @@ function formatViews(n: number): string {
   return String(n);
 }
 
+// ── Competitor names with favicon ─────────────────────────────────────────────
+
+function CompetitorNameList({
+  names,
+  competitorMap,
+}: {
+  names: string[];
+  competitorMap: Map<string, string>;
+}) {
+  if (!names.length) return <span className="text-gray-300">—</span>;
+  return (
+    <div className="flex flex-col gap-1">
+      {names.slice(0, 4).map((name) => {
+        const website = competitorMap.get(name.toLowerCase());
+        return (
+          <div key={name} className="flex items-center gap-1.5">
+            <CompetitorFavicon name={name} website={website} size={14} />
+            <span className="text-xs text-[#0d0d0d] truncate max-w-[130px]">{name}</span>
+          </div>
+        );
+      })}
+      {names.length > 4 && (
+        <span className="text-[10px] text-gray-400">+{names.length - 4} more</span>
+      )}
+    </div>
+  );
+}
+
 // ── Domain-level table ────────────────────────────────────────────────────────
 
-function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
+function TopDomainsTable({
+  sites,
+  competitorMap,
+}: {
+  sites: TopCitedSite[];
+  competitorMap: Map<string, string>;
+}) {
   if (!sites.length) return null;
   const maxCount = Math.max(...sites.map((s) => s.count), 1);
 
@@ -110,7 +117,7 @@ function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
               <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5">Domain</th>
               <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap">Frequency</th>
               <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap">Brand mentioned</th>
-              <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden md:table-cell">Competitors mentioned</th>
+              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden md:table-cell">Competitors mentioned</th>
               <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden lg:table-cell">AI platforms</th>
             </tr>
           </thead>
@@ -147,22 +154,13 @@ function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
                   <td className="px-4 py-3 text-center text-sm">
                     <YesNo value={site.brand_mentioned ?? false} />
                   </td>
-                  <td className="px-4 py-3 text-center text-sm hidden md:table-cell">
+                  <td className="px-4 py-3 hidden md:table-cell">
                     {site.competitor_mentioned
-                      ? (
-                        <div>
-                          <span className="font-semibold text-blue-600">Yes</span>
-                          {site.competitor_names?.length ? (
-                            <p className="text-[10px] text-gray-400 mt-0.5 truncate max-w-[140px]">
-                              {site.competitor_names.slice(0, 3).join(", ")}
-                            </p>
-                          ) : null}
-                        </div>
-                      )
-                      : <span className="text-gray-300">—</span>}
+                      ? <CompetitorNameList names={site.competitor_names ?? []} competitorMap={competitorMap} />
+                      : <span className="text-gray-300 text-sm">—</span>}
                   </td>
                   <td className="px-4 py-3 hidden lg:table-cell">
-                    <PlatformChips platforms={site.platforms} />
+                    <PlatformLogoRow platforms={site.platforms} size={18} />
                   </td>
                 </tr>
               );
@@ -176,7 +174,13 @@ function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
 
 // ── URL-level table ───────────────────────────────────────────────────────────
 
-function TopUrlsTable({ urls }: { urls: TopCitedUrl[] }) {
+function TopUrlsTable({
+  urls,
+  competitorMap,
+}: {
+  urls: TopCitedUrl[];
+  competitorMap: Map<string, string>;
+}) {
   if (!urls.length) return null;
 
   return (
@@ -192,7 +196,7 @@ function TopUrlsTable({ urls }: { urls: TopCitedUrl[] }) {
               <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden md:table-cell">Channel type</th>
               <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap">Frequency</th>
               <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap">Brand mentioned</th>
-              <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden sm:table-cell">Competitors mentioned</th>
+              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5 whitespace-nowrap hidden sm:table-cell">Competitors mentioned</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
@@ -256,19 +260,10 @@ function TopUrlsTable({ urls }: { urls: TopCitedUrl[] }) {
                   <YesNo value={row.brand_mentioned} />
                 </td>
                 {/* Competitors mentioned */}
-                <td className="px-4 py-3 text-center text-sm hidden sm:table-cell">
+                <td className="px-4 py-3 hidden sm:table-cell">
                   {row.competitor_mentioned
-                    ? (
-                      <div>
-                        <span className="font-semibold text-blue-600">Yes</span>
-                        {row.competitor_names?.length ? (
-                          <p className="text-[10px] text-gray-400 mt-0.5 truncate max-w-[120px]">
-                            {row.competitor_names.slice(0, 3).join(", ")}
-                          </p>
-                        ) : null}
-                      </div>
-                    )
-                    : <span className="text-gray-300">—</span>}
+                    ? <CompetitorNameList names={row.competitor_names ?? []} competitorMap={competitorMap} />
+                    : <span className="text-gray-300 text-sm">—</span>}
                 </td>
               </tr>
             ))}
@@ -335,6 +330,15 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
   const topSites: TopCitedSite[] = ctx?.live_probe?.top_cited_sites ?? [];
   const topUrls: TopCitedUrl[] = ctx?.live_probe?.top_cited_urls ?? [];
   const aioUrls: TopCitedUrl[] = useMemo(() => buildAioUrls(ctx?.aio_probe), [ctx?.aio_probe]);
+
+  // Map competitor brand name (lowercase) → website URL for favicon lookups
+  const competitorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of ctx?.competitors ?? []) {
+      if (c.competitor_brand) m.set(c.competitor_brand.toLowerCase(), c.competitor_website);
+    }
+    return m;
+  }, [ctx?.competitors]);
   const hasLive = topSites.length > 0 || topUrls.length > 0;
   const hasAio = aioUrls.length > 0;
   const hasAnything = hasLive || hasAio;
@@ -406,21 +410,21 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
             {(tab === "domains" || tabs.length === 1) && (
               <>
                 {topSites.length > 0
-                  ? <TopDomainsTable sites={topSites} />
+                  ? <TopDomainsTable sites={topSites} competitorMap={competitorMap} />
                   : <p className="text-sm text-gray-500">No domain data — run live probes first.</p>}
               </>
             )}
             {tab === "urls" && (
               <>
                 {topUrls.length > 0
-                  ? <TopUrlsTable urls={topUrls} />
+                  ? <TopUrlsTable urls={topUrls} competitorMap={competitorMap} />
                   : <p className="text-sm text-gray-500">No URL data — run live probes first.</p>}
               </>
             )}
             {tab === "aio" && (
               <>
                 {aioUrls.length > 0
-                  ? <TopUrlsTable urls={aioUrls} />
+                  ? <TopUrlsTable urls={aioUrls} competitorMap={competitorMap} />
                   : <p className="text-sm text-gray-500">No Google AIO citations — run AIO probes from Prompt Performance.</p>}
               </>
             )}

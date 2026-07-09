@@ -1,13 +1,19 @@
-import pandas as pd
-import numpy as np
-import statsmodels.formula.api as smf
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from paths import LEGACY_OUTPUTS  # noqa: E402
 
 # ====================================================
 # 1. Load data
 # ====================================================
 
-df = pd.read_csv("bq_export.csv")
+df = pd.read_csv(LEGACY_OUTPUTS / "bq_export.csv")
 
 df["date"] = pd.to_datetime(df["date"])
 df = df.sort_values("date").reset_index(drop=True)
@@ -537,9 +543,9 @@ summary_df = pd.DataFrame([summary_long, summary_recent_spend])
 print("\nModel comparison:")
 print(summary_df)
 
-summary_df.to_csv("model_counterfactual_summary.csv", index=False)
-eval_long.to_csv("evaluation_counterfactual_long_model.csv", index=False)
-eval_recent_spend.to_csv("evaluation_counterfactual_recent_spend_model.csv", index=False)
+summary_df.to_csv(LEGACY_OUTPUTS / "model_counterfactual_summary.csv", index=False)
+eval_long.to_csv(LEGACY_OUTPUTS / "evaluation_counterfactual_long_model.csv", index=False)
+eval_recent_spend.to_csv(LEGACY_OUTPUTS / "evaluation_counterfactual_recent_spend_model.csv", index=False)
 
 # ====================================================
 # 8. Channel-level CVR counterfactual
@@ -623,7 +629,7 @@ print("Direct AI purchases:", direct_ai_purchases)
 print("Total estimated AI-influenced purchases:")
 print(total_estimated_ai_influenced_purchases)
 
-channel_result.to_csv("channel_level_counterfactual.csv", index=False)
+channel_result.to_csv(LEGACY_OUTPUTS / "channel_level_counterfactual.csv", index=False)
 
 # ====================================================
 # 9. Descriptive period summary

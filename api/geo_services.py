@@ -462,6 +462,7 @@ def seed_audit_dir_from_wizard(
     competitors_detail: list[dict[str, Any]],
     ga4_property_id: str = "",
     ga4_ai_channel_names: str = "",
+    crawl_urls: list[str] | None = None,
 ) -> None:
     """
     Create the audit folder early (before crawl) so the report UI can load, and persist
@@ -513,6 +514,10 @@ def seed_audit_dir_from_wizard(
     onboarding["geo_market_country"] = market_country.strip()
     onboarding["geo_market_country_code"] = market_country_code.strip()
     onboarding["accepted_competitors"] = list(competitor_urls)
+    if crawl_urls:
+        onboarding["crawl_urls"] = [u for u in crawl_urls if str(u).strip()]
+    else:
+        onboarding.pop("crawl_urls", None)
     ga4_prop = ga4_property_id.strip()
     if ga4_prop:
         onboarding["ga4_property_id"] = ga4_prop
@@ -600,6 +605,7 @@ def create_report_cmd_env(
     ga4_property_id: str | None = None,
     ga4_ai_channels: str | None = None,
     ga4_oauth_credentials_path: str | None = None,
+    crawl_urls: list[str] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     out_dir = audit_output_base(out_base)
     cmd: list[str] = [
@@ -641,6 +647,10 @@ def create_report_cmd_env(
         cmd.extend(["--ga4-property", ga4_prop])
     if ga4_ch:
         cmd.extend(["--ga4-ai-channels", ga4_ch])
+    if crawl_urls:
+        clean = [u for u in crawl_urls if str(u).strip()]
+        if clean:
+            cmd.extend(["--include-urls", json.dumps(clean)])
     env = os.environ.copy()
     if ga4_oauth_credentials_path:
         env["GOOGLE_APPLICATION_CREDENTIALS"] = ga4_oauth_credentials_path
@@ -703,14 +713,22 @@ def app_config() -> dict[str, Any]:
         "app_env": current_app_env(),
         "app_env_label": app_env_display_label(),
         "report_sections": [
-            {"id": "summary", "label": "Summary"},
-            {"id": "ga4-traffic", "label": "AI traffic (GA4)"},
-            {"id": "recommendations", "label": "Recommendations"},
-            {"id": "competitors", "label": "Competitor comparison"},
-            {"id": "ai-visibility", "label": "AI visibility"},
-            {"id": "technical", "label": "Technical setup"},
-            {"id": "content", "label": "Content quality"},
-            {"id": "samples", "label": "Sample scripts"},
-            {"id": "prompt_performance", "label": "Prompt performance"},
+            {"id": "summary", "label": "Summary", "group": "Overview"},
+            {"id": "config", "label": "Config", "group": "Overview"},
+            {"id": "ga4-traffic", "label": "AI Traffic Dashboard", "group": "Overview"},
+            {"id": "ai-visibility-overview", "label": "Overview", "group": "AI visibility"},
+            {"id": "prompt_performance", "label": "Prompts", "group": "AI visibility"},
+            {"id": "competitors", "label": "Competitor comparison", "group": "AI visibility"},
+            {"id": "citations", "label": "Citations", "group": "AI visibility"},
+            {"id": "technical-overview", "label": "Overview", "group": "Technical setup"},
+            {"id": "technical", "label": "Crawler access", "group": "Technical setup"},
+            {"id": "ai-visibility", "label": "Citability", "group": "Technical setup"},
+            {"id": "platform-readiness", "label": "Platform readiness", "group": "Technical setup"},
+            {"id": "content-overview", "label": "Overview", "group": "Content quality"},
+            {"id": "content", "label": "EEAT & Brand visibility", "group": "Content quality"},
+            {"id": "reddit-insights", "label": "Reddit insights", "group": "Content quality"},
+            {"id": "youtube-insights", "label": "YouTube insights", "group": "Content quality"},
+            {"id": "samples", "label": "Sample scripts", "group": "Workshop"},
+            {"id": "content-outline", "label": "Content outline generator", "group": "Workshop"},
         ],
     }

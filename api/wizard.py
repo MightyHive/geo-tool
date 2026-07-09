@@ -139,6 +139,134 @@ def verify_site(body: VerifySiteBody) -> VerifySiteResponse:
     )
 
 
+class DiscoverPagesBody(BaseModel):
+    brand_website: str
+    market_country: str = ""
+    market_country_code: str = ""
+
+
+class DiscoverPagesResponse(BaseModel):
+    urls: list[str]
+    total_discovered: int
+    truncated: bool
+
+
+@router.post("/discover-pages", response_model=DiscoverPagesResponse)
+def discover_pages(body: DiscoverPagesBody) -> DiscoverPagesResponse:
+    """
+    Discover crawlable pages on a site via robots.txt → sitemap.xml.
+
+    Returns up to 100 page URLs so the wizard can show a checklist.
+    Uses the same robots + sitemap logic as the full crawl but without
+    fetching/scoring any page content.
+    """
+    import re
+    import urllib.parse
+    import xml.etree.ElementTree as ET
+
+    from geo_setup_llm import normalize_competitor_url
+
+    MAX_URLS = 100
+    MAX_SITEMAPS = 20
+    TIMEOUT = 8.0
+
+    url = normalize_competitor_url(body.brand_website.strip())
+    if not url:
+        raise HTTPException(400, "Brand website is required.")
+
+    base = url.rstrip("/")
+    headers = {"User-Agent": "GEO-Audit-Setup/1.0 (sitemap discovery)"}
+
+    def _get(u: str) -> bytes | None:
+        try:
+            import httpx
+            r = httpx.get(u, headers=headers, timeout=TIMEOUT, follow_redirects=True)
+            return r.content if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    def _parse_robots_sitemaps(text: str) -> list[str]:
+        found: list[str] = []
+        for line in text.splitlines():
+            m = re.match(r"(?i)^Sitemap:\s*(.+)$", line.strip())
+            if m:
+                found.append(m.group(1).strip())
+        return found
+
+    def _parse_sitemap(raw: bytes) -> tuple[list[str], list[str]]:
+        """Return (page_urls, nested_sitemap_urls)."""
+        pages: list[str] = []
+        nested: list[str] = []
+        try:
+            root = ET.fromstring(raw)
+            ns = root.tag.split("}")[0].lstrip("{") if "}" in root.tag else ""
+            def tag(name: str) -> str:
+                return f"{{{ns}}}{name}" if ns else name
+
+            for child in root:
+                local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if local == "sitemap":
+                    loc = child.find(tag("loc"))
+                    if loc is not None and loc.text:
+                        nested.append(loc.text.strip())
+                elif local == "url":
+                    loc = child.find(tag("loc"))
+                    if loc is not None and loc.text:
+                        pages.append(loc.text.strip())
+        except ET.ParseError:
+            # Fallback: regex extraction for malformed XML
+            for m in re.finditer(r"<loc>(.*?)</loc>", raw.decode("utf-8", errors="replace")):
+                pages.append(m.group(1).strip())
+        return pages, nested
+
+    # --- robots.txt → sitemap seeds ---
+    robots_body = _get(f"{base}/robots.txt")
+    sitemaps_pending: list[str] = []
+    if robots_body:
+        for s in _parse_robots_sitemaps(robots_body.decode("utf-8", errors="replace")):
+            if s not in sitemaps_pending:
+                sitemaps_pending.append(s)
+
+    for default in (f"{base}/sitemap.xml", f"{base}/sitemap_index.xml"):
+        if default not in sitemaps_pending:
+            sitemaps_pending.append(default)
+
+    # --- walk sitemaps ---
+    seen_sitemaps: set[str] = set()
+    page_urls: list[str] = []
+    home = base + "/"
+
+    while sitemaps_pending and len(seen_sitemaps) < MAX_SITEMAPS and len(page_urls) < MAX_URLS:
+        sm = sitemaps_pending.pop(0)
+        if sm in seen_sitemaps:
+            continue
+        seen_sitemaps.add(sm)
+        raw = _get(sm)
+        if not raw:
+            continue
+        pages, nested = _parse_sitemap(raw)
+        for p in pages:
+            if p not in page_urls:
+                page_urls.append(p)
+                if len(page_urls) >= MAX_URLS:
+                    break
+        for n in nested:
+            if n not in seen_sitemaps and n not in sitemaps_pending:
+                sitemaps_pending.append(n)
+
+    # Always include homepage
+    if not any(urllib.parse.urlparse(u).path in ("", "/") for u in page_urls):
+        page_urls.insert(0, home)
+
+    total = len(page_urls)
+    truncated = total >= MAX_URLS
+    return DiscoverPagesResponse(
+        urls=page_urls[:MAX_URLS],
+        total_discovered=total,
+        truncated=truncated,
+    )
+
+
 class SuggestProductsBody(BaseModel):
     brand_website: str
     market_country: str = ""

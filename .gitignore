@@ -42,7 +42,17 @@ audit_archive/
 
 # Research sandbox generated outputs
 research/*.csv
+research/ga4/exports/
+research/analysis/outputs/
+research/config/ga4_ppc_properties.csv
+!research/config/ga4_ppc_properties.example.csv
 research/.ga4_oauth_token.json
+research/trends_manual/data/
+research/trends_manual/publishers/
+research/trends_manual/advertisers/
+research/trends_manual/inbox/
+research/trends_manual/.batch_term.env
+research/trends_manual/config.env
 
 # Local sample audits and scratch HTML (reference templates live in assets/reference/)
 assets/samples/

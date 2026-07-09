@@ -537,6 +537,10 @@ def build_crawl_argv(args: argparse.Namespace) -> list[str]:
         cmd.extend(["--market-country-code", mid])
     for c in args.competitors:
         cmd.extend(["--competitor", c])
+    # Pass user-selected crawl URLs from wizard (loaded from onboarding_context.json)
+    include_urls = getattr(args, "include_urls", None) or []
+    if include_urls:
+        cmd.extend(["--include-urls", json.dumps(include_urls)])
     return cmd
 
 
@@ -7577,6 +7581,13 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
         help="Base directory for crawl output (default: audit_output)",
     )
     p.add_argument("--max-sitemap-urls", type=int, default=80, help="Max page URLs from sitemaps (default: 80)")
+    p.add_argument(
+        "--include-urls",
+        default="",
+        dest="include_urls_json",
+        metavar="JSON",
+        help="JSON array of page URLs to crawl instead of sitemap discovery. Passed to crawl-site.py.",
+    )
     p.add_argument("--max-sitemaps", type=int, default=40, help="Max sitemap files when following indexes (default: 40)")
     p.add_argument("--delay", type=float, default=0.25, help="Seconds between HTTP requests (default: 0.25)")
     p.add_argument("--insecure", action="store_true", help="Do not verify TLS certificates")
@@ -7720,6 +7731,25 @@ def main() -> int:
 
     audit_dir_for_market = Path(args.out).resolve() / safe_dir_name(primary_base_for_dir)
     _apply_market_from_onboarding(args, audit_dir_for_market)
+    # Load user-selected crawl URLs from wizard (stored in onboarding_context.json)
+    # when not already provided via --include-urls CLI arg.
+    if not (getattr(args, "include_urls_json", "") or "").strip():
+        ob_path = audit_dir_for_market / "onboarding_context.json"
+        if ob_path.is_file():
+            try:
+                ob = json.loads(ob_path.read_text(encoding="utf-8"))
+                wizard_urls = ob.get("crawl_urls") if isinstance(ob, dict) else None
+                if isinstance(wizard_urls, list) and wizard_urls:
+                    args.include_urls = [str(u) for u in wizard_urls if str(u).strip()]
+                else:
+                    args.include_urls = []
+            except (OSError, json.JSONDecodeError):
+                args.include_urls = []
+    else:
+        try:
+            args.include_urls = json.loads(args.include_urls_json)
+        except (json.JSONDecodeError, ValueError):
+            args.include_urls = []
     mcc, mid = resolve_primary_market(
         str(getattr(args, "market_country", "") or ""),
         str(getattr(args, "market_country_code", "") or ""),

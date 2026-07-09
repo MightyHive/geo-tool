@@ -22,6 +22,7 @@ import {
   type UrlAutocompleteHandle,
 } from "../components/UrlAutocomplete";
 import { WizardGa4Step } from "../components/WizardGa4Step";
+import { WizardPagesStep } from "../components/WizardPagesStep";
 import { WizardCompetitorsStep } from "../components/WizardCompetitorsStep";
 import { WizardGeneratePromptsStep } from "../components/WizardGeneratePromptsStep";
 import { WizardPromptsStep } from "../components/WizardPromptsStep";
@@ -46,7 +47,7 @@ import type {
   VerifiedSite,
 } from "../types";
 
-const MAX_WIZARD_STEP = 7;
+const MAX_WIZARD_STEP = 8;
 
 function parseApiDetail(raw: string): string {
   try {
@@ -60,12 +61,13 @@ function parseApiDetail(raw: string): string {
 
 const WIZARD_STEPS = [
   { id: 1, label: "Brand" },
-  { id: 2, label: "GA4" },
-  { id: 3, label: "Products" },
-  { id: 4, label: "Competitors" },
-  { id: 5, label: "Generate prompts" },
-  { id: 6, label: "Review prompts" },
-  { id: 7, label: "Run" },
+  { id: 2, label: "Pages" },
+  { id: 3, label: "GA4" },
+  { id: 4, label: "Products" },
+  { id: 5, label: "Competitors" },
+  { id: 6, label: "Generate prompts" },
+  { id: 7, label: "Review prompts" },
+  { id: 8, label: "Run" },
 ];
 
 function runStatusToProgress(status: AuditRunStatusResponse): AuditRunProgressPayload | null {
@@ -100,12 +102,15 @@ export function NewAuditPage() {
   const [productRows, setProductRows] = useState<ProductServiceRow[]>([]);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [competitorDetails, setCompetitorDetails] = useState<CompetitorDetail[]>([]);
+  const [runCompetitorAudit, setRunCompetitorAudit] = useState(false);
   const [ga4PropertyId, setGa4PropertyId] = useState("");
   const [ga4AiChannels, setGa4AiChannels] = useState("");
+  const [crawlUrls, setCrawlUrls] = useState<string[] | undefined>(undefined);
   const [sitePreviewPhase, setSitePreviewPhase] = useState<SitePreviewPhase>("form");
   const [siteVerifyMessage, setSiteVerifyMessage] = useState("Checking site…");
   const [verifiedSite, setVerifiedSite] = useState<VerifiedSite | null>(null);
   const previewUnlocked = sitePreviewPhase !== "form";
+  const [notificationEmail, setNotificationEmail] = useState("");
   const [running, setRunning] = useState(false);
   const [auditProgress, setAuditProgress] = useState<AuditRunProgressPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +129,7 @@ export function NewAuditPage() {
     if (draft.competitorDetails?.length) setCompetitorDetails(draft.competitorDetails);
     if (draft.ga4PropertyId) setGa4PropertyId(draft.ga4PropertyId);
     if (draft.ga4AiChannels) setGa4AiChannels(draft.ga4AiChannels);
+    if (draft.crawlUrls !== undefined) setCrawlUrls(draft.crawlUrls);
     if (draft.verifiedSite) setVerifiedSite(draft.verifiedSite);
     if (draft.sitePreviewPhase) setSitePreviewPhase(draft.sitePreviewPhase);
     if (
@@ -147,8 +153,10 @@ export function NewAuditPage() {
     setProductRows([]);
     setSelectedProducts([]);
     setCompetitorDetails([]);
+    setRunCompetitorAudit(false);
     setGa4PropertyId("");
     setGa4AiChannels("");
+    setCrawlUrls(undefined);
     setSitePreviewPhase("form");
     setVerifiedSite(null);
     setActiveAuditDir(null);
@@ -323,7 +331,8 @@ export function NewAuditPage() {
       ga4PropertyId,
       ga4AiChannels,
       wizardStep: step,
-      promptsReady: step > 5,
+      promptsReady: step > 6,
+      crawlUrls,
     });
   }, [
     brandName,
@@ -339,6 +348,7 @@ export function NewAuditPage() {
     competitorDetails,
     ga4PropertyId,
     ga4AiChannels,
+    crawlUrls,
     step,
   ]);
 
@@ -350,6 +360,7 @@ export function NewAuditPage() {
   }
 
   function includedCompetitorUrls(): string[] {
+    if (!runCompetitorAudit) return [];
     return competitorDetails
       .filter((r) => r.included && r.competitor_website.trim())
       .map((r) => r.competitor_website.trim());
@@ -495,6 +506,8 @@ export function NewAuditPage() {
         })),
         ...(ga4Prop ? { ga4_property_id: ga4Prop } : {}),
         ...(ga4Ch ? { ga4_ai_channels: ga4Ch } : {}),
+        ...(crawlUrls && crawlUrls.length > 0 ? { crawl_urls: crawlUrls } : {}),
+        ...(notificationEmail.trim() ? { notification_email: notificationEmail.trim() } : {}),
       });
       setActiveAuditDir(audit_dir);
       saveAuditRunDraft({
@@ -637,10 +650,24 @@ export function NewAuditPage() {
       )}
 
       {step === 2 && (
+        <div className="card-surface p-6 mb-6">
+          <WizardPagesStep
+            brandWebsite={resolveBrandWebsite()}
+            marketCountry={marketCountry}
+            marketCountryCode={marketCountryCode}
+            crawlUrls={crawlUrls}
+            onCrawlUrlsChange={setCrawlUrls}
+            onBack={() => goToStep(1)}
+            onContinue={() => goToStep(3)}
+          />
+        </div>
+      )}
+
+      {step === 3 && (
         <WizardGa4Step
-          onBack={() => goToStep(1)}
-          onContinue={() => goToStep(3)}
-          onSkip={() => goToStep(3)}
+          onBack={() => goToStep(2)}
+          onContinue={() => goToStep(4)}
+          onSkip={() => goToStep(4)}
           onSelectionSaved={(propertyId, aiChannelNames) => {
             setGa4PropertyId(propertyId);
             setGa4AiChannels(aiChannelNames);
@@ -648,7 +675,7 @@ export function NewAuditPage() {
         />
       )}
 
-      {step === 3 && (
+      {step === 4 && (
         <WizardProductsStep
           brandName={brandName.trim()}
           brandWebsite={resolveBrandWebsite()}
@@ -658,7 +685,7 @@ export function NewAuditPage() {
           selected={selectedProducts}
           onRowsChange={setProductRows}
           onSelectedChange={setSelectedProducts}
-          onBack={() => goToStep(2)}
+          onBack={() => goToStep(3)}
           onContinue={() => {
             const byName = new Map(
               productRows.map((r) => [r.product_or_service.trim(), r] as const),
@@ -668,12 +695,12 @@ export function NewAuditPage() {
               .filter((r): r is ProductServiceRow => Boolean(r))
               .filter((r) => !isCustomPromptsCategory(r.product_or_service));
             setProductRows(picked);
-            goToStep(4);
+            goToStep(5);
           }}
         />
       )}
 
-      {step === 4 && (
+      {step === 5 && (
         <WizardCompetitorsStep
           brandWebsite={resolveBrandWebsite()}
           brandName={brandName.trim()}
@@ -682,25 +709,18 @@ export function NewAuditPage() {
           marketCountryCode={marketCountryCode}
           rows={competitorDetails}
           onRowsChange={setCompetitorDetails}
-          onBack={() => goToStep(3)}
-          onContinue={() => goToStep(5)}
-        />
-      )}
-
-      {step === 5 && (
-        <WizardGeneratePromptsStep
-          brandWebsite={resolveBrandWebsite()}
-          marketCountry={marketCountry}
-          marketCountryCode={marketCountryCode}
-          rows={productRows}
-          onRowsChange={setProductRows}
+          runCompetitorAudit={runCompetitorAudit}
+          onRunCompetitorAuditChange={setRunCompetitorAudit}
           onBack={() => goToStep(4)}
           onContinue={() => goToStep(6)}
         />
       )}
 
       {step === 6 && (
-        <WizardPromptsStep
+        <WizardGeneratePromptsStep
+          brandWebsite={resolveBrandWebsite()}
+          marketCountry={marketCountry}
+          marketCountryCode={marketCountryCode}
           rows={productRows}
           onRowsChange={setProductRows}
           onBack={() => goToStep(5)}
@@ -709,6 +729,15 @@ export function NewAuditPage() {
       )}
 
       {step === 7 && (
+        <WizardPromptsStep
+          rows={productRows}
+          onRowsChange={setProductRows}
+          onBack={() => goToStep(6)}
+          onContinue={() => goToStep(8)}
+        />
+      )}
+
+      {step === 8 && (
         <div className="card-surface p-6 mb-6">
           <h3>Run audit</h3>
           <p className="text-sm text-gray-600 mb-4">
@@ -736,15 +765,36 @@ export function NewAuditPage() {
             </p>
           )}
           <p className="text-sm text-gray-600 mt-2">
-            Prompts: {totalSelectedPrompts()} · Competitors:{" "}
-            {includedCompetitorUrls().length || "none"}
+            Prompts: {totalSelectedPrompts()} · Competitors listed:{" "}
+            {competitorDetails.filter((r) => r.competitor_website.trim()).length || "none"}
+            {runCompetitorAudit && competitorDetails.filter((r) => r.included && r.competitor_website.trim()).length > 0
+              ? ` (${competitorDetails.filter((r) => r.included && r.competitor_website.trim()).length} included in full audit)`
+              : " (competitor audit disabled)"}
           </p>
+          <div className="mt-6 border border-gray-200 rounded-lg p-4 bg-gray-50">
+            <label className="block text-sm font-medium text-brand-dark mb-1" htmlFor="notifEmail">
+              Email results link <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Once the audit finishes we'll send you a link to the report. Leave blank to skip.
+            </p>
+            <input
+              id="notifEmail"
+              type="email"
+              className="input-field w-full max-w-sm"
+              placeholder="you@example.com"
+              value={notificationEmail}
+              onChange={(e) => setNotificationEmail(e.target.value)}
+              disabled={running}
+            />
+          </div>
+
           {running && <AuditRunProgress progress={auditProgress} />}
           <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200">
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => goToStep(6)}
+              onClick={() => goToStep(7)}
               disabled={running}
             >
               ← Back

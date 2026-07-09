@@ -1613,14 +1613,27 @@ def run_site_audit(
     market_country, market_country_code = resolve_primary_market(market_country, market_country_code)
     market_hints = market_path_hints(market_country_code, market_country)
 
-    sm_urls = collect_sitemap_page_urls(
-        base,
-        robots_text,
-        max_sitemaps=args.max_sitemaps,
-        max_urls=args.max_sitemap_urls,
-        market_country=market_country,
-        market_country_code=market_country_code,
-    )
+    # If the user provided a custom URL list via the wizard, use it directly and
+    # skip sitemap discovery. This lets users control exactly which pages are audited.
+    include_urls_raw = str(getattr(args, "include_urls", "") or "").strip()
+    if include_urls_raw:
+        try:
+            _user_urls = json.loads(include_urls_raw)
+            if isinstance(_user_urls, list) and _user_urls:
+                sm_urls = [str(u) for u in _user_urls if str(u).strip()]
+            else:
+                sm_urls = []
+        except (json.JSONDecodeError, ValueError):
+            sm_urls = []
+    else:
+        sm_urls = collect_sitemap_page_urls(
+            base,
+            robots_text,
+            max_sitemaps=args.max_sitemaps,
+            max_urls=args.max_sitemap_urls,
+            market_country=market_country,
+            market_country_code=market_country_code,
+        )
 
     if market_country or market_country_code:
         report["primary_market"] = {
@@ -1957,6 +1970,15 @@ def main() -> int:
         type=int,
         default=80,
         help="Max page URLs to collect from sitemaps (default: 80)",
+    )
+    parser.add_argument(
+        "--include-urls",
+        default="",
+        help=(
+            "JSON array of page URLs to crawl instead of sitemap discovery. "
+            "When provided the sitemap step is skipped and these URLs are used directly "
+            "(still capped at --max-sitemap-urls). Example: '[\"https://example.com/\"]'"
+        ),
     )
     parser.add_argument(
         "--max-sitemaps",

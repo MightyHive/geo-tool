@@ -76,6 +76,7 @@ def _run_audit_job(
     ga4_ch: str | None,
     ga4_cred_path: str | None,
     owner_email: str | None,
+    notification_email: str | None,
     stream_progress: bool,
 ) -> None:
     from api.audit_progress import (
@@ -113,6 +114,7 @@ def _run_audit_job(
             },
         )
 
+        _crawl_urls = body_dict.get("crawl_urls") or None
         for line in geo.iter_pipeline_logs(
             primary,
             competitors,
@@ -126,6 +128,7 @@ def _run_audit_job(
             ga4_property_id=ga4_prop,
             ga4_ai_channels=ga4_ch,
             ga4_oauth_credentials_path=ga4_cred_path,
+            crawl_urls=_crawl_urls,
         ):
             if stream_progress and progress_state is not None:
                 progress_state = apply_log_line(progress_state, line)
@@ -198,6 +201,17 @@ def _run_audit_job(
                 **(_progress_payload(progress_state) if progress_state else {}),
             },
         )
+
+        if notification_email:
+            try:
+                from api.notify_email import send_audit_complete_email
+                send_audit_complete_email(
+                    to_email=notification_email,
+                    brand_name=str(body_dict.get("brand_name") or ""),
+                    audit_dir=rel,
+                )
+            except Exception as email_exc:
+                log.warning("Failed to send notification email: %s", email_exc)
     except Exception as exc:
         log.exception("Background audit failed for %s: %s", rel, exc)
         _write_run_status(
@@ -223,6 +237,7 @@ def start_background_audit(
     body: Any,
     *,
     owner_email: str | None,
+    notification_email: str | None = None,
 ) -> dict[str, Any]:
     """
     Seed audit folder, spawn pipeline in a daemon thread, return immediately.
@@ -258,6 +273,7 @@ def start_background_audit(
         competitors_detail=[c.model_dump() for c in body.wizard_competitors],
         ga4_property_id=ga4_prop or "",
         ga4_ai_channel_names=ga4_ch or "",
+        crawl_urls=body.crawl_urls or None,
     )
 
     body_dict = body.model_dump()
@@ -275,6 +291,7 @@ def start_background_audit(
             "ga4_ch": ga4_ch,
             "ga4_cred_path": ga4_cred_path,
             "owner_email": owner_email,
+            "notification_email": notification_email or getattr(body, "notification_email", None),
             "stream_progress": stream_progress,
         },
         daemon=True,

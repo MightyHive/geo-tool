@@ -177,11 +177,16 @@ Markdown specs that define *what* each pillar measures. Scoring logic lives in `
 
 ### `research/` — research sandbox
 
-**Not part of the production audit UI.** Standalone scripts for econometric analysis and bulk GA4 exports:
+**Not part of the production audit UI.** See `research/README.md` for layout.
 
-- `research/ga4_channel_export.py` — daily sessions/purchases by default channel group
-- `research/counterfactual.py` / `research/smf.py` — panel regression and counterfactuals on weekly traffic
-- `research/trend_index.py` — trend index from BigQuery exports
+| Path | Purpose |
+|------|---------|
+| `research/ga4/` | GA4 Data API export scripts |
+| `research/ga4/exports/` | Generated CSVs (daily / weekly / PPC) |
+| `research/analysis/` | Counterfactual and diagnostic scripts |
+| `research/trends_manual/` | Google Trends manual download pipeline |
+| `research/config/` | Property lists (`ga4_ppc_properties.csv`) |
+| `research/paths.py` | Shared path constants for scripts |
 
 ---
 

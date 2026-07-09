@@ -1,0 +1,4 @@
+# One search term per line (brand / category queries for research panel)
+# good food
+# starbucks
+# wickes

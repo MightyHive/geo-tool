@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-PLATFORM_KEYS: tuple[str, ...] = ("gemini", "openai", "claude")
+PLATFORM_KEYS: tuple[str, ...] = ("gemini", "openai", "claude", "google_aio")
 
 _ROW_FIELDS: dict[str, tuple[str, ...]] = {
     "gemini": (
@@ -18,6 +18,7 @@ _ROW_FIELDS: dict[str, tuple[str, ...]] = {
         "mention_scores_gemini",
         "gemini_brand_mention_pct",
         "gemini_competitor_mention_pct",
+        "citations_gemini",
     ),
     "openai": (
         "openai_response",
@@ -25,6 +26,7 @@ _ROW_FIELDS: dict[str, tuple[str, ...]] = {
         "mention_scores_openai",
         "openai_brand_mention_pct",
         "openai_competitor_mention_pct",
+        "citations_openai",
     ),
     "claude": (
         "claude_response",
@@ -32,6 +34,15 @@ _ROW_FIELDS: dict[str, tuple[str, ...]] = {
         "mention_scores_claude",
         "claude_brand_mention_pct",
         "claude_competitor_mention_pct",
+        "citations_claude",
+    ),
+    "google_aio": (
+        "google_aio_response",
+        "error_google_aio",
+        "mention_scores_google_aio",
+        "google_aio_brand_mention_pct",
+        "google_aio_competitor_mention_pct",
+        "citations_google_aio",
     ),
 }
 
@@ -156,7 +167,7 @@ def sanitize_live_probe(live: dict[str, Any]) -> dict[str, Any]:
             for pk in excluded:
                 strip_platform_from_row(row, pk)
 
-    from prompt_suggest import aggregate_live_sov
+    from prompt_suggest import aggregate_live_sov, recompute_live_probe_mention_scores
 
     if isinstance(per, list):
         live["aggregate"] = aggregate_live_sov([r for r in per if isinstance(r, dict)], excluded=excluded)
@@ -165,6 +176,10 @@ def sanitize_live_probe(live: dict[str, Any]) -> dict[str, Any]:
         for pk in excluded:
             agg.pop(pk, None)
         live["aggregate"] = agg
+
+    recompute_live_probe_mention_scores(live)
+    if isinstance(per, list):
+        live["aggregate"] = aggregate_live_sov([r for r in per if isinstance(r, dict)], excluded=excluded)
 
     active = [pk for pk in PLATFORM_KEYS if pk not in excluded]
     live["excluded_platforms"] = sorted(excluded)

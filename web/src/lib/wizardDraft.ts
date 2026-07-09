@@ -22,6 +22,7 @@ export interface WizardDraft {
   ga4AiChannels?: string;
   wizardStep?: number;
   promptsReady?: boolean;
+  crawlUrls?: string[];
 }
 
 export interface AuditRunDraft {

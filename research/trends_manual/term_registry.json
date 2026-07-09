@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "good_food": {
+      "kind": "publisher",
+      "label": "Good Food",
+      "branded": ["good food", "bbc good food"],
+      "non_branded": [
+        "pancake recipe",
+        "banana bread recipe",
+        "yorkshire pudding recipe",
+        "chilli con carne",
+        "cottage pie recipe",
+        "Carbonara recipe",
+        "Chilli con carne recipe",
+        "Brownie recipe",
+        "Flapjack recipe",
+        "Apple crumble recipe"
+      ]
+    },
+    "radio_times": {
+      "kind": "publisher",
+      "label": "Radio Times",
+      "branded": ["radio times", "Radio times tv guide", "Radio times tv listings"],
+      "non_branded": [
+        "Tv guide",
+        "Tv tonight",
+        "Tv listings",
+        "What's on tv tonight",
+        "Tv guide uk",
+        "Tv guide tonight",
+        "Whats on tv tonight",
+        "Tv listings tonight",
+        "Tonights tv",
+        "Whats on tv now"
+      ]
+    },
+    "what_car": {
+      "kind": "publisher",
+      "label": "What Car",
+      "branded": ["what car", "whatcar", "what car reviews"],
+      "non_branded": [
+        "Best electric cars",
+        "Best small suv",
+        "Best electric suv",
+        "Best small cars",
+        "Best small electric car",
+        "Most reliable cars",
+        "Best small suv uk",
+        "Best suv",
+        "Best hybrid cars",
+        "7 seater cars"
+      ]
+    },
+    "euro_car_parts": {
+      "kind": "advertiser",
+      "label": "Euro Car Parts",
+      "branded": [
+        "euro car parts",
+        "Eurocarparts",
+        "Europarts",
+        "Euro parts",
+        "Eurocarpart",
+        "Ecp",
+        "Euro car parts near me",
+        "Euro carparts",
+        "Europarts uk"
+      ],
+      "non_branded": [
+        "Car parts",
+        "What coolant for my car",
+        "Car parts near me",
+        "Engine oil",
+        "What oil for my car",
+        "Brake pads",
+        "Car battery",
+        "Wiper blades",
+        "carparts",
+        "Engine oil for my car",
+        "Wind deflectors"
+      ]
+    },
+    "starbucks": {
+      "kind": "advertiser",
+      "label": "Starbucks",
+      "branded": [
+        "starbucks",
+        "Starbucks uk",
+        "Starbucks coffee",
+        "Starbucks near me",
+        "Starbucks latte",
+        "Starbucks cup"
+      ],
+      "non_branded": ["Coffee", "Matcha", "Coffee shops"]
+    },
+    "wickes": {
+      "kind": "advertiser",
+      "label": "Wickes",
+      "branded": [
+        "wickes",
+        "Wicks",
+        "Wickes near me",
+        "Wikes",
+        "Wickes paint",
+        "Wickes timber",
+        "Wickes uk"
+      ],
+      "non_branded": [
+        "Laminate flooring",
+        "Decking boards",
+        "Skirting boards",
+        "Fence panels",
+        "Internal doors",
+        "Paving slabs",
+        "Decking",
+        "Plasterboard"
+      ]
+    }
+  }
+}

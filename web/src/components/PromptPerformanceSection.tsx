@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { ChevronDown, ExternalLink, Loader2 } from "lucide-react";
 import {
   fetchPromptPerformanceContext,
   fetchPromptSentiment,
   highlightPromptReply,
+  runAioProbes,
   runPromptPerformanceProbes,
   trackPromptCompetitor,
 } from "../api/client";
 import type {
+  AioProbeResult,
   CategorySentiment,
+  CitationItem,
   LiveProbePerPrompt,
   LiveProbeResult,
   MentionScores,
   PromptPerformanceContext,
   PromptSentimentAnalysis,
+  TopCitedSite,
+  TopCitedUrl,
 } from "../types";
 import { filterSentimentCategories } from "../lib/customPrompts";
 import { visibilityByCategory } from "../lib/categoryVisibility";
+import {
+  textMentionsBrand,
+} from "../lib/brandMatch";
 import {
   activeProbePlatforms,
   isProbePlatformActive,
@@ -30,6 +38,7 @@ const SOV_BLUE = "#0984e3";
 const PLATFORM_GEMINI = "#4285F4";
 const PLATFORM_OPENAI = "#10a37f";
 const PLATFORM_CLAUDE = "#D97706";
+const PLATFORM_GOOGLE_AIO = "#EA4335";
 
 // ── Platform icons ────────────────────────────────────────────────────────────
 
@@ -70,21 +79,33 @@ function ClaudeIcon({ size = 20 }: { size?: number }) {
   );
 }
 
+function GoogleAioIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-label="Google AI Summaries">
+      <circle cx="12" cy="12" r="11" fill="#fff" stroke="#e0e0e0" strokeWidth="0.8" />
+      <text
+        x="12" y="16"
+        textAnchor="middle"
+        fontSize="13"
+        fontWeight="bold"
+        fontFamily="Arial,sans-serif"
+        fill={PLATFORM_GOOGLE_AIO}
+      >G</text>
+    </svg>
+  );
+}
+
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
 function avgPerCompetitorSovPct(
   perPrompt: LiveProbePerPrompt[],
-  platform: "gemini" | "openai" | "claude",
+  platform: ProbePlatform,
 ): number {
   const compHits: Record<string, number> = {};
   let grandTotal = 0;
   for (const row of perPrompt) {
     const scores: MentionScores | undefined =
-      platform === "gemini"
-        ? row.mention_scores_gemini
-        : platform === "openai"
-          ? row.mention_scores_openai
-          : row.mention_scores_claude;
+      (row as Record<string, MentionScores | undefined>)[`mention_scores_${platform}`];
     if (!scores) continue;
     const brand = Number(scores.brand_signal ?? 0);
     const compsTotal = Number(scores.competitors_combined_hits ?? 0);
@@ -342,31 +363,320 @@ function ReplyHighlight({ auditSlug, text, enabled }: { auditSlug: string; text:
   );
 }
 
+// ── Citations ─────────────────────────────────────────────────────────────────
+
+function FaviconImg({ domain }: { domain: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span className="w-4 h-4 rounded-sm bg-gray-200 inline-block shrink-0" />
+    );
+  }
+  return (
+    <img
+      src={`https://www.google.com/s2/favicons?domain=${domain}&sz=16`}
+      alt=""
+      width={16}
+      height={16}
+      className="rounded-sm shrink-0"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function CitationsList({
+  citations,
+  platformColor,
+}: {
+  citations: CitationItem[];
+  platformColor: string;
+}) {
+  if (!citations.length) {
+    return (
+      <p className="text-xs text-gray-400 italic">No external sites cited in this response.</p>
+    );
+  }
+  return (
+    <ul className="space-y-1.5">
+      {citations.map((c, i) => (
+        <li key={i} className="flex items-center gap-2 text-xs">
+          <FaviconImg domain={c.domain} />
+          <a
+            href={c.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium hover:underline truncate"
+            style={{ color: platformColor }}
+          >
+            {c.domain}
+          </a>
+          <ExternalLink className="w-3 h-3 shrink-0 text-gray-300" />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function CitationsSummaryTable({
+  sites,
+  urls,
+  activePlatforms,
+}: {
+  sites: TopCitedSite[];
+  urls?: TopCitedUrl[];
+  activePlatforms: string[];
+}) {
+  // Prefer URL-level data if available; fall back to domain-level sites
+  const rows = useMemo(() => {
+    if (urls?.length) {
+      return urls
+        .filter((u) => u.probe_platforms.some((p) => activePlatforms.includes(p)))
+        .slice(0, 15);
+    }
+    return sites
+      .filter((s) => s.platforms.some((p) => activePlatforms.includes(p)))
+      .slice(0, 15)
+      .map((s) => ({
+        url: s.example_url ?? `https://${s.domain}`,
+        domain: s.domain,
+        frequency: s.count,
+        brand_mentioned: s.brand_mentioned ?? false,
+        competitor_mentioned: s.competitor_mentioned ?? false,
+        competitor_names: s.competitor_names ?? [],
+        content_type: undefined as string | undefined,
+        channel_type: undefined as string | undefined,
+      }));
+  }, [urls, sites, activePlatforms]);
+
+  if (!rows.length) return null;
+
+  return (
+    <div className="mb-6">
+      <h4 className="text-sm font-bold text-brand-dark mb-1">Most Cited Sites</h4>
+      <p className="text-xs text-gray-500 mb-3">
+        Websites most commonly referenced in AI-generated answers. Full breakdown in the{" "}
+        <strong>Citations</strong> tab.
+      </p>
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50">
+              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-4 py-2.5">URL</th>
+              <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-3 py-2.5 whitespace-nowrap">Frequency</th>
+              <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-3 py-2.5 whitespace-nowrap">Brand</th>
+              <th className="text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wide px-3 py-2.5 whitespace-nowrap hidden sm:table-cell">Competitors</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {rows.map((row, i) => (
+              <tr key={i} className="hover:bg-gray-50/60 transition-colors">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <FaviconImg domain={row.domain} />
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-brand-dark truncate">{row.domain}</p>
+                      <a
+                        href={row.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-gray-400 hover:text-brand-dark truncate block"
+                      >
+                        {row.url}
+                      </a>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <span className="inline-block font-bold text-brand-dark text-xs py-0.5 px-2 bg-gray-100 rounded-full min-w-[24px] text-center">
+                    {row.frequency}
+                  </span>
+                </td>
+                <td className="px-3 py-3 text-center text-xs">
+                  {row.brand_mentioned
+                    ? <span className="font-semibold text-emerald-600">Yes</span>
+                    : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-3 py-3 text-center text-xs hidden sm:table-cell">
+                  {row.competitor_mentioned
+                    ? <span className="font-semibold text-blue-600">Yes</span>
+                    : <span className="text-gray-300">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Google AIO ────────────────────────────────────────────────────────────────
+
+const AIO_COLOR = "#4285F4";
+
+function GoogleAioSection({
+  aio,
+  onRun,
+  running,
+}: {
+  aio: AioProbeResult | null | undefined;
+  onRun: () => void;
+  running: boolean;
+}) {
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const hasResults = Boolean(aio?.per_prompt?.length);
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <h4 className="text-sm font-bold text-brand-dark">Google AI Overview Probe</h4>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Uses Gemini with Google Search grounding to simulate AI Overview responses and extract cited sources.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary shrink-0 text-xs py-1.5"
+          disabled={running}
+          onClick={onRun}
+        >
+          {running ? (
+            <><Loader2 className="w-3.5 h-3.5 animate-spin" />Running…</>
+          ) : hasResults ? "Re-run AIO probes" : "Run AIO probes"}
+        </button>
+      </div>
+
+      {aio && !aio.available && aio.error && (
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+          {aio.error}
+        </p>
+      )}
+
+      {hasResults && aio && (
+        <>
+          {/* AIO top cited sites mini-table */}
+          {aio.top_cited_sites?.length ? (
+            <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/40 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-blue-100 flex items-center gap-2">
+                <svg width={14} height={14} viewBox="0 0 24 24" fill={AIO_COLOR} aria-hidden="true">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                </svg>
+                <span className="text-xs font-semibold text-blue-800">
+                  Top Google-cited sources ({aio.top_cited_sites.length})
+                </span>
+              </div>
+              <ul className="divide-y divide-blue-100">
+                {aio.top_cited_sites.slice(0, 8).map((site, i) => (
+                  <li key={i} className="flex items-center gap-3 px-4 py-2">
+                    <FaviconImg domain={site.domain} />
+                    <a
+                      href={site.example_url ?? `https://${site.domain}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-medium text-blue-700 hover:underline flex-1 truncate"
+                    >
+                      {site.title || site.domain}
+                    </a>
+                    <span className="text-[10px] font-bold text-blue-600 shrink-0">
+                      ×{site.count}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {/* Per-prompt AIO accordion */}
+          <div className="space-y-2">
+            {aio.per_prompt.map((row) => (
+              <div
+                key={row.index}
+                className="rounded-xl border border-blue-200 bg-white overflow-hidden"
+              >
+                <button
+                  type="button"
+                  className="w-full flex items-start gap-2 px-4 py-3 text-left hover:bg-blue-50/50 transition-colors"
+                  onClick={() => setExpanded(expanded === row.index ? null : row.index)}
+                >
+                  <span className="text-[11px] font-bold text-blue-400 shrink-0 pt-0.5">Q{row.index}</span>
+                  <span className="text-sm font-medium text-brand-dark flex-1 leading-snug">{row.prompt}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {row.error ? (
+                      <span className="text-[10px] font-semibold text-red-500">Error</span>
+                    ) : (
+                      <span
+                        className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: `${AIO_COLOR}18`, color: AIO_COLOR }}
+                      >
+                        {row.citations.length} source{row.citations.length !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    <ChevronDown
+                      className="w-3.5 h-3.5 text-gray-400 transition-transform"
+                      style={{ transform: expanded === row.index ? "rotate(180deg)" : "rotate(0deg)" }}
+                    />
+                  </div>
+                </button>
+
+                {expanded === row.index && (
+                  <div className="px-4 pb-4 border-t border-blue-100">
+                    {row.error ? (
+                      <p className="text-xs text-red-500 mt-3">{row.error}</p>
+                    ) : (
+                      <>
+                        {row.response && (
+                          <p className="text-xs text-gray-600 leading-relaxed mt-3 mb-3 line-clamp-4">
+                            {row.response}
+                          </p>
+                        )}
+                        {row.citations.length > 0 ? (
+                          <CitationsList citations={row.citations} platformColor={AIO_COLOR} />
+                        ) : (
+                          <p className="text-xs text-gray-400 italic mt-2">No sources cited.</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Per-prompt card ───────────────────────────────────────────────────────────
 
-const PLATFORM_CONFIG = [
-  { key: "gemini" as const, label: "Gemini", color: PLATFORM_GEMINI, icon: <GeminiIcon size={14} /> },
-  { key: "openai" as const, label: "OpenAI", color: PLATFORM_OPENAI, icon: <OpenAIIcon size={14} /> },
-  { key: "claude" as const, label: "Claude", color: PLATFORM_CLAUDE, icon: <ClaudeIcon size={14} /> },
+const PLATFORM_CONFIG: { key: ProbePlatform; label: string; color: string; icon: React.ReactNode }[] = [
+  { key: "gemini", label: "Gemini", color: PLATFORM_GEMINI, icon: <GeminiIcon size={14} /> },
+  { key: "openai", label: "OpenAI", color: PLATFORM_OPENAI, icon: <OpenAIIcon size={14} /> },
+  { key: "claude", label: "Claude", color: PLATFORM_CLAUDE, icon: <ClaudeIcon size={14} /> },
+  { key: "google_aio", label: "Google AI Summaries", color: PLATFORM_GOOGLE_AIO, icon: <GoogleAioIcon size={14} /> },
 ];
 
-function PromptCard({
+// ── New: interactive vertical-expand table ────────────────────────────────────
+
+function PromptTableRow({
   auditSlug,
   row,
   brandLabel,
+  brandMatchTokens,
   productLabel,
   activePlatforms,
+  isEven,
 }: {
   auditSlug: string;
   row: LiveProbePerPrompt;
   brandLabel: string;
+  brandMatchTokens: string[];
   productLabel?: string;
   activePlatforms: ProbePlatform[];
+  isEven: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [activeModel, setActiveModel] = useState<ProbePlatform>(
-    activePlatforms[0] ?? "gemini",
-  );
 
   const platforms = PLATFORM_CONFIG.filter((p) => {
     if (!activePlatforms.includes(p.key)) return false;
@@ -375,147 +685,140 @@ function PromptCard({
     return resp || err;
   });
 
+  const colSpan = 2 + platforms.length + 1;
+
   return (
-    <div className="rounded-xl bg-stone-50 border border-stone-200 p-4 mb-3">
-      {/* Product label */}
-      {productLabel && (
-        <span className="inline-block text-[11px] font-semibold bg-stone-200 text-stone-600 px-2 py-0.5 rounded-full mb-2">
-          {productLabel}
-        </span>
-      )}
-
-      {/* Q# + prompt */}
-      <div className="flex items-start gap-2 mb-3">
-        <span className="text-[11px] font-bold text-gray-400 shrink-0 pt-0.5">Q{row.index}</span>
-        <span className="text-sm font-semibold text-brand-dark leading-snug">{row.prompt}</span>
-      </div>
-
-      {/* Platform mention indicators */}
-      <div className="flex flex-wrap gap-2 mb-3">
+    <>
+      <tr
+        className={`cursor-pointer transition-colors ${
+          open
+            ? "bg-[#0d0d0d] text-white"
+            : isEven
+              ? "bg-white hover:bg-gray-50"
+              : "bg-gray-50/50 hover:bg-gray-100/50"
+        }`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <td className={`px-4 py-3 text-xs font-bold tabular-nums ${open ? "text-gray-300" : "text-gray-400"}`}>
+          Q{row.index}
+        </td>
+        <td className="px-4 py-3">
+          {productLabel && (
+            <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full mb-1 ${open ? "bg-white/15 text-gray-200" : "bg-stone-200 text-stone-600"}`}>
+              {productLabel}
+            </span>
+          )}
+          <p className={`text-sm font-medium leading-snug ${open ? "text-white" : "text-[#0d0d0d]"}`}>
+            {row.prompt}
+          </p>
+        </td>
         {platforms.map((p) => {
           const resp = String(row[`${p.key}_response` as keyof LiveProbePerPrompt] ?? "");
           const err = row[`error_${p.key}` as keyof LiveProbePerPrompt];
-          const mentioned = !err && brandLabel && resp.toLowerCase().includes(brandLabel.toLowerCase());
+          const mentioned = !err && textMentionsBrand(resp, brandLabel, brandMatchTokens);
           return (
-            <span
-              key={p.key}
-              className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full"
-              style={{ background: `${p.color}18`, color: p.color }}
-            >
-              {p.icon}
-              {p.label}
-              <span style={{ color: mentioned ? SOV_GREEN : "#e17055" }}>
-                {mentioned ? "✓" : "✗"}
-              </span>
-            </span>
-          );
-        })}
-      </div>
-
-      {/* Expand / collapse */}
-      <button
-        type="button"
-        className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-700 transition-colors"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <ChevronDown
-          className="w-3.5 h-3.5 transition-transform duration-150"
-          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-          strokeWidth={2.5}
-        />
-        {open ? "Hide" : "View"} AI responses
-      </button>
-
-      {open && (
-        <div className="mt-4">
-          {/* Platform tabs */}
-          <div className="flex flex-wrap gap-2 mb-4">
-            {platforms.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setActiveModel(p.key)}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors"
+            <td key={p.key} className="px-3 py-3 text-center">
+              <span
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold"
                 style={
-                  activeModel === p.key
-                    ? { background: p.color, color: "#fff" }
-                    : { background: `${p.color}18`, color: p.color }
+                  mentioned
+                    ? { background: "#e8f8f5", color: SOV_GREEN }
+                    : { background: open ? "rgba(255,255,255,.1)" : "#f5f5f5", color: open ? "rgba(255,255,255,.4)" : "#ccc" }
                 }
               >
-                {p.icon}
-                {p.label}
-              </button>
-            ))}
-          </div>
+                {mentioned ? "✓" : "✗"}
+              </span>
+            </td>
+          );
+        })}
+        <td className="px-3 py-3 text-center">
+          <ChevronDown
+            className={`w-4 h-4 mx-auto transition-transform duration-150 ${open ? "text-gray-300 rotate-180" : "text-gray-400"}`}
+          />
+        </td>
+      </tr>
 
-          {/* Active platform response */}
-          {platforms.map((p) => {
-            if (p.key !== activeModel) return null;
-            const err = row[`error_${p.key}` as keyof LiveProbePerPrompt] as string | undefined;
-            const body = row[`${p.key}_response` as keyof LiveProbePerPrompt] as string | undefined;
-            const brandPct = Number(row[`${p.key}_brand_mention_pct` as keyof LiveProbePerPrompt] ?? 0);
-            const compPct = Number(row[`${p.key}_competitor_mention_pct` as keyof LiveProbePerPrompt] ?? 0);
-            const detail = (
-              p.key === "gemini"
-                ? row.mention_scores_gemini?.competitor_detail
-                : p.key === "openai"
-                  ? row.mention_scores_openai?.competitor_detail
-                  : row.mention_scores_claude?.competitor_detail
-            );
-            return (
-              <div key={p.key} className="rounded-lg border-l-2 pl-4 py-1" style={{ borderColor: p.color }}>
-                <div className="flex flex-wrap gap-4 mb-3">
-                  <div>
-                    <p className="text-xs text-gray-400">Brand mention</p>
-                    <p className="text-lg font-bold" style={{ color: SOV_GREEN }}>{brandPct.toFixed(1)}%</p>
+      {open && (
+        <tr>
+          <td colSpan={colSpan} className="px-0 py-0">
+            <div className="border-t border-gray-700 bg-gray-50 divide-y divide-gray-100">
+              {platforms.map((p) => {
+                const err = row[`error_${p.key}` as keyof LiveProbePerPrompt] as string | undefined;
+                const body = row[`${p.key}_response` as keyof LiveProbePerPrompt] as string | undefined;
+                const brandPct = Number(row[`${p.key}_brand_mention_pct` as keyof LiveProbePerPrompt] ?? 0);
+                const compPct = Number(row[`${p.key}_competitor_mention_pct` as keyof LiveProbePerPrompt] ?? 0);
+                const citations = ((row as Record<string, unknown>)[`citations_${p.key}`] ?? []) as CitationItem[];
+                const mentioned = !err && textMentionsBrand(String(body ?? ""), brandLabel, brandMatchTokens);
+
+                return (
+                  <div key={p.key} className="px-6 py-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg"
+                        style={{ background: `${p.color}18` }}
+                      >
+                        {p.icon}
+                      </span>
+                      <span className="text-sm font-bold text-[#0d0d0d]">{p.label}</span>
+                      <span
+                        className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ml-1"
+                        style={mentioned ? { background: "#e8f8f5", color: SOV_GREEN } : { background: "#f5f5f5", color: "#bbb" }}
+                      >
+                        {mentioned ? "Brand mentioned" : "Not mentioned"}
+                      </span>
+                      <span className="text-xs text-gray-400 ml-auto">
+                        Brand {brandPct.toFixed(0)}% · Comp {compPct.toFixed(0)}%
+                      </span>
+                    </div>
+                    {err ? (
+                      <div className="alert-error text-sm">{err}</div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="text-sm text-gray-700 leading-relaxed bg-white rounded-lg border border-gray-100 p-4 max-h-64 overflow-y-auto">
+                          <ReplyHighlight auditSlug={auditSlug} text={String(body ?? "")} enabled />
+                        </div>
+                        {citations.length > 0 && (
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">
+                              Citations ({citations.length})
+                            </p>
+                            <CitationsList citations={citations} platformColor={p.color} />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-400">Competitors</p>
-                    <p className="text-lg font-bold" style={{ color: SOV_BLUE }}>{compPct.toFixed(1)}%</p>
-                  </div>
-                </div>
-                {detail && Object.keys(detail).length > 0 && (
-                  <p className="text-xs text-gray-500 mb-3">
-                    Competitor hits: {Object.entries(detail).sort(([a], [b]) => a.localeCompare(b)).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(", ")}
-                  </p>
-                )}
-                {err ? (
-                  <div className="alert-error text-sm">{err}</div>
-                ) : (
-                  <ReplyHighlight auditSlug={auditSlug} text={String(body ?? "")} enabled />
-                )}
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
 
-// ── Per-prompt list with show-more ────────────────────────────────────────────
-
-function PerPromptList({
+function PromptTable({
   auditSlug,
   ctx,
   live,
   brandLabel,
+  brandMatchTokens,
   activePlatforms,
 }: {
   auditSlug: string;
   ctx: PromptPerformanceContext;
   live: LiveProbeResult;
   brandLabel: string;
+  brandMatchTokens: string[];
   activePlatforms: ProbePlatform[];
 }) {
   const [showAll, setShowAll] = useState(false);
-  const DEFAULT_VISIBLE = 3;
+  const DEFAULT_VISIBLE = 8;
 
-  // Flatten prompts preserving product/service labels when pss is enabled
   const allRows = useMemo(() => {
     const perPrompt = (live.per_prompt ?? []).filter(Boolean) as LiveProbePerPrompt[];
-    const mappingRows =
-      ctx.probed_pss_rows?.length ? ctx.probed_pss_rows : ctx.pss_rows;
+    const mappingRows = ctx.probed_pss_rows?.length ? ctx.probed_pss_rows : ctx.pss_rows;
     if (!ctx.use_pss || !mappingRows.length) {
       return perPrompt.map((row) => ({ row, productLabel: "" }));
     }
@@ -529,7 +832,6 @@ function PerPromptList({
         idx++;
       }
     }
-    // Append any remaining rows not covered by pss_rows
     while (idx < perPrompt.length) {
       result.push({ row: perPrompt[idx], productLabel: "" });
       idx++;
@@ -537,6 +839,7 @@ function PerPromptList({
     return result;
   }, [live, ctx]);
 
+  const platforms = PLATFORM_CONFIG.filter((p) => activePlatforms.includes(p.key));
   const visible = showAll ? allRows : allRows.slice(0, DEFAULT_VISIBLE);
   const hidden = allRows.length - DEFAULT_VISIBLE;
 
@@ -551,21 +854,41 @@ function PerPromptList({
         </span>
       </div>
 
-      {visible.map(({ row, productLabel }, i) => (
-        <PromptCard
-          key={`${row.index}-${i}`}
-          auditSlug={auditSlug}
-          row={row}
-          brandLabel={brandLabel}
-          productLabel={productLabel}
-          activePlatforms={activePlatforms}
-        />
-      ))}
+      <div className="rounded-xl border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400 w-10">#</th>
+              <th className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Prompt</th>
+              {platforms.map((p) => (
+                <th key={p.key} className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wide" style={{ color: p.color }}>
+                  {p.label}
+                </th>
+              ))}
+              <th className="px-3 py-2.5 w-8" />
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(({ row, productLabel }, i) => (
+              <PromptTableRow
+                key={`${row.index}-${i}`}
+                auditSlug={auditSlug}
+                row={row}
+                brandLabel={brandLabel}
+                brandMatchTokens={brandMatchTokens}
+                productLabel={productLabel}
+                activePlatforms={activePlatforms}
+                isEven={i % 2 === 0}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {!showAll && hidden > 0 && (
         <button
           type="button"
-          className="w-full mt-1 py-2.5 rounded-xl border border-dashed border-gray-300 text-sm font-semibold text-gray-500 hover:border-gray-400 hover:text-gray-700 transition-colors"
+          className="w-full mt-2 py-2.5 rounded-xl border border-dashed border-gray-300 text-sm font-semibold text-gray-500 hover:border-gray-400 hover:text-gray-700 transition-colors"
           onClick={() => setShowAll(true)}
         >
           Show {hidden} more prompt{hidden !== 1 ? "s" : ""}
@@ -574,6 +897,7 @@ function PerPromptList({
     </div>
   );
 }
+
 
 // ── Detected competitors table ────────────────────────────────────────────────
 
@@ -666,6 +990,7 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
   const [probing, setProbing] = useState(false);
   const [probeMsg, setProbeMsg] = useState<string | null>(null);
   const [sentiment, setSentiment] = useState<PromptSentimentAnalysis | null>(null);
+  const [aioRunning, setAioRunning] = useState(false);
 
   const slug = auditDirOrSlug;
 
@@ -728,6 +1053,18 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
     }
   };
 
+  const runAio = async () => {
+    setAioRunning(true);
+    try {
+      const res = await runAioProbes(slug);
+      setCtx((prev) => prev ? { ...prev, aio_probe: res.aio_probe } : prev);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AIO probe run failed");
+    } finally {
+      setAioRunning(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -739,12 +1076,17 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
   if (!ctx) return null;
 
   const brandLabel = ctx.brand_name?.trim() || "Brand";
+  const brandMatchTokens =
+    ctx.highlight?.brand_match_tokens?.length
+      ? ctx.highlight.brand_match_tokens
+      : live?.brand_match_tokens ?? [];
   const mcc = ctx.primary_market?.country;
   const mid = ctx.primary_market?.country_id;
 
   // SOV numbers from aggregate
   const perPrompt = (live?.per_prompt ?? []) as LiveProbePerPrompt[];
   const hasClaude = isProbePlatformActive("claude", live);
+  const hasGoogleAio = isProbePlatformActive("google_aio", live);
   const numPlatforms = Math.max(activePlatforms.length, 1);
 
   const gBp = live?.aggregate?.gemini?.brand_share_pct ?? 0;
@@ -753,16 +1095,20 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
   const oCp = avgPerCompetitorSovPct(perPrompt, "openai");
   const cBp = live?.aggregate?.claude?.brand_share_pct ?? 0;
   const cCp = avgPerCompetitorSovPct(perPrompt, "claude");
+  const aiBp = live?.aggregate?.google_aio?.brand_share_pct ?? 0;
+  const aiCp = avgPerCompetitorSovPct(perPrompt, "google_aio");
 
   const platformBrandPcts: Record<ProbePlatform, number> = {
     gemini: gBp,
     openai: oBp,
     claude: cBp,
+    google_aio: aiBp,
   };
   const platformCompPcts: Record<ProbePlatform, number> = {
     gemini: gCp,
     openai: oCp,
     claude: cCp,
+    google_aio: aiCp,
   };
   const overallBp =
     activePlatforms.reduce((sum, p) => sum + platformBrandPcts[p], 0) / numPlatforms;
@@ -881,7 +1227,7 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
               brandPct={overallBp}
               compPct={overallCp}
             />
-            <div className={`grid gap-4 mt-4 ${activePlatforms.length >= 3 ? "md:grid-cols-3" : activePlatforms.length === 2 ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
+            <div className={`grid gap-4 mt-4 ${activePlatforms.length >= 4 ? "md:grid-cols-4" : activePlatforms.length >= 3 ? "md:grid-cols-3" : activePlatforms.length === 2 ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
               {isProbePlatformActive("gemini", live) && (
               <PlatformSovCard
                 title="Gemini"
@@ -912,15 +1258,42 @@ export function PromptPerformanceSection({ auditDirOrSlug }: { auditDirOrSlug: s
                   compPct={cCp}
                 />
               )}
+              {hasGoogleAio && (
+                <PlatformSovCard
+                  title="Google AI Summaries"
+                  accentColor={PLATFORM_GOOGLE_AIO}
+                  icon={<GoogleAioIcon size={18} />}
+                  brandLabel={brandLabel}
+                  brandPct={aiBp}
+                  compPct={aiCp}
+                />
+              )}
             </div>
           </div>
 
+          {/* Most cited sites */}
+          {(live.top_cited_urls?.length || live.top_cited_sites?.length) ? (
+            <CitationsSummaryTable
+              sites={live.top_cited_sites ?? []}
+              urls={live.top_cited_urls}
+              activePlatforms={activePlatforms}
+            />
+          ) : null}
+
+          {/* Google AI Overview probe */}
+          <GoogleAioSection
+            aio={ctx.aio_probe}
+            onRun={runAio}
+            running={aioRunning}
+          />
+
           {/* Per-prompt responses */}
-          <PerPromptList
+          <PromptTable
             auditSlug={slug}
             ctx={ctx}
             live={live}
             brandLabel={brandLabel}
+            brandMatchTokens={brandMatchTokens}
             activePlatforms={activePlatforms}
           />
 

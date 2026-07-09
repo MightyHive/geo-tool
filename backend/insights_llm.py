@@ -192,6 +192,95 @@ def filter_sentiment_for_probed_rows(
     return sentiment.model_copy(update={"by_category": filtered})
 
 
+def _category_brand_hits(
+    probed_rows: list[dict[str, Any]],
+    per_prompt: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Total brand_signal per probed category across all platforms."""
+    from api.prompt_selection import probed_category_labels
+
+    labels = probed_category_labels(probed_rows)
+    if not labels:
+        return {}
+    meta: list[str] = []
+    for r in probed_rows:
+        pos = str(r.get("product_or_service") or "").strip() or "General"
+        for p in r.get("prompts") or []:
+            s = str(p).strip()
+            if s:
+                meta.append(pos)
+    hits = {label: 0 for label in labels}
+    for i, row in enumerate(per_prompt):
+        if i >= len(meta) or not isinstance(row, dict):
+            continue
+        cat = meta[i]
+        total = 0
+        for platform in ("gemini", "openai", "claude"):
+            scores = row.get(f"mention_scores_{platform}") or {}
+            if isinstance(scores, dict):
+                total += int(scores.get("brand_signal") or 0)
+        hits[cat] = hits.get(cat, 0) + total
+    return hits
+
+
+def ground_sentiment_on_mentions(
+    sentiment: PromptSentimentResponse,
+    *,
+    probed_rows: list[dict[str, Any]],
+    per_prompt: list[dict[str, Any]],
+) -> PromptSentimentResponse:
+    """Align LLM sentiment with mention-based brand visibility."""
+    category_hits = _category_brand_hits(probed_rows, per_prompt)
+    total_hits = sum(category_hits.values())
+    if total_hits <= 0:
+        note = (
+            "No brand mentions were detected in live probe replies using flexible brand-name matching "
+            "(including hyphen/spacing variants and product-line aliases)."
+        )
+        by_category = [
+            row.model_copy(
+                update={
+                    "sentiment": "Neutral",
+                    "summary": (
+                        f"{note} {row.summary}"
+                        if row.sentiment != "Neutral"
+                        else (row.summary or note)
+                    ),
+                }
+            )
+            for row in sentiment.by_category
+        ]
+        return sentiment.model_copy(
+            update={
+                "overall_sentiment": "Neutral",
+                "overall_summary": (
+                    f"{note} Assistant replies may discuss the category without naming the brand."
+                ),
+                "by_category": by_category,
+            }
+        )
+
+    updated_rows: list[CategorySentimentRow] = []
+    for row in sentiment.by_category:
+        hits = int(category_hits.get(row.category.strip(), 0))
+        if hits > 0:
+            updated_rows.append(row)
+            continue
+        prefix = "Brand not mentioned in probe replies for this category (mention-based check). "
+        sentiment_label = row.sentiment
+        if sentiment_label in ("Positive", "Mixed"):
+            sentiment_label = "Neutral"
+        updated_rows.append(
+            row.model_copy(
+                update={
+                    "sentiment": sentiment_label,
+                    "summary": prefix + (row.summary or ""),
+                }
+            )
+        )
+    return sentiment.model_copy(update={"by_category": updated_rows})
+
+
 def generate_prompt_sentiment(
     live_probe: dict[str, Any],
     *,
@@ -213,6 +302,8 @@ def generate_prompt_sentiment(
     cat_line = ", ".join(categories) if categories else "(single bucket — no product categories)"
     brand = (brand_name or "the brand").strip() or "the brand"
     site = (site_url or "").strip() or "the site"
+    category_hits = _category_brand_hits(probed_rows, per_clean)
+    hit_lines = ", ".join(f"{k}: {v} mention hit(s)" for k, v in sorted(category_hits.items())) or "none"
     prompt = f"""
 You analyse **sentiment toward a brand** in AI assistant replies (Gemini and OpenAI) from a live GEO probe.
 
@@ -220,12 +311,15 @@ Brand to judge sentiment **toward**: **{brand}** (site: **{site}**)
 
 Categories to cover in ``by_category`` (use these exact labels only): {cat_line}
 
+Mention-based brand hits already counted in replies (flexible spelling + product-line aliases): {hit_lines}
+
 For each category, read the bundled replies below. Judge how favourably, neutrally, or critically the assistants portray **{brand}** (recommendations, trust, warnings, omissions vs competitors).
 
 Sentiment labels must be exactly one of: **Positive**, **Mixed**, **Neutral**, **Negative**.
 
 Rules:
 - Base judgment only on the reply text — not on idealised brand reputation.
+- If mention hits for a category are **0**, sentiment must be **Neutral** and the summary must state the brand was not mentioned.
 - ``overall_sentiment`` synthesises all replies; ``by_category`` must include exactly the categories listed above — no extra rows.
 - Do not invent categories (e.g. do not add "Custom prompts" unless it is listed above).
 - Be specific (mention praise, caveats, competitor preference, or absence of brand).
@@ -235,11 +329,17 @@ Bundled prompts and replies:
 {bundled}
 """.strip()
     raw = _generate_structured(prompt, PromptSentimentResponse, model=model)  # type: ignore[assignment]
-    return filter_sentiment_for_probed_rows(raw, probed_rows)
+    grounded = ground_sentiment_on_mentions(
+        raw,
+        probed_rows=probed_rows,
+        per_prompt=per_clean,
+    )
+    return filter_sentiment_for_probed_rows(grounded, probed_rows)
 
 
 GA4_INSIGHTS_FILE = "ga4_ai_insights.json"
 SENTIMENT_FILE = "prompt_performance_sentiment.json"
+MENTION_RULES_VERSION = 2
 
 
 def _file_mtime(path: Path) -> float | None:
@@ -324,6 +424,7 @@ def save_sentiment_cache(audit_dir: Path, probe_path: Path, sentiment: PromptSen
     payload = {
         "generated_at": datetime.now(UTC).isoformat(),
         "source_mtime": _file_mtime(probe_path),
+        "mention_rules_version": MENTION_RULES_VERSION,
         "sentiment": sentiment.model_dump(),
     }
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -345,7 +446,14 @@ def load_or_generate_prompt_sentiment(
     if cached and isinstance(cached.get("sentiment"), dict):
         try:
             sent = PromptSentimentResponse.model_validate(cached["sentiment"])
-            return filter_sentiment_for_probed_rows(sent, probed_rows), None
+            per = live_probe.get("per_prompt") or []
+            per_clean = [p for p in per if isinstance(p, dict)]
+            sent = ground_sentiment_on_mentions(
+                filter_sentiment_for_probed_rows(sent, probed_rows),
+                probed_rows=probed_rows,
+                per_prompt=per_clean,
+            )
+            return sent, None
         except Exception:
             pass
     try:

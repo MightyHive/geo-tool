@@ -25,7 +25,7 @@ Environment:
 
 Default date range: 2022-06-01 through 2026-05-31.
 
-Outputs (in this directory by default):
+Outputs (default: ``research/ga4/exports/daily/``):
   ga4_channel_long_{name}_{property_id}.csv
   ga4_channel_wide_{name}_{property_id}.csv
 """
@@ -41,10 +41,16 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_GA4_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = _GA4_ROOT.parent.parent
+_RESEARCH_ROOT = _GA4_ROOT.parent
 _BACKEND_ROOT = _REPO_ROOT / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
+if str(_RESEARCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_RESEARCH_ROOT))
+
+from paths import GA4_DAILY  # noqa: E402
 
 from ga4_data_api import ga4_log  # noqa: E402
 from ga4_fetch import (  # noqa: E402
@@ -374,7 +380,7 @@ def run_export(
     force_login: bool = False,
     auth_code: str | None = None,
 ) -> tuple[Path, Path]:
-    out_dir = (output_dir or Path(__file__).resolve().parent).resolve()
+    out_dir = (output_dir or GA4_DAILY).resolve()
     token_file = (token_path or _DEFAULT_CLI_TOKEN_PATH).expanduser().resolve()
     pid = normalize_property_id(property_id)
 
@@ -444,7 +450,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(__file__).resolve().parent,
+        default=GA4_DAILY,
         help="Directory for output CSV files",
     )
     parser.add_argument(

@@ -106,7 +106,7 @@ If `requirements-brand-sentiment.txt` is installed (PyTorch + Transformers), Red
 | Context | Auth |
 |---------|------|
 | Web wizard | User OAuth → session → temp ADC JSON for subprocess |
-| CLI (`research/ga4_channel_export.py`) | OAuth token cache in `research/.ga4_oauth_token.json` |
+| CLI (`research/ga4/ga4_channel_export.py`) | OAuth token cache in `research/.ga4_oauth_token.json` |
 | Headless / CI | Service account via `GOOGLE_APPLICATION_CREDENTIALS` |
 
 OAuth flow (deployed app): `GET /api/ga4/login` → Google consent → `GET /api/ga4/callback` → `exchange_code()`.
@@ -143,7 +143,7 @@ Date ranges respect `GA4_START_DATE` / `GA4_END_DATE` with normalisation (`norma
 
 ### Research export (not audit pipeline)
 
-`research/ga4_channel_export.py` pulls daily `sessions` + `ecommercePurchases` by **`sessionDefaultChannelGroup`** for econometric work. Independent of audit `ga4_traffic.json`.
+`research/ga4/ga4_channel_export.py` pulls daily `sessions` + `ecommercePurchases` by **`sessionDefaultChannelGroup`** for econometric work. Independent of audit `ga4_traffic.json`.
 
 ---
 

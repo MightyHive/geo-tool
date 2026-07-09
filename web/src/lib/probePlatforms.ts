@@ -1,13 +1,14 @@
 import type { LiveProbeResult } from "../types";
 
-export type ProbePlatform = "gemini" | "openai" | "claude";
+export type ProbePlatform = "gemini" | "openai" | "claude" | "google_aio";
 
-export const ALL_PROBE_PLATFORMS: ProbePlatform[] = ["gemini", "openai", "claude"];
+export const ALL_PROBE_PLATFORMS: ProbePlatform[] = ["gemini", "openai", "claude", "google_aio"];
 
 const PLATFORM_LABELS: Record<ProbePlatform, string> = {
   gemini: "Gemini",
   openai: "OpenAI",
   claude: "Claude",
+  google_aio: "Google AI Summaries",
 };
 
 export function activeProbePlatforms(live: LiveProbeResult | null | undefined): ProbePlatform[] {

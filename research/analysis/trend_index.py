@@ -1,10 +1,16 @@
-import pandas as pd
-import numpy as np
-import statsmodels.formula.api as smf
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
 from scipy.stats import binomtest, wilcoxon
 
-df = pd.read_csv("trend_bq_export.csv")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from paths import LEGACY_OUTPUTS  # noqa: E402
+
+df = pd.read_csv(LEGACY_OUTPUTS / "trend_bq_export.csv")
 
 df["week"] = pd.to_datetime(df["week"])
 df = df.sort_values(["site", "week"])
@@ -98,7 +104,7 @@ period_summary = (
 )
 
 print(period_summary)
-period_summary.to_csv("site_period_summary.csv", index=False)
+period_summary.to_csv(LEGACY_OUTPUTS / "site_period_summary.csv", index=False)
 
 baseline = period_summary[
     period_summary["period"] == "pre_proliferation"
@@ -115,7 +121,7 @@ for m in metrics:
         period_changes[m] / period_changes[f"{m}_baseline"] - 1
     )
 
-period_changes.to_csv("site_period_changes_vs_baseline.csv", index=False)
+period_changes.to_csv(LEGACY_OUTPUTS / "site_period_changes_vs_baseline.csv", index=False)
 
 print(period_changes)
 

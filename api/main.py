@@ -92,6 +92,8 @@ class RunAuditRequest(BaseModel):
     wizard_market_country_code: str = ""
     wizard_products: list[WizardProductRow] = Field(default_factory=list)
     wizard_competitors: list[WizardCompetitorRow] = Field(default_factory=list)
+    crawl_urls: list[str] | None = None
+    notification_email: str | None = None
 
 
 @app.get("/api/health")
@@ -251,11 +253,22 @@ def audit_detail(audit_id: str) -> dict[str, Any]:
     summary = geo.load_audit_summary(audit_dir)
     report_html = (audit_dir / "report.html").is_file()
     report_meta = geo.load_report_meta(audit_dir) if report_html else None
+    onboarding: dict[str, Any] | None = None
+    ob_path = audit_dir / "onboarding_context.json"
+    if ob_path.is_file():
+        try:
+            import json as _json
+            raw = _json.loads(ob_path.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(raw, dict):
+                onboarding = raw
+        except Exception:
+            pass
     return {
         "audit_dir": geo.audit_dir_api_rel(audit_dir),
         "summary": summary,
         "has_report_html": report_html,
         "report_meta": report_meta,
+        "onboarding_context": onboarding,
     }
 
 
@@ -331,6 +344,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 competitors_detail=[c.model_dump() for c in body.wizard_competitors],
                 ga4_property_id=ga4_prop or "",
                 ga4_ai_channel_names=ga4_ch or "",
+                crawl_urls=body.crawl_urls or None,
             )
             rel = geo.audit_dir_api_rel(adir)
             yield f"data: {json.dumps({'type': 'started', 'audit_dir': rel})}\n\n"
@@ -355,6 +369,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 ga4_property_id=ga4_prop,
                 ga4_ai_channels=ga4_ch,
                 ga4_oauth_credentials_path=ga4_cred_path,
+                crawl_urls=body.crawl_urls or None,
             ):
                 if stream_progress and progress_state is not None:
                     progress_state = apply_log_line(progress_state, line)

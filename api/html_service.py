@@ -113,14 +113,25 @@ def build_prompt_performance_section(audit_dir: Path) -> str:
     sentiment = (sent_data or {}).get("sentiment", {})
     try:
         from api.prompt_performance import _build_context_response
-        from insights_llm import PromptSentimentResponse, filter_sentiment_for_probed_rows
+        from insights_llm import (
+            PromptSentimentResponse,
+            filter_sentiment_for_probed_rows,
+            ground_sentiment_on_mentions,
+        )
 
         ctx = _build_context_response(audit_dir)
         probed_rows = ctx.get("probed_pss_rows")
+        live_probe = (ctx.get("live_probe") or {}) if isinstance(ctx.get("live_probe"), dict) else {}
+        per_clean = [p for p in (live_probe.get("per_prompt") or []) if isinstance(p, dict)]
         if isinstance(probed_rows, list) and sentiment:
-            sentiment = filter_sentiment_for_probed_rows(
+            sent = filter_sentiment_for_probed_rows(
                 PromptSentimentResponse.model_validate(sentiment),
                 probed_rows,
+            )
+            sentiment = ground_sentiment_on_mentions(
+                sent,
+                probed_rows=probed_rows,
+                per_prompt=per_clean,
             ).model_dump()
     except Exception:
         pass

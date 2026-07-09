@@ -1,24 +1,127 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import { fetchAudit, fetchConfig, reportHtmlUrl, reportAllPagesHtmlUrl, reportPdfUrl } from "../api/client";
+import { AiVisibilityOverview } from "../components/AiVisibilityOverview";
+import { CitationsPage } from "../components/CitationsPage";
+import { ConfigSection } from "../components/ConfigSection";
 import { PromptPerformanceSection } from "../components/PromptPerformanceSection";
 import { ReportHeader } from "../components/ReportHeader";
+import { WipSection } from "../components/WipSection";
 import { Card, CardDescription } from "../components/ui/Card";
 import { cn } from "../lib/utils";
 import type { AppConfig, AuditDetail } from "../types";
 
-const DEFAULT_SECTIONS = [
-  { id: "summary", label: "Summary" },
-  { id: "ga4-traffic", label: "AI traffic (GA4)" },
-  { id: "recommendations", label: "Recommendations" },
-  { id: "competitors", label: "Competitor comparison" },
-  { id: "ai-visibility", label: "AI visibility" },
-  { id: "technical", label: "Technical setup" },
-  { id: "content", label: "Content quality" },
-  { id: "samples", label: "Sample scripts" },
-  { id: "prompt_performance", label: "Prompt performance" },
+interface SectionDef {
+  id: string;
+  label: string;
+  group?: string;
+}
+
+interface SectionGroup {
+  header: string;
+  sections: SectionDef[];
+}
+
+const DEFAULT_SECTIONS: SectionDef[] = [
+  { id: "summary", label: "Summary", group: "Overview" },
+  { id: "config", label: "Config", group: "Overview" },
+  { id: "ga4-traffic", label: "AI Traffic Dashboard", group: "Overview" },
+  { id: "ai-visibility-overview", label: "Overview", group: "AI visibility" },
+  { id: "prompt_performance", label: "Prompts", group: "AI visibility" },
+  { id: "competitors", label: "Competitor comparison", group: "AI visibility" },
+  { id: "citations", label: "Citations", group: "AI visibility" },
+  { id: "technical-overview", label: "Overview", group: "Technical setup" },
+  { id: "technical", label: "Crawler access", group: "Technical setup" },
+  { id: "ai-visibility", label: "Citability", group: "Technical setup" },
+  { id: "platform-readiness", label: "Platform readiness", group: "Technical setup" },
+  { id: "content-overview", label: "Overview", group: "Content quality" },
+  { id: "content", label: "EEAT & Brand visibility", group: "Content quality" },
+  { id: "reddit-insights", label: "Reddit insights", group: "Content quality" },
+  { id: "youtube-insights", label: "YouTube insights", group: "Content quality" },
+  { id: "samples", label: "Sample scripts", group: "Workshop" },
+  { id: "content-outline", label: "Content outline generator", group: "Workshop" },
 ];
+
+const GROUP_ORDER = [
+  "Overview",
+  "AI visibility",
+  "Technical setup",
+  "Content quality",
+  "Workshop",
+];
+
+// Sections that are rendered as React components (not iframe)
+const REACT_SECTIONS = new Set([
+  "prompt_performance",
+  "citations",
+  "config",
+  "ai-visibility-overview",
+  "technical-overview",
+  "content-overview",
+  "reddit-insights",
+  "youtube-insights",
+  "content-outline",
+  "platform-readiness",
+]);
+
+// WIP sections
+const WIP_SECTIONS = new Set([
+  "technical-overview",
+  "content-overview",
+  "platform-readiness",
+  "reddit-insights",
+  "youtube-insights",
+  "content-outline",
+]);
+
+const WIP_LABELS: Record<string, { title: string; description?: string }> = {
+  "technical-overview": {
+    title: "Technical setup overview",
+    description: "A highlights summary of crawler access, citability and platform readiness. Coming soon.",
+  },
+  "content-overview": {
+    title: "Content quality overview",
+    description: "A highlights summary of EEAT, brand visibility and content insights. Coming soon.",
+  },
+  "platform-readiness": {
+    title: "Platform readiness",
+    description: "Detailed AI platform readiness checks across ChatGPT, Gemini, Claude and more. Coming soon.",
+  },
+  "reddit-insights": {
+    title: "Reddit insights",
+    description: "Brand and competitor mention analysis across Reddit communities. Coming soon.",
+  },
+  "youtube-insights": {
+    title: "YouTube insights",
+    description: "Brand and competitor visibility in YouTube search results and content. Coming soon.",
+  },
+  "content-outline": {
+    title: "Content outline generator",
+    description: "AI-powered content outline generation based on your brand and target prompts. Coming soon.",
+  },
+};
+
+function buildGroups(sections: SectionDef[]): SectionGroup[] {
+  const map = new Map<string, SectionDef[]>();
+  for (const s of sections) {
+    const g = s.group ?? "Other";
+    if (!map.has(g)) map.set(g, []);
+    map.get(g)!.push(s);
+  }
+  const ordered: SectionGroup[] = [];
+  for (const g of GROUP_ORDER) {
+    if (map.has(g)) {
+      ordered.push({ header: g, sections: map.get(g)! });
+    }
+  }
+  for (const [g, secs] of map) {
+    if (!GROUP_ORDER.includes(g)) {
+      ordered.push({ header: g, sections: secs });
+    }
+  }
+  return ordered;
+}
 
 export function ReportPage() {
   const { auditId: slug, section: sectionParam } = useParams<{
@@ -31,8 +134,10 @@ export function ReportPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const sections = config?.report_sections ?? DEFAULT_SECTIONS;
+  const rawSections = (config?.report_sections ?? DEFAULT_SECTIONS) as SectionDef[];
+  const sections = rawSections;
   const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+  const groups = useMemo(() => buildGroups(sections), [sections]);
 
   const section = useMemo(() => {
     if (sectionParam && sectionIds.includes(sectionParam)) return sectionParam;
@@ -86,7 +191,7 @@ export function ReportPage() {
   const auditRef = audit?.audit_dir ?? slug ?? "";
 
   const iframeSrc = useMemo(() => {
-    if (section === "prompt_performance") return null;
+    if (REACT_SECTIONS.has(section)) return null;
     return reportHtmlUrl(auditRef, section, true);
   }, [auditRef, section]);
 
@@ -122,24 +227,23 @@ export function ReportPage() {
       ) : null}
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
+        {/* ── Sidebar ── */}
         <nav
-          className="report-section-nav lg:w-60 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white/80 backdrop-blur-sm px-4 py-4 lg:py-6"
+          className="report-section-nav lg:w-56 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white/80 backdrop-blur-sm px-3 py-4 lg:py-6 overflow-y-auto"
           aria-label="Report sections"
         >
-          <p className="hidden lg:block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3 px-2">
-            Sections
-          </p>
-          <ul className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0">
+          {/* Mobile: flat scrollable list */}
+          <ul className="flex lg:hidden gap-1 overflow-x-auto pb-1">
             {sections.map((s) => (
               <li key={s.id} className="shrink-0">
                 <button
                   type="button"
                   onClick={() => goToSection(s.id)}
                   className={cn(
-                    "w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap lg:whitespace-normal",
+                    "px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap",
                     section === s.id
                       ? "bg-[#0d0d0d] text-white"
-                      : "text-gray-600 hover:bg-gray-100 hover:text-[#0d0d0d]",
+                      : "text-gray-600 hover:bg-gray-100",
                   )}
                 >
                   {s.label}
@@ -147,12 +251,81 @@ export function ReportPage() {
               </li>
             ))}
           </ul>
+
+          {/* Desktop: grouped list */}
+          <div className="hidden lg:block space-y-4">
+            {groups.map((grp) => (
+              <div key={grp.header}>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 px-2 mb-1">
+                  {grp.header}
+                </p>
+                <ul className="space-y-0.5">
+                  {grp.sections.map((s) => {
+                    const isWip = WIP_SECTIONS.has(s.id);
+                    const isActive = section === s.id;
+                    return (
+                      <li key={s.id}>
+                        <button
+                          type="button"
+                          onClick={() => goToSection(s.id)}
+                          className={cn(
+                            "w-full text-left px-2.5 py-2 rounded-md text-[13px] transition-colors flex items-center gap-1.5 group",
+                            isActive
+                              ? "bg-[#0d0d0d] text-white font-medium"
+                              : "text-gray-600 hover:bg-gray-100 hover:text-[#0d0d0d]",
+                          )}
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "w-3 h-3 shrink-0 transition-transform",
+                              isActive ? "opacity-100 text-white" : "opacity-0 group-hover:opacity-40",
+                            )}
+                          />
+                          <span className="flex-1">{s.label}</span>
+                          {isWip && (
+                            <span
+                              className={cn(
+                                "text-[9px] font-bold px-1.5 py-0.5 rounded",
+                                isActive ? "bg-white/20 text-white" : "bg-amber-100 text-amber-600",
+                              )}
+                            >
+                              WIP
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
         </nav>
 
+        {/* ── Main content ── */}
         <div className="report-section-body flex-1 min-w-0 min-h-0 overflow-auto">
           {section === "prompt_performance" ? (
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <PromptPerformanceSection auditDirOrSlug={auditRef} />
+            </div>
+          ) : section === "citations" ? (
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <CitationsPage auditDirOrSlug={auditRef} />
+            </div>
+          ) : section === "config" ? (
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <ConfigSection config={audit?.onboarding_context} />
+            </div>
+          ) : section === "ai-visibility-overview" ? (
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <AiVisibilityOverview auditDirOrSlug={auditRef} />
+            </div>
+          ) : WIP_SECTIONS.has(section) ? (
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <WipSection
+                title={WIP_LABELS[section]?.title ?? section}
+                description={WIP_LABELS[section]?.description}
+              />
             </div>
           ) : audit?.has_report_html && iframeSrc ? (
             <iframe

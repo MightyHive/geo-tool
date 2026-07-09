@@ -1,10 +1,15 @@
-import pandas as pd
-import numpy as np
-import statsmodels.formula.api as smf
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import statsmodels.formula.api as smf
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from paths import LEGACY_OUTPUTS  # noqa: E402
 
-df = pd.read_csv("trend_bq_export.csv")
+df = pd.read_csv(LEGACY_OUTPUTS / "trend_bq_export.csv")
 
 df["week"] = pd.to_datetime(df["week"])
 df = df.sort_values(["site", "week"])
@@ -162,8 +167,8 @@ summary = pd.DataFrame(all_summaries)
 
 print(summary)
 
-summary.to_csv("seo_ppc_sessions_counterfactual_summary.csv", index=False)
-predictions.to_csv("seo_ppc_sessions_counterfactual_predictions.csv", index=False)
+summary.to_csv(LEGACY_OUTPUTS / "seo_ppc_sessions_counterfactual_summary.csv", index=False)
+predictions.to_csv(LEGACY_OUTPUTS / "seo_ppc_sessions_counterfactual_predictions.csv", index=False)
 
 overall = (
     summary.groupby("outcome")
@@ -185,7 +190,7 @@ overall["total_gap_pct"] = (
 )
 
 print(overall)
-overall.to_csv("seo_ppc_sessions_counterfactual_overall.csv", index=False)
+overall.to_csv(LEGACY_OUTPUTS / "seo_ppc_sessions_counterfactual_overall.csv", index=False)
 
 def run_panel_counterfactual(outcome_log, outcome_raw):
     model_cols = [
@@ -267,8 +272,8 @@ panel_predictions = pd.concat(panel_predictions_list, ignore_index=True)
 print("\nPanel counterfactual results:")
 print(panel_results)
 
-panel_results.to_csv("panel_counterfactual_results.csv", index=False)
-panel_predictions.to_csv("panel_counterfactual_predictions.csv", index=False)
+panel_results.to_csv(LEGACY_OUTPUTS / "panel_counterfactual_results.csv", index=False)
+panel_predictions.to_csv(LEGACY_OUTPUTS / "panel_counterfactual_predictions.csv", index=False)
 
 
 for outcome_raw in ["SEO_sessions", "PPC_sessions", "Search_sessions"]:

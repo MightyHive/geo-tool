@@ -1,5 +1,6 @@
 import { auditSlug } from "../lib/auditPath";
 import type {
+  AioProbeResult,
   AppConfig,
   ArchiveResponse,
   AuditDetail,
@@ -111,6 +112,18 @@ export function disconnectGa4(): Promise<{ ok: boolean }> {
   return json("/ga4/disconnect", { method: "POST" });
 }
 
+export function discoverPages(payload: {
+  brand_website: string;
+  market_country?: string;
+  market_country_code?: string;
+}): Promise<{ urls: string[]; total_discovered: number; truncated: boolean }> {
+  return json("/wizard/discover-pages", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
+  });
+}
+
 export function probeSiteProtection(url: string): Promise<ProbeSiteProtection> {
   return json("/wizard/probe-site-protection", {
     method: "POST",
@@ -206,6 +219,24 @@ export function highlightPromptReply(
   });
 }
 
+export function runAioProbes(
+  auditDirOrSlug: string,
+  maxPrompts = 25,
+): Promise<{ aio_probe: AioProbeResult }> {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/prompt-performance/run-aio-probes`, {
+    method: "POST",
+    body: JSON.stringify({ max_prompts: maxPrompts }),
+  });
+}
+
+export function fetchAioAvailability(
+  auditDirOrSlug: string,
+): Promise<{ available: boolean; reason: string | null }> {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/prompt-performance/aio-availability`);
+}
+
 export function trackPromptCompetitor(
   auditDirOrSlug: string,
   websiteUrl: string,
@@ -226,7 +257,7 @@ export function reportHtmlUrl(
   const slug = auditSlug(auditDirOrSlug);
   const params = embed ? "?embed=1" : "";
   const base = `${API}/audits/${encodeURIComponent(slug)}/report.html${params}`;
-  if (!section || section === "prompt_performance") return base;
+  if (!section || section === "prompt_performance" || section === "citations") return base;
   return `${base}#${section}`;
 }
 
@@ -257,6 +288,8 @@ export interface RunAuditPayload {
   }[];
   ga4_property_id?: string;
   ga4_ai_channels?: string;
+  crawl_urls?: string[];
+  notification_email?: string;
 }
 
 export function startAuditBackground(

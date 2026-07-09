@@ -19,6 +19,8 @@ router = APIRouter(prefix="/api/audits", tags=["prompt-performance"])
 MAX_COMPETITORS = 12
 LIVE_PROBE_FILE = "prompt_performance_live_probe.json"
 PROBE_PENDING_FILE = "prompt_performance_probe_pending.json"
+AIO_PROBE_FILE = "prompt_performance_aio.json"
+AIO_PENDING_FILE = "prompt_performance_aio_pending.json"
 
 
 def _fallback_brand_label_from_url(url: str) -> str:
@@ -99,7 +101,28 @@ def _load_audit_onboarding(audit_dir: Path) -> dict[str, Any]:
     summ = _read_json(audit_dir / "audit_summary.json")
     if summ:
         merged.setdefault("audit_base_url", str(summ.get("base_url") or "").strip())
+    ga4_pages = _read_json(audit_dir / "ga4_top_pages.json")
+    if isinstance(ga4_pages, dict):
+        pages = ga4_pages.get("pages") or ga4_pages.get("top_pages")
+        if isinstance(pages, list) and pages:
+            merged.setdefault("ga4_top_pages", pages)
     return merged
+
+
+def _path_candidates_from_context(ctx: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("ga4_top_pages", "top_pages"):
+        raw = ctx.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict):
+                path = str(item.get("path") or item.get("url_path") or "").strip()
+                if path:
+                    paths.append(path)
+            elif isinstance(item, str) and item.strip():
+                paths.append(item.strip())
+    return paths
 
 
 def _primary_market_from_context(ctx: dict[str, Any]) -> tuple[str, str]:
@@ -165,6 +188,23 @@ def _competitor_lists(
     return urls, brands
 
 
+def _load_saved_aio_probe(audit_dir: Path) -> dict[str, Any] | None:
+    data = _read_json(audit_dir / AIO_PROBE_FILE)
+    return data if isinstance(data, dict) else None
+
+
+def aio_probe_is_pending(audit_dir: Path) -> bool:
+    return (audit_dir / AIO_PENDING_FILE).is_file()
+
+
+def _save_aio_probe(audit_dir: Path, aio: dict[str, Any]) -> None:
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / AIO_PROBE_FILE).write_text(
+        json.dumps(aio, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _load_saved_live_probe(audit_dir: Path) -> dict[str, Any] | None:
     data = _read_json(audit_dir / LIVE_PROBE_FILE)
     if not data:
@@ -226,12 +266,29 @@ def _build_context_response(audit_dir: Path) -> dict[str, Any]:
     live_probe = saved.get("live_probe") if isinstance(saved, dict) else None
     if isinstance(live_probe, dict):
         from api.probe_platforms import sanitize_live_probe
+        from prompt_suggest import recompute_live_probe_mention_scores
 
         live_probe = sanitize_live_probe(live_probe)
+        live_probe = recompute_live_probe_mention_scores(
+            live_probe,
+            path_candidates=_path_candidates_from_context(ctx),
+        )
     highlight = {
         "brand": str((saved or {}).get("highlight_brand") or brand),
         "competitor_urls": (saved or {}).get("highlight_comp_urls") or [],
         "competitor_brands": (saved or {}).get("highlight_comp_brands") or [],
+        "brand_match_tokens": (
+            live_probe.get("brand_match_tokens") if isinstance(live_probe, dict) else []
+        )
+        or [],
+        "brand_detected_spellings": (
+            live_probe.get("brand_detected_spellings") if isinstance(live_probe, dict) else []
+        )
+        or [],
+        "product_line_aliases": (
+            live_probe.get("product_line_aliases") if isinstance(live_probe, dict) else []
+        )
+        or [],
     }
     probed_flat: list[str] = []
     probed_pss_rows: list[dict[str, Any]] = []
@@ -253,6 +310,7 @@ def _build_context_response(audit_dir: Path) -> dict[str, Any]:
         competitors,
         product_labels=product_labels if use_pss else None,
     )
+    aio_probe = _load_saved_aio_probe(audit_dir)
     return {
         "brand_name": brand,
         "brand_site_url": site,
@@ -272,6 +330,8 @@ def _build_context_response(audit_dir: Path) -> dict[str, Any]:
         "industry": str(ctx.get("industry_used") or "").strip(),
         "live_probe": live_probe if isinstance(live_probe, dict) else None,
         "live_probe_in_progress": live_probe_is_pending(audit_dir),
+        "aio_probe": aio_probe,
+        "aio_probe_in_progress": aio_probe_is_pending(audit_dir),
         "highlight": highlight,
         "sov_history": sov_history,
         "sov_history_by_product": sov_history_by_product,
@@ -484,18 +544,25 @@ def get_prompt_sentiment(audit_id: str) -> dict[str, Any]:
     from insights_llm import (
         PromptSentimentResponse,
         filter_sentiment_for_probed_rows,
+        ground_sentiment_on_mentions,
         load_cached_sentiment,
         load_or_generate_prompt_sentiment,
     )
 
     probe_path = audit_dir / LIVE_PROBE_FILE
     probed_rows = _probed_pss_rows_from_context(ctx)
+    per_clean = [p for p in (live.get("per_prompt") or []) if isinstance(p, dict)]
     cached = load_cached_sentiment(audit_dir, probe_path)
     if cached and isinstance(cached.get("sentiment"), dict):
         try:
             sent = filter_sentiment_for_probed_rows(
                 PromptSentimentResponse.model_validate(cached["sentiment"]),
                 probed_rows,
+            )
+            sent = ground_sentiment_on_mentions(
+                sent,
+                probed_rows=probed_rows,
+                per_prompt=per_clean,
             )
             return {
                 "available": True,
@@ -542,6 +609,12 @@ def run_prompt_probes(audit_id: str, body: RunProbesBody | None = None) -> dict[
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
+    # Enrich YouTube / TikTok citations with view counts + thumbnails (best-effort)
+    try:
+        from video_enrichment import enrich_citations_in_probe
+        enrich_citations_in_probe(live)
+    except Exception:
+        pass
     _save_live_probe(
         audit_dir,
         live,
@@ -555,6 +628,55 @@ def run_prompt_probes(audit_id: str, body: RunProbesBody | None = None) -> dict[
 
     (audit_dir / SENTIMENT_FILE).unlink(missing_ok=True)
     return {"live_probe": live, "highlight": {"brand": brand, "competitor_urls": comp_urls, "competitor_brands": comp_brands}}
+
+
+class RunAioProbesBody(BaseModel):
+    max_prompts: int = 25
+
+
+@router.post("/{audit_id}/prompt-performance/run-aio-probes")
+def run_aio_probes_endpoint(audit_id: str, body: RunAioProbesBody | None = None) -> dict[str, Any]:
+    """Run Google AI Overview probes using Gemini grounded search for each prompt."""
+    from google_aio import run_aio_probes
+    from video_enrichment import enrich_aio_probe
+
+    audit_dir = _audit_dir_or_404(audit_id)
+    ctx_resp = _build_context_response(audit_dir)
+    prompts = _probe_prompts_for_api(ctx_resp)
+    if not prompts:
+        raise HTTPException(400, "No prompts on file for this audit.")
+    brand_site_url = str(ctx_resp.get("brand_site_url") or "").strip()
+    mcc = str((ctx_resp.get("primary_market") or {}).get("country") or "")
+    mid = str((ctx_resp.get("primary_market") or {}).get("country_id") or "")
+    max_p = (body.max_prompts if body is not None else 25) or 25
+    try:
+        aio = run_aio_probes(
+            prompts,
+            brand_site_url=brand_site_url,
+            max_prompts=max_p,
+            market_country=mcc,
+            market_country_code=mid,
+        )
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    # Enrich YouTube / TikTok citations (best-effort)
+    try:
+        enrich_aio_probe(aio)
+    except Exception:
+        pass
+
+    (audit_dir / AIO_PENDING_FILE).unlink(missing_ok=True)
+    _save_aio_probe(audit_dir, aio)
+    return {"aio_probe": aio}
+
+
+@router.get("/{audit_id}/prompt-performance/aio-availability")
+def aio_availability(audit_id: str) -> dict[str, Any]:
+    """Check whether Gemini grounded search is configured."""
+    from competitor_suggest import _gemini_api_key
+    key = _gemini_api_key()
+    return {"available": bool(key), "reason": None if key else "GEMINI_API_KEY not configured."}
 
 
 class HighlightBody(BaseModel):
@@ -578,16 +700,26 @@ def highlight_reply(audit_id: str, body: HighlightBody) -> dict[str, str]:
         hcb = []
     live = (saved or {}).get("live_probe") if isinstance(saved, dict) else None
     h_reply: list[str] | None = None
+    brand_match_tokens_list: list[str] | None = None
+    product_line_aliases: list[str] | None = None
     if isinstance(live, dict):
         raw = live.get("reply_detected_brand_names")
         if isinstance(raw, list):
             h_reply = [str(x).strip() for x in raw if str(x).strip()]
+        raw_tokens = live.get("brand_match_tokens")
+        if isinstance(raw_tokens, list):
+            brand_match_tokens_list = [str(x).strip() for x in raw_tokens if str(x).strip()]
+        raw_aliases = live.get("product_line_aliases")
+        if isinstance(raw_aliases, list):
+            product_line_aliases = [str(x).strip() for x in raw_aliases if str(x).strip()]
     html_out = highlight_response_html(
         body.text,
         hb,
         [str(x) for x in hc],
         [str(x) for x in hcb],
         reply_detected_brands=h_reply,
+        brand_match_tokens_list=brand_match_tokens_list,
+        product_line_aliases=product_line_aliases,
     )
     return {"html": html_out}
 

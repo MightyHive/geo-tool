@@ -17,6 +17,7 @@ import re
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import quote as _url_quote
 from urllib.parse import urlparse
 
 from geo_market import resolve_primary_market
@@ -34,6 +35,13 @@ from competitor_suggest import (
     _strip_json_fence,
     _truthy_env,
 )
+from google_aio import (
+    _resolve_citations_redirects as _resolve_grounding_redirects,
+    gemini_grounded_answer as _aio_grounded_answer,
+)
+
+# All platforms handled by live probes (order determines display order in UI).
+_LIVE_PLATFORMS: tuple[str, ...] = ("gemini", "openai", "claude", "google_aio")
 
 # GA4 country → phrase shoppers literally type (reduces US-default bias in live probes).
 _GEO_ISO2_LOCATOR_PHRASE: dict[str, str] = {
@@ -486,8 +494,9 @@ def _normalize_content_actions(raw: Any) -> list[dict[str, Any]]:
 
 LIVE_ASSISTANT_SYSTEM = (
     "You are a helpful consumer-facing assistant. Answer the user's question directly. "
-    "When it helps the shopper, name specific retailers, brands, or websites they could consider—including "
-    "smaller specialists if relevant. Aim for about 150–400 words unless a shorter reply clearly suffices."
+    "When it helps the shopper, name specific retailers, brands, or websites they could consider—"
+    "including their website URLs where you know them—and smaller specialists if relevant. "
+    "Aim for about 150–400 words unless a shorter reply clearly suffices."
 )
 
 
@@ -534,6 +543,17 @@ def _openai_api_key() -> str:
 
 def _openai_chat_model() -> str:
     return (_get_config("OPENAI_CHAT_MODEL") or "gpt-4o-mini").strip()
+
+
+def _openai_search_model() -> str:
+    """Model used for citation-enabled probes.
+
+    ``gpt-4o-search-preview`` always performs a web search and returns
+    structured ``url_citation`` annotations, closely matching the behaviour of
+    ChatGPT with Browse enabled.  Falls back to the standard chat model if a
+    custom override is configured (``OPENAI_SEARCH_MODEL``).
+    """
+    return (_get_config("OPENAI_SEARCH_MODEL") or "gpt-4o-search-preview").strip()
 
 
 def _anthropic_api_key() -> str:
@@ -647,6 +667,243 @@ def openai_chat_answer(
         raise ValueError(f"Unexpected OpenAI response: {payload!r}") from e
 
 
+def openai_answer_with_citations(
+    user_prompt: str,
+    *,
+    api_key: str | None = None,
+    market_country: str = "",
+    market_country_code: str = "",
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Call the OpenAI Responses API with the ``web_search_preview`` tool enabled.
+
+    Returns ``(response_text, citations)`` where citations are structured
+    ``url_citation`` annotations returned directly by the API — far more reliable
+    than regex extraction on plain text.  Falls back to ``openai_chat_answer``
+    (no citations) if the Responses API endpoint is unavailable or returns an error.
+    """
+    key = (api_key or _openai_api_key()).strip()
+    if not key:
+        raise ValueError(
+            "Set **OPENAI_API_KEY** in the environment to run OpenAI live probes."
+        )
+    # gpt-4o-search-preview always performs a web search and returns structured
+    # url_citation annotations — much closer to consumer ChatGPT with Browse than
+    # gpt-4o-mini with an optional web_search_preview tool.
+    model = _openai_search_model()
+    sys_instr = live_assistant_system_instruction(
+        market_country=market_country,
+        market_country_code=market_country_code,
+    )
+    body = json.dumps(
+        {
+            "model": model,
+            "tools": [{"type": "web_search_preview"}],
+            "max_output_tokens": 1800,
+            "input": [
+                {"role": "system", "content": sys_instr},
+                {"role": "user", "content": (user_prompt or "").strip()[:12000]},
+            ],
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=body,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120, context=_https_ssl_context()) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:600]
+        if e.code in (400, 404, 422):
+            # Responses API not available for this model/key — fall back silently
+            text = openai_chat_answer(
+                user_prompt,
+                api_key=api_key,
+                market_country=market_country,
+                market_country_code=market_country_code,
+            )
+            return text, []
+        raise ValueError(f"OpenAI HTTP {e.code}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise ValueError(f"OpenAI request failed: {e}") from e
+
+    # --- Parse Responses API output ------------------------------------------
+    text = ""
+    citations: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for item in payload.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for block in item.get("content") or []:
+            if block.get("type") != "output_text":
+                continue
+            text = str(block.get("text") or "")
+            for ann in block.get("annotations") or []:
+                if ann.get("type") != "url_citation":
+                    continue
+                url = str(ann.get("url") or "").strip()
+                title = str(ann.get("title") or "").strip()
+                if not url:
+                    continue
+                _, domain = _normalise_citation_url(url)
+                if not domain:
+                    continue
+                url_key = url.lower().rstrip("/")
+                if url_key in seen_keys:
+                    continue
+                seen_keys.add(url_key)
+                content_type, channel_type = _classify_citation(domain)
+                citations.append(
+                    {
+                        "url": url,
+                        "domain": domain,
+                        "title": title,
+                        "content_type": content_type,
+                        "channel_type": channel_type,
+                    }
+                )
+    return text.strip(), citations
+
+
+def gemini_answer_with_citations(
+    user_prompt: str,
+    *,
+    market_country: str = "",
+    market_country_code: str = "",
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Call Gemini with ``google_search`` grounding enabled so we get real web citations
+    rather than text-only training-data answers.
+
+    Returns ``(response_text, citations)`` sourced from ``groundingMetadata.groundingChunks``.
+    Falls back to ``gemini_answer_user_prompt`` (no structured citations) when running on
+    Vertex AI or when the grounding call itself fails.
+    """
+    api_key = _gemini_api_key()
+    if not api_key:
+        # Vertex path — grounding requires a different setup; skip for now
+        text = gemini_answer_user_prompt(
+            user_prompt,
+            market_country=market_country,
+            market_country_code=market_country_code,
+        )
+        return text, []
+
+    model = _default_model_google_ai()
+    sys_instr = live_assistant_system_instruction(
+        market_country=market_country,
+        market_country_code=market_country_code,
+    )
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{_url_quote(model, safe='')}:generateContent?key={api_key}"
+    )
+    body = json.dumps(
+        {
+            "systemInstruction": {"parts": [{"text": sys_instr}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": (user_prompt or "").strip()[:12000]}]}
+            ],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120, context=_https_ssl_context()) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # On any failure fall back to plain (non-grounded) answer
+        text = gemini_answer_user_prompt(
+            user_prompt,
+            market_country=market_country,
+            market_country_code=market_country_code,
+        )
+        return text, []
+
+    # --- Extract response text -----------------------------------------------
+    cands = payload.get("candidates") or []
+    if not cands:
+        return "", []
+    content = cands[0].get("content") or {}
+    parts = content.get("parts") or []
+    text = "".join(str(p.get("text") or "") for p in parts if isinstance(p, dict)).strip()
+
+    # --- Extract grounding citations ------------------------------------------
+    # Collect raw citations from groundingChunks first, then resolve any
+    # vertexaisearch.cloud.google.com redirect wrappers to the real URLs.
+    meta = cands[0].get("groundingMetadata") or {}
+    raw_grounding: list[dict[str, Any]] = []
+    for chunk in (meta.get("groundingChunks") or []):
+        web = chunk.get("web") or {}
+        uri = str(web.get("uri") or "").strip()
+        title = str(web.get("title") or "").strip()
+        if not uri:
+            continue
+        _, domain = _normalise_citation_url(uri)
+        if not domain:
+            continue
+        raw_grounding.append({"url": uri, "domain": domain, "title": title})
+
+    # Resolve Vertex AI redirect wrappers → actual URLs (parallel HTTP HEAD).
+    resolved_grounding = _resolve_grounding_redirects(raw_grounding)
+
+    citations: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for item in resolved_grounding:
+        uri = item["url"]
+        domain = item["domain"]
+        title = item.get("title") or ""
+        url_key = uri.lower().rstrip("/")
+        if url_key in seen_keys:
+            continue
+        seen_keys.add(url_key)
+        content_type, channel_type = _classify_citation(domain)
+        citations.append(
+            {
+                "url": uri,
+                "domain": domain,
+                "title": title,
+                "content_type": content_type,
+                "channel_type": channel_type,
+            }
+        )
+    return text, citations
+
+
+def _merge_citations(
+    api_citations: list[dict[str, Any]],
+    response_text: str,
+    brand_site_url: str,
+) -> list[dict[str, Any]]:
+    """
+    Merge structured API citations (from grounding/annotations) with any additional
+    URLs found by regex in the response text.
+
+    API citations take priority — they already have titles and are deduplicated.
+    Regex citations are appended only for URLs not already covered by the API list.
+    """
+    merged = list(api_citations)
+    seen_keys = {c["url"].lower().rstrip("/") for c in merged}
+    seen_domains = {c["domain"] for c in merged}
+    for c in extract_citations_from_reply(response_text, brand_site_url):
+        key = c["url"].lower().rstrip("/")
+        if key not in seen_keys and c["domain"] not in seen_domains:
+            merged.append(c)
+            seen_keys.add(key)
+            seen_domains.add(c["domain"])
+    return merged
+
+
 def gemini_answer_user_prompt(
     user_prompt: str,
     *,
@@ -709,6 +966,213 @@ def count_mentions_ci(text: str, needle: str) -> int:
     return len(re.findall(re.escape(needle.strip()), text, flags=re.IGNORECASE))
 
 
+_PATH_SEGMENT_BLOCKLIST = frozenset(
+    {
+        "en",
+        "us",
+        "uk",
+        "gb",
+        "eu",
+        "shop",
+        "store",
+        "products",
+        "product",
+        "category",
+        "categories",
+        "collections",
+        "collection",
+        "pages",
+        "page",
+        "search",
+        "blog",
+        "news",
+        "about",
+        "contact",
+        "help",
+        "account",
+        "cart",
+        "checkout",
+        "home",
+        "index",
+        "html",
+        "www",
+        "skin",
+        "face",
+        "body",
+        "care",
+        "cream",
+        "serum",
+        "lotion",
+        "cleanser",
+        "moisturizer",
+        "sunscreen",
+        "treatment",
+        "routine",
+        "guide",
+        "best",
+        "review",
+        "reviews",
+    }
+)
+
+
+def _normalize_brand_key(value: str) -> str:
+    return re.sub(r"[\s\-.'']+", "", (value or "").lower())
+
+
+def _brand_flexible_pattern(brand: str) -> re.Pattern[str] | None:
+    """Match the brand with flexible hyphen/space/apostrophe between words."""
+    brand = (brand or "").strip()
+    if len(brand) < 2:
+        return None
+    parts = [p for p in re.split(r"[\s\-]+", brand) if p]
+    if len(parts) >= 2:
+        body = r"[\s\-]+".join(re.escape(p) for p in parts)
+    else:
+        body = re.escape(brand)
+    return re.compile(body, re.IGNORECASE)
+
+
+def count_flexible_brand_mentions(text: str, brand: str) -> int:
+    pat = _brand_flexible_pattern(brand)
+    if not pat or not text:
+        return 0
+    return len(pat.findall(text))
+
+
+def collect_brand_detected_spellings(text: str, brand: str) -> list[str]:
+    """Literal spellings used in replies that match the brand (e.g. La Roche-Posay vs La Roche Posay)."""
+    pat = _brand_flexible_pattern(brand)
+    if not pat or not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in pat.findall(text):
+        raw = str(match).strip()
+        key = raw.lower()
+        if raw and key not in seen:
+            seen.add(key)
+            out.append(raw)
+    return out
+
+
+def product_line_candidates_from_paths(paths: list[str]) -> list[str]:
+    """Heuristic product-line tokens from URL path segments (e.g. /toleriane/...)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths or []:
+        path = str(raw or "").split("?")[0].strip()
+        if not path:
+            continue
+        for seg in path.strip("/").split("/"):
+            seg = seg.strip().lower()
+            if len(seg) < 4 or not seg.isalpha() or seg in _PATH_SEGMENT_BLOCKLIST:
+                continue
+            label = seg[0].upper() + seg[1:]
+            key = label.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(label)
+    return out
+
+
+def discover_product_line_aliases(
+    reply_blob: str,
+    brand_name: str,
+    path_candidates: list[str] | None = None,
+) -> list[str]:
+    """Product-line aliases present in replies (path hints only — avoids generic word false positives)."""
+    blob = (reply_blob or "").lower()
+    if not blob:
+        return []
+    brand_key = _normalize_brand_key(brand_name)
+    brand_parts = {
+        p.lower()
+        for p in re.split(r"[\s\-]+", (brand_name or "").strip())
+        if len(p) >= 3
+    }
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(label: str) -> None:
+        token = (label or "").strip()
+        if len(token) < 4:
+            return
+        key = token.lower()
+        if key in seen or key in brand_parts or _normalize_brand_key(token) == brand_key:
+            return
+        if key not in blob:
+            return
+        seen.add(key)
+        out.append(token[0].upper() + token[1:] if token.islower() else token)
+
+    for candidate in path_candidates or []:
+        add(str(candidate))
+
+    return out
+
+
+def brand_match_tokens(
+    brand_name: str,
+    brand_site_url: str = "",
+    *,
+    detected_spellings: list[str] | None = None,
+    product_line_aliases: list[str] | None = None,
+) -> list[str]:
+    """Distinct match tokens for brand visibility and highlighting (longest first)."""
+    brand = (brand_name or "").strip()
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        token = (value or "").strip()
+        if len(token) < 2:
+            return
+        key = token.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        tokens.append(token)
+
+    if brand:
+        add(brand)
+        if " " in brand and "-" not in brand:
+            add(brand.replace(" ", "-"))
+        elif "-" in brand and " " not in brand:
+            add(brand.replace("-", " "))
+    for spelling in detected_spellings or []:
+        add(str(spelling))
+    host = _host_label(brand_site_url)
+    if host and len(host) >= 3:
+        add(host)
+        base = host.split(".")[0]
+        if base and len(base) >= 3:
+            add(base)
+    for alias in product_line_aliases or []:
+        add(str(alias))
+    tokens.sort(key=len, reverse=True)
+    return tokens
+
+
+def text_mentions_brand(
+    text: str,
+    brand_name: str,
+    brand_match_tokens_list: list[str] | None = None,
+) -> bool:
+    """True when text contains the brand (flexible spelling) or a known match token."""
+    if not text:
+        return False
+    brand = (brand_name or "").strip()
+    if brand and count_flexible_brand_mentions(text, brand) > 0:
+        return True
+    tl = text.lower()
+    for token in brand_match_tokens_list or []:
+        tok = str(token or "").strip()
+        if len(tok) >= 2 and tok.lower() in tl:
+            return True
+    return False
+
+
 def mention_scores_for_text(
     text: str,
     *,
@@ -717,11 +1181,24 @@ def mention_scores_for_text(
     competitor_urls: list[str],
     competitor_brands: list[str] | None = None,
     reply_detected_brands: list[str] | None = None,
+    brand_detected_spellings: list[str] | None = None,
+    product_line_aliases: list[str] | None = None,
 ) -> dict[str, Any]:
     brand = (brand_name or "").strip()
     host = _host_label(brand_site_url)
     tl = (text or "").lower()
     host_bonus = 1 if (host and host.lower() in tl) else 0
+    brand_name_hits = count_flexible_brand_mentions(text, brand) if brand else 0
+    product_line_hits = 0
+    product_detail: dict[str, int] = {}
+    for alias in product_line_aliases or []:
+        a = str(alias or "").strip()
+        if len(a) < 3:
+            continue
+        c = count_mentions_ci(text, a)
+        if c:
+            product_line_hits += c
+            product_detail[a.lower()] = product_detail.get(a.lower(), 0) + c
     comps = _competitor_match_tokens(
         competitor_urls,
         competitor_brands,
@@ -735,12 +1212,16 @@ def mention_scores_for_text(
         if c:
             detail[t.lower()] = detail.get(t.lower(), 0) + c
             comp_sum += c
+    brand_signal = brand_name_hits + product_line_hits + host_bonus
     return {
-        "brand_name_hits": count_mentions_ci(text, brand) if brand else 0,
+        "brand_name_hits": brand_name_hits,
+        "product_line_hits": product_line_hits,
+        "product_line_detail": product_detail,
         "primary_host_bonus": host_bonus,
-        "brand_signal": (count_mentions_ci(text, brand) if brand else 0) + host_bonus,
+        "brand_signal": brand_signal,
         "competitors_combined_hits": comp_sum,
         "competitor_detail": detail,
+        "brand_detected_spellings": list(brand_detected_spellings or []),
     }
 
 
@@ -756,39 +1237,298 @@ def mention_brand_competitor_share_pct(scores: dict[str, Any] | None) -> tuple[f
     return (100.0 * b / t, 100.0 * c / t)
 
 
+# ── Citation extraction ───────────────────────────────────────────────────────
+
+# Matches full https?:// URLs and bare domain names with common TLDs.
+# The https?:// branch is tried first and captures everything up to whitespace/delimiters.
+_CITATION_URL_RE = re.compile(
+    r"https?://[^\s<>\"')\]]+"
+    r"|"
+    r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)"
+    r"+(?:com|org|net|io|ai|app|dev|biz|info|online|shop|store|"
+    r"co(?:\.uk|\.nz|\.au|\.ca|\.za|\.in|\.jp|\.id)?|"
+    r"uk|ie|de|fr|es|it|nl|be|at|ch|se|dk|no|fi|pl|pt|cz|ro|hu|gr|"
+    r"au|nz|ca|za|in|jp|sg|hk|"
+    r"gov|edu|health|news|london|club|me|eu)\b",
+    re.IGNORECASE,
+)
+
+# TLDs that would cause false positives as plain words (e.g. "etc.")
+_BARE_DOMAIN_BLOCKLIST = frozenset(
+    {"e.g", "i.e", "etc", "vs", "no", "go", "so", "do", "to", "in", "on", "at"}
+)
+
+# Domains that should never appear as citations — intermediate redirects or
+# internal infrastructure that carry no meaningful source information.
+_CITATION_DOMAIN_BLOCKLIST = frozenset(
+    {
+        # Google infrastructure — Maps search links, auth pages, etc. are not
+        # content citations (e.g. google.com/maps/search/...?utm_source=openai)
+        "google.com",
+        "google.co.uk",
+        "google.com.au",
+        "google.ca",
+        "google.de",
+        "google.fr",
+        "google.es",
+        "google.it",
+        "google.nl",
+        "maps.google.com",
+        "consent.google.com",
+        "accounts.google.com",
+        # NOTE: vertexaisearch.cloud.google.com is intentionally NOT in this list.
+        # Those redirect URLs come from Gemini grounding and are handled separately
+        # via _resolve_grounding_redirects (google_aio.py) which keeps them even
+        # when resolution fails, since the URL is still clickable and the title
+        # field identifies the actual source.
+    }
+)
+
+
+def _normalise_citation_url(raw: str) -> tuple[str, str]:
+    """Return (url, domain) pair, normalising bare domains to https:// URLs."""
+    raw = raw.rstrip(".,;:!?\"'")
+    if not raw:
+        return ("", "")
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", raw):
+        raw = "https://" + raw
+    try:
+        parsed = urlparse(raw)
+        domain = (parsed.hostname or "").lower().removeprefix("www.")
+    except Exception:
+        domain = ""
+    if not domain or len(domain) < 4:
+        return ("", "")
+    return (raw, domain)
+
+
+# ── Citation classification ────────────────────────────────────────────────────
+
+_DOMAIN_TYPE_MAP: dict[str, tuple[str, str]] = {
+    "youtube.com": ("Video", "YouTube"),
+    "youtu.be": ("Video", "YouTube"),
+    "tiktok.com": ("Video", "TikTok"),
+    "instagram.com": ("Post", "Instagram"),
+    "facebook.com": ("Post", "Facebook"),
+    "fb.com": ("Post", "Facebook"),
+    "twitter.com": ("Post", "X (Twitter)"),
+    "x.com": ("Post", "X (Twitter)"),
+    "reddit.com": ("Forum", "Reddit"),
+    "wikipedia.org": ("Article", "Wikipedia"),
+    "linkedin.com": ("Profile", "LinkedIn"),
+    "pinterest.com": ("Post", "Pinterest"),
+    "amazon.co.uk": ("Product", "eCommerce"),
+    "amazon.com": ("Product", "eCommerce"),
+    "amazon.de": ("Product", "eCommerce"),
+    "ebay.co.uk": ("Product", "eCommerce"),
+    "ebay.com": ("Product", "eCommerce"),
+    "ebay.de": ("Product", "eCommerce"),
+}
+
+
+def _classify_citation(domain: str) -> tuple[str, str]:
+    """Return (content_type, channel_type) for a citation domain."""
+    d = domain.lower()
+    for key, val in _DOMAIN_TYPE_MAP.items():
+        if d == key or d.endswith("." + key):
+            return val
+    return ("Web page", "Website")
+
+
+def extract_citations_from_reply(text: str, brand_site_url: str = "") -> list[dict[str, str]]:
+    """
+    Extract URLs and bare domain names mentioned in an LLM reply.
+
+    Returns a list of ``{"url": ..., "domain": ..., "content_type": ..., "channel_type": ...}``
+    dicts, deduplicated by URL, with the brand's own domain excluded.
+    """
+    if not text:
+        return []
+    brand_domain = ""
+    if brand_site_url:
+        _, brand_domain = _normalise_citation_url(brand_site_url)
+
+    # Deduplicate by normalised URL key (scheme://domain/path, lowercased, trailing-slash stripped)
+    seen_keys: set[str] = set()
+    out: list[dict[str, str]] = []
+    for match in _CITATION_URL_RE.finditer(text):
+        raw = match.group(0)
+        base = raw.split(".")[0].lower()
+        if base in _BARE_DOMAIN_BLOCKLIST:
+            continue
+        url, domain = _normalise_citation_url(raw)
+        if not domain:
+            continue
+        if domain in _CITATION_DOMAIN_BLOCKLIST:
+            continue
+        if brand_domain and domain == brand_domain:
+            continue
+        url_key = url.lower().rstrip("/")
+        if url_key in seen_keys:
+            continue
+        seen_keys.add(url_key)
+        content_type, channel_type = _classify_citation(domain)
+        out.append({
+            "url": url,
+            "domain": domain,
+            "content_type": content_type,
+            "channel_type": channel_type,
+        })
+    return out
+
+
+def _mention_summary(row: dict[str, Any], platform: str) -> tuple[bool, bool, list[str]]:
+    """Return (brand_mentioned, competitor_mentioned, competitor_names) for one row/platform."""
+    scores = row.get(f"mention_scores_{platform}") or {}
+    brand_mentioned = int(scores.get("brand_signal") or 0) > 0
+    comp_hits = int(scores.get("competitors_combined_hits") or 0) > 0
+    detail = scores.get("competitor_detail") or {}
+    comp_names = [k for k, v in detail.items() if int(v or 0) > 0]
+    return brand_mentioned, comp_hits, comp_names
+
+
+def aggregate_top_cited_urls(
+    per_prompt: list[dict[str, Any]],
+    *,
+    brand_site_url: str = "",
+    top_n: int = 50,
+) -> list[dict[str, Any]]:
+    """
+    Aggregate per-URL citation counts across all prompts and platforms.
+
+    Each entry in the returned list includes:
+    ``{"url", "domain", "content_type", "channel_type", "frequency", "probe_platforms",
+       "brand_mentioned", "competitor_mentioned", "competitor_names"}``.
+    """
+    url_data: dict[str, dict[str, Any]] = {}
+    _, brand_domain = _normalise_citation_url(brand_site_url) if brand_site_url else ("", "")
+
+    for row in per_prompt:
+        if not isinstance(row, dict):
+            continue
+        for platform in _LIVE_PLATFORMS:
+            citations: list[dict[str, str]] = row.get(f"citations_{platform}") or []
+            brand_m, comp_m, comp_names = _mention_summary(row, platform)
+            for c in citations:
+                url = c.get("url", "")
+                domain = c.get("domain", "")
+                if not url or not domain or domain == brand_domain:
+                    continue
+                url_key = url.lower().rstrip("/")
+                if url_key not in url_data:
+                    content_type = c.get("content_type") or _classify_citation(domain)[0]
+                    channel_type = c.get("channel_type") or _classify_citation(domain)[1]
+                    url_data[url_key] = {
+                        "url": url,
+                        "domain": domain,
+                        "title": c.get("title"),
+                        "thumbnail_url": c.get("thumbnail_url"),
+                        "views": c.get("views"),
+                        "platform": c.get("platform"),
+                        "content_type": content_type,
+                        "channel_type": channel_type,
+                        "frequency": 0,
+                        "probe_platforms": [],
+                        "brand_mentioned": False,
+                        "competitor_mentioned": False,
+                        "competitor_names": [],
+                    }
+                entry = url_data[url_key]
+                entry["frequency"] += 1
+                if platform not in entry["probe_platforms"]:
+                    entry["probe_platforms"].append(platform)
+                if brand_m:
+                    entry["brand_mentioned"] = True
+                if comp_m:
+                    entry["competitor_mentioned"] = True
+                for cn in comp_names:
+                    if cn not in entry["competitor_names"]:
+                        entry["competitor_names"].append(cn)
+
+    return sorted(url_data.values(), key=lambda x: -x["frequency"])[:top_n]
+
+
+def aggregate_top_cited_sites(
+    per_prompt: list[dict[str, Any]],
+    *,
+    brand_site_url: str = "",
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    Aggregate citation counts by domain across all prompts and platforms.
+
+    Each entry includes brand/competitor mention status derived from the
+    mention scores of each response that cited this domain.
+    """
+    domain_data: dict[str, dict[str, Any]] = {}
+    _, brand_domain = _normalise_citation_url(brand_site_url) if brand_site_url else ("", "")
+
+    for row in per_prompt:
+        if not isinstance(row, dict):
+            continue
+        for platform in _LIVE_PLATFORMS:
+            citations: list[dict[str, str]] = row.get(f"citations_{platform}") or []
+            brand_m, comp_m, comp_names = _mention_summary(row, platform)
+            for c in citations:
+                d = c.get("domain", "")
+                if not d or d == brand_domain:
+                    continue
+                if d not in domain_data:
+                    domain_data[d] = {
+                        "domain": d,
+                        "count": 0,
+                        "platforms": [],
+                        "example_url": c.get("url", f"https://{d}"),
+                        "brand_mentioned": False,
+                        "competitor_mentioned": False,
+                        "competitor_names": [],
+                    }
+                entry = domain_data[d]
+                entry["count"] += 1
+                if platform not in entry["platforms"]:
+                    entry["platforms"].append(platform)
+                if brand_m:
+                    entry["brand_mentioned"] = True
+                if comp_m:
+                    entry["competitor_mentioned"] = True
+                for cn in comp_names:
+                    if cn not in entry["competitor_names"]:
+                        entry["competitor_names"].append(cn)
+
+    return sorted(domain_data.values(), key=lambda x: -x["count"])[:top_n]
+
+
 def aggregate_live_sov(
     per_prompt: list[dict[str, Any]],
     *,
     excluded: set[str] | None = None,
 ) -> dict[str, Any]:
     blocked = excluded or set()
-    gb = gc = ob = oc = cb = cc = 0
+
+    # Discover which platforms have any data in this probe result
+    platform_has_data: set[str] = set()
     for row in per_prompt:
-        if "gemini" not in blocked:
-            mg = row.get("mention_scores_gemini") or {}
-            gb += int(mg.get("brand_signal") or 0)
-            gc += int(mg.get("competitors_combined_hits") or 0)
-        if "openai" not in blocked:
-            mo = row.get("mention_scores_openai") or {}
-            ob += int(mo.get("brand_signal") or 0)
-            oc += int(mo.get("competitors_combined_hits") or 0)
-        if "claude" not in blocked:
-            mc = row.get("mention_scores_claude") or {}
-            cb += int(mc.get("brand_signal") or 0)
-            cc += int(mc.get("competitors_combined_hits") or 0)
+        for platform in _LIVE_PLATFORMS:
+            if row.get(f"mention_scores_{platform}") or row.get(f"{platform}_response"):
+                platform_has_data.add(platform)
+
+    active = [p for p in _LIVE_PLATFORMS if p not in blocked and p in platform_has_data]
+    counts: dict[str, list[int]] = {p: [0, 0] for p in active}
+
+    for row in per_prompt:
+        for platform in active:
+            m = row.get(f"mention_scores_{platform}") or {}
+            counts[platform][0] += int(m.get("brand_signal") or 0)
+            counts[platform][1] += int(m.get("competitors_combined_hits") or 0)
 
     def share(b: float, c: float) -> dict[str, float]:
         t = b + c + 1e-9
         return {"brand_share_pct": 100.0 * b / t, "competitor_share_pct": 100.0 * c / t}
 
-    out: dict[str, Any] = {}
-    if "gemini" not in blocked:
-        out["gemini"] = {"brand_hits": gb, "competitor_hits": gc, **share(gb, gc)}
-    if "openai" not in blocked:
-        out["openai"] = {"brand_hits": ob, "competitor_hits": oc, **share(ob, oc)}
-    if "claude" not in blocked:
-        out["claude"] = {"brand_hits": cb, "competitor_hits": cc, **share(cb, cc)}
-    return out
+    return {
+        p: {"brand_hits": bh, "competitor_hits": ch, **share(bh, ch)}
+        for p, (bh, ch) in counts.items()
+    }
 
 
 def highlight_response_html(
@@ -798,6 +1538,8 @@ def highlight_response_html(
     competitor_brand_names: list[str] | None = None,
     *,
     reply_detected_brands: list[str] | None = None,
+    brand_match_tokens_list: list[str] | None = None,
+    product_line_aliases: list[str] | None = None,
 ) -> str:
     """Escape HTML, then wrap brand / competitor string matches in ``<mark>`` (for ``unsafe_allow_html``)."""
     esc = html.escape(text or "")
@@ -810,9 +1552,18 @@ def highlight_response_html(
         primary_brand=brand,
         reply_detected_brands=reply_detected_brands,
     )
+    brand_pool = {x.lower() for x in brand_match_tokens_list or []}
+    if brand:
+        brand_pool.add(brand.lower())
+    product_pool = {str(x).strip().lower() for x in (product_line_aliases or []) if str(x).strip()}
     parts: list[str] = []
-    if len(brand) >= 2:
-        parts.append(re.escape(brand))
+    flex = _brand_flexible_pattern(brand)
+    if flex is not None:
+        parts.append(flex.pattern)
+    for token in brand_match_tokens_list or []:
+        tok = str(token or "").strip()
+        if len(tok) >= 2 and tok.lower() != brand.lower():
+            parts.append(re.escape(tok))
     for h in sorted(set(hosts), key=len, reverse=True):
         if len(h) >= 3:
             parts.append(re.escape(h))
@@ -824,12 +1575,21 @@ def highlight_response_html(
 
     regex = re.compile("(" + ")|(".join(parts) + ")", re.IGNORECASE)
 
+    def _is_brand_match(raw: str) -> bool:
+        if not raw:
+            return False
+        lowered = raw.lower()
+        if brand and _normalize_brand_key(raw) == _normalize_brand_key(brand):
+            return True
+        if lowered in brand_pool or lowered in product_pool:
+            return True
+        return False
+
     def repl(m: re.Match) -> str:
         raw = m.group(0)
-        is_brand = bool(brand) and raw.lower() == brand.lower()
         style = (
             "background:#fef08a;font-weight:600;padding:0 0.15em;border-radius:3px"
-            if is_brand
+            if _is_brand_match(raw)
             else "background:#bfdbfe;padding:0 0.15em;border-radius:3px"
         )
         return f'<mark style="{style}">{raw}</mark>'
@@ -839,6 +1599,88 @@ def highlight_response_html(
         '<div style="white-space:pre-wrap;line-height:1.5;border:1px solid #e5e7eb;'
         f'border-radius:8px;padding:10px;max-height:420px;overflow:auto;">{body}</div>'
     )
+
+
+def recompute_live_probe_mention_scores(
+    live: dict[str, Any],
+    *,
+    path_candidates: list[str] | None = None,
+) -> dict[str, Any]:
+    """Re-score mention visibility using flexible brand matching and reply-derived aliases."""
+    if not isinstance(live, dict):
+        return live
+    brand = str(live.get("brand_name") or "").strip()
+    brand_site_url = str(live.get("brand_site_url") or "").strip()
+    comp_urls = [str(u).strip() for u in (live.get("competitor_urls") or []) if str(u).strip()]
+    cbr = list(live.get("competitor_brands") or [])
+    while len(cbr) < len(comp_urls):
+        cbr.append("")
+    cbr = cbr[: len(comp_urls)]
+    reply_detected_names = [
+        str(x).strip() for x in (live.get("reply_detected_brand_names") or []) if str(x).strip()
+    ]
+    per = live.get("per_prompt")
+    if not isinstance(per, list):
+        return live
+
+    reply_blob = " ".join(
+        str(row.get(f"{platform}_response") or "")
+        for row in per
+        if isinstance(row, dict)
+        for platform in _LIVE_PLATFORMS
+    )
+    detected_spellings = collect_brand_detected_spellings(reply_blob, brand)
+    path_cands = product_line_candidates_from_paths(path_candidates or [])
+    product_lines = discover_product_line_aliases(reply_blob, brand, path_cands)
+    match_tokens = brand_match_tokens(
+        brand,
+        brand_site_url,
+        detected_spellings=detected_spellings,
+        product_line_aliases=product_lines,
+    )
+    live["brand_detected_spellings"] = detected_spellings
+    live["product_line_aliases"] = product_lines
+    live["brand_match_tokens"] = match_tokens
+
+    for row in per:
+        if not isinstance(row, dict):
+            continue
+        for platform in _LIVE_PLATFORMS:
+            txt = str(row.get(f"{platform}_response") or "")
+            if not txt:
+                continue
+            scores = mention_scores_for_text(
+                txt,
+                brand_name=brand,
+                brand_site_url=brand_site_url,
+                competitor_urls=comp_urls,
+                competitor_brands=cbr,
+                reply_detected_brands=reply_detected_names,
+                brand_detected_spellings=detected_spellings,
+                product_line_aliases=product_lines,
+            )
+            row[f"mention_scores_{platform}"] = scores
+            bp, cp = mention_brand_competitor_share_pct(scores)
+            row[f"{platform}_brand_mention_pct"] = bp
+            row[f"{platform}_competitor_mention_pct"] = cp
+            # Back-fill citations for saved probes that pre-date citation extraction
+            if not row.get(f"citations_{platform}"):
+                row[f"citations_{platform}"] = extract_citations_from_reply(txt, brand_site_url)
+
+    from api.probe_platforms import get_excluded_platforms
+
+    excluded = set(get_excluded_platforms())
+    saved_excluded = live.get("excluded_platforms")
+    if isinstance(saved_excluded, list):
+        excluded.update(str(x).strip().lower() for x in saved_excluded if str(x).strip())
+    live["aggregate"] = aggregate_live_sov(
+        [r for r in per if isinstance(r, dict)],
+        excluded=excluded,
+    )
+    # Recompute citation aggregates after back-filling citations
+    live["top_cited_sites"] = aggregate_top_cited_sites(per, brand_site_url=brand_site_url)
+    live["top_cited_urls"] = aggregate_top_cited_urls(per, brand_site_url=brand_site_url)
+    return live
 
 
 def run_live_prompt_probes(
@@ -903,6 +1745,8 @@ def run_live_prompt_probes(
     def _platform_live(pk: str) -> bool:
         return pk not in excluded and pk not in disabled_run
 
+    _, brand_domain = _normalise_citation_url(brand_site_url) if brand_site_url else ("", "")
+
     rows: list[dict[str, Any]] = []
     for i, user_q in enumerate(used, start=1):
         row: dict[str, Any] = {
@@ -911,13 +1755,18 @@ def run_live_prompt_probes(
             "gemini_response": "",
             "openai_response": "",
             "claude_response": "",
+            "google_aio_response": "",
         }
         if _platform_live("gemini"):
             try:
-                row["gemini_response"] = gemini_answer_user_prompt(
+                g_text, g_api_cits = gemini_answer_with_citations(
                     user_q,
                     market_country=mc_res,
                     market_country_code=mid_res,
+                )
+                row["gemini_response"] = g_text
+                row["citations_gemini"] = _merge_citations(
+                    g_api_cits, g_text, brand_site_url
                 )
             except Exception as e:
                 err = str(e)
@@ -928,11 +1777,15 @@ def run_live_prompt_probes(
                     row["error_gemini"] = err
         if _platform_live("openai"):
             try:
-                row["openai_response"] = openai_chat_answer(
+                o_text, o_api_cits = openai_answer_with_citations(
                     user_q,
                     api_key=okey,
                     market_country=mc_res,
                     market_country_code=mid_res,
+                )
+                row["openai_response"] = o_text
+                row["citations_openai"] = _merge_citations(
+                    o_api_cits, o_text, brand_site_url
                 )
             except Exception as e:
                 err = str(e)
@@ -949,6 +1802,9 @@ def run_live_prompt_probes(
                     market_country=mc_res,
                     market_country_code=mid_res,
                 )
+                row["citations_claude"] = _merge_citations(
+                    [], row["claude_response"], brand_site_url
+                )
             except Exception as e:
                 err = str(e)
                 if is_fatal_platform_error("claude", err):
@@ -957,42 +1813,42 @@ def run_live_prompt_probes(
                 else:
                     row["error_claude"] = err
 
-        gtxt = row.get("gemini_response") or ""
-        otxt = row.get("openai_response") or ""
-        ctxt = row.get("claude_response") or ""
-        if gtxt:
-            row["mention_scores_gemini"] = mention_scores_for_text(
-                gtxt,
-                brand_name=brand,
-                brand_site_url=brand_site_url,
-                competitor_urls=comp_urls,
-                competitor_brands=cbr,
-            )
-            row["gemini_brand_mention_pct"], row["gemini_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                row["mention_scores_gemini"]
-            )
-        if otxt:
-            row["mention_scores_openai"] = mention_scores_for_text(
-                otxt,
-                brand_name=brand,
-                brand_site_url=brand_site_url,
-                competitor_urls=comp_urls,
-                competitor_brands=cbr,
-            )
-            row["openai_brand_mention_pct"], row["openai_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                row["mention_scores_openai"]
-            )
-        if ctxt:
-            row["mention_scores_claude"] = mention_scores_for_text(
-                ctxt,
-                brand_name=brand,
-                brand_site_url=brand_site_url,
-                competitor_urls=comp_urls,
-                competitor_brands=cbr,
-            )
-            row["claude_brand_mention_pct"], row["claude_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                row["mention_scores_claude"]
-            )
+        # Google AI Summaries — grounded Gemini (same API key as regular Gemini)
+        if _platform_live("google_aio"):
+            try:
+                aio_result = _aio_grounded_answer(
+                    user_q,
+                    market_country=mc_res,
+                    market_country_code=mid_res,
+                )
+                if aio_result.get("error"):
+                    row["error_google_aio"] = aio_result["error"]
+                    if is_fatal_platform_error("google_aio", aio_result["error"]):
+                        exclude_platform("google_aio", aio_result["error"])
+                        disabled_run.add("google_aio")
+                else:
+                    row["google_aio_response"] = aio_result.get("response") or ""
+                    raw_cits = [
+                        c for c in (aio_result.get("citations") or [])
+                        if c.get("domain") and c.get("domain") != brand_domain
+                    ]
+                    # Enrich with content_type / channel_type if missing
+                    for c in raw_cits:
+                        if not c.get("content_type"):
+                            ct, cht = _classify_citation(c.get("domain", ""))
+                            c["content_type"] = ct
+                            c["channel_type"] = cht
+                    row["citations_google_aio"] = _merge_citations(
+                        raw_cits, row["google_aio_response"], brand_site_url
+                    )
+            except Exception as e:
+                err = str(e)
+                if is_fatal_platform_error("google_aio", err):
+                    exclude_platform("google_aio", err)
+                    disabled_run.add("google_aio")
+                else:
+                    row["error_google_aio"] = err
+
         rows.append(row)
 
     reply_detected: list[dict[str, str]] = []
@@ -1045,7 +1901,9 @@ def run_live_prompt_probes(
                     return 0
                 n = 0
                 for prow in rows:
-                    blob = f"{prow.get('gemini_response') or ''} {prow.get('openai_response') or ''} {prow.get('claude_response') or ''}".lower()
+                    blob = " ".join(
+                    str(prow.get(f"{pl}_response") or "") for pl in _LIVE_PLATFORMS
+                ).lower()
                     if any(t in blob for t in tokens):
                         n += 1
                 return n
@@ -1062,61 +1920,8 @@ def run_live_prompt_probes(
     except Exception as e:
         probe_brand_detect_err = str(e)
 
-    if reply_detected_names:
-        for row in rows:
-            gtxt = row.get("gemini_response") or ""
-            otxt = row.get("openai_response") or ""
-            ctxt = row.get("claude_response") or ""
-            if gtxt:
-                row["mention_scores_gemini"] = mention_scores_for_text(
-                    gtxt,
-                    brand_name=brand,
-                    brand_site_url=brand_site_url,
-                    competitor_urls=comp_urls,
-                    competitor_brands=cbr,
-                    reply_detected_brands=reply_detected_names,
-                )
-                row["gemini_brand_mention_pct"], row["gemini_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                    row["mention_scores_gemini"]
-                )
-            if otxt:
-                row["mention_scores_openai"] = mention_scores_for_text(
-                    otxt,
-                    brand_name=brand,
-                    brand_site_url=brand_site_url,
-                    competitor_urls=comp_urls,
-                    competitor_brands=cbr,
-                    reply_detected_brands=reply_detected_names,
-                )
-                row["openai_brand_mention_pct"], row["openai_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                    row["mention_scores_openai"]
-                )
-            if ctxt:
-                row["mention_scores_claude"] = mention_scores_for_text(
-                    ctxt,
-                    brand_name=brand,
-                    brand_site_url=brand_site_url,
-                    competitor_urls=comp_urls,
-                    competitor_brands=cbr,
-                    reply_detected_brands=reply_detected_names,
-                )
-                row["claude_brand_mention_pct"], row["claude_competitor_mention_pct"] = mention_brand_competitor_share_pct(
-                    row["mention_scores_claude"]
-                )
-
-    claude_active = ckey and "claude" not in excluded and "claude" not in disabled_run
-    disc = (
-        "Live probes call real APIs (usage billed to your keys). Competitor mention counts use **substring matches** "
-        "on your wizard competitor fields **plus** brands named by a **Gemini pass** over reply excerpts when that "
-        "step succeeds—heuristic visibility, not legal truth of endorsement or ranking."
-        + (" Claude probes included." if claude_active else " Claude probes skipped (not configured or excluded).")
-    )
-    if probe_brand_detect_err:
-        disc += f" (Reply brand detection failed: {probe_brand_detect_err[:240]})"
-
     result = {
         "per_prompt": rows,
-        "aggregate": aggregate_live_sov(rows, excluded=get_excluded_platforms() | disabled_run),
         "brand_name": brand,
         "brand_site_url": brand_site_url,
         "competitor_urls": comp_urls,
@@ -1124,6 +1929,8 @@ def run_live_prompt_probes(
         "reply_detected_brands": reply_detected,
         "reply_detected_brand_names": reply_detected_names,
         "reply_detected_brands_error": probe_brand_detect_err,
+        "top_cited_sites": aggregate_top_cited_sites(rows, brand_site_url=brand_site_url),
+        "top_cited_urls": aggregate_top_cited_urls(rows, brand_site_url=brand_site_url),
         "primary_market": (
             {
                 "country": mc_res,
@@ -1133,8 +1940,20 @@ def run_live_prompt_probes(
             if (mc_res or mid_res)
             else None
         ),
-        "disclaimer": disc,
     }
+    recompute_live_probe_mention_scores(result)
+    result["aggregate"] = aggregate_live_sov(rows, excluded=get_excluded_platforms() | disabled_run)
+    claude_active = ckey and "claude" not in excluded and "claude" not in disabled_run
+    disc = (
+        "Live probes call real APIs (usage billed to your keys). Brand mention counts use **flexible spelling** "
+        "of your wizard brand name, detected reply spellings, and product-line aliases found in replies. "
+        "Competitor counts use wizard competitor fields **plus** brands from a **Gemini pass** over reply excerpts "
+        "when that step succeeds—heuristic visibility, not legal truth of endorsement or ranking."
+        + (" Claude probes included." if claude_active else " Claude probes skipped (not configured or excluded).")
+    )
+    if probe_brand_detect_err:
+        disc += f" (Reply brand detection failed: {probe_brand_detect_err[:240]})"
+    result["disclaimer"] = disc
     if disabled_run:
         result["excluded_platforms"] = sorted(get_excluded_platforms())
     return sanitize_live_probe(result)

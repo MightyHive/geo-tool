@@ -10,7 +10,16 @@ Model (panel)::
       + log_nonbrand_commercial_trends
       + C(site)
       + sin_annual + cos_annual
-      + trend
+      + christmas + easter
+      + trend   # optional
+
+Holiday seasonality (optional dummies):
+  - **christmas** — week overlaps 24 Dec–1 Jan
+  - **easter** — week overlaps Good Friday–Easter Monday
+  - **sin_annual / cos_annual** — smooth annual cycle
+
+By default, Christmas and Easter weeks are **masked** (excluded) from both
+training and evaluation so the counterfactual is estimated on non-holiday weeks.
 
 Trends mapping (from ``trends_manual/term_registry.json`` + folder hierarchy):
   - **brand_trends** — sum of that site's branded terms
@@ -46,6 +55,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -80,12 +90,86 @@ class ModelConfig:
     train_end: str = DEFAULT_TRAIN_END
     include_transition_in_training: bool = True
     include_trend: bool = False
+    include_holiday_seasonality: bool = False
+    mask_holidays: bool = True
     eval_start: str = EVAL_START
     predict_periods: tuple[str, ...] = ("evaluation",)
+
 
 CANONICAL_SITES = frozenset(
     {"good_food", "radio_times", "what_car", "wickes", "starbucks", "euro_car_parts"}
 )
+
+
+def easter_sunday(year: int) -> date:
+    """Gregorian Easter Sunday (Anonymous / Meeus algorithm)."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _week_date_set(week_start: date) -> set[date]:
+    return {week_start + timedelta(days=i) for i in range(7)}
+
+
+def christmas_dates_for_year(year: int) -> set[date]:
+    """Christmas / New Year window: 24 Dec → 1 Jan (spans year boundary)."""
+    dates = {
+        date(year, 12, d) for d in range(24, 32) if d <= 31
+    }
+    # Dec 24–31 always valid; add Jan 1 of next year
+    dates.add(date(year + 1, 1, 1))
+    return dates
+
+
+def easter_dates_for_year(year: int) -> set[date]:
+    """Good Friday through Easter Monday."""
+    easter = easter_sunday(year)
+    return {easter + timedelta(days=offset) for offset in (-2, -1, 0, 1)}
+
+
+def build_holiday_date_sets(
+    year_min: int,
+    year_max: int,
+) -> tuple[set[date], set[date]]:
+    christmas: set[date] = set()
+    easter: set[date] = set()
+    for year in range(year_min - 1, year_max + 2):
+        christmas |= christmas_dates_for_year(year)
+        easter |= easter_dates_for_year(year)
+    return christmas, easter
+
+
+def week_holiday_flags(weeks: pd.Series) -> pd.DataFrame:
+    """Return christmas / easter indicators for Sunday-start week labels."""
+    weeks = pd.to_datetime(weeks)
+    year_min = int(weeks.min().year)
+    year_max = int(weeks.max().year)
+    christmas_dates, easter_dates = build_holiday_date_sets(year_min, year_max)
+
+    christmas_flags: list[int] = []
+    easter_flags: list[int] = []
+    for w in weeks:
+        days = _week_date_set(w.date())
+        christmas_flags.append(int(bool(days & christmas_dates)))
+        easter_flags.append(int(bool(days & easter_dates)))
+
+    return pd.DataFrame(
+        {"christmas": christmas_flags, "easter": easter_flags},
+        index=weeks.index,
+    )
 
 
 def _term_slug(term: str) -> str:
@@ -258,6 +342,10 @@ def add_model_columns(
     out["sin_annual"] = np.sin(2 * np.pi * out["week"].dt.dayofyear / 365.25)
     out["cos_annual"] = np.cos(2 * np.pi * out["week"].dt.dayofyear / 365.25)
 
+    holiday = week_holiday_flags(out["week"])
+    out["christmas"] = holiday["christmas"].to_numpy()
+    out["easter"] = holiday["easter"].to_numpy()
+
     out["period"] = "other"
     out.loc[
         (out["week"] >= pd.to_datetime(BASELINE_START))
@@ -280,10 +368,13 @@ TREND_PREDICTORS = [
 ]
 
 MODEL_CONTROLS = ["sin_annual", "cos_annual"]
+HOLIDAY_CONTROLS = ["christmas", "easter"]
 
 
 def _model_controls(config: ModelConfig) -> list[str]:
     controls = list(MODEL_CONTROLS)
+    if config.include_holiday_seasonality:
+        controls.extend(HOLIDAY_CONTROLS)
     if config.include_trend:
         controls.append("trend")
     return controls
@@ -309,7 +400,40 @@ def _training_mask(df: pd.DataFrame, config: ModelConfig) -> pd.Series:
     )
     if config.include_transition_in_training:
         train = train | (df["period"] == "transition")
+    if config.mask_holidays:
+        train = train & ~_holiday_mask(df)
     return train
+
+
+def _holiday_mask(df: pd.DataFrame) -> pd.Series:
+    """True for Christmas or Easter weeks."""
+    christmas = df["christmas"].fillna(0).astype(int) == 1
+    easter = df["easter"].fillna(0).astype(int) == 1
+    return christmas | easter
+
+
+def _evaluation_mask(df: pd.DataFrame, config: ModelConfig) -> pd.Series:
+    mask = df["period"].isin(config.predict_periods)
+    if config.mask_holidays:
+        mask = mask & ~_holiday_mask(df)
+    return mask
+
+
+def _coef_params(config: ModelConfig) -> list[str]:
+    params = list(TREND_PREDICTORS)
+    if config.include_holiday_seasonality:
+        params.extend(HOLIDAY_CONTROLS)
+    if config.include_trend:
+        params.append("trend")
+    return params
+
+
+def _coef_summary(model, config: ModelConfig) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for p in _coef_params(config):
+        out[f"{p}_coef"] = float(model.params.get(p, np.nan))
+        out[f"{p}_p"] = float(model.pvalues.get(p, np.nan))
+    return out
 
 
 def apply_counterfactual_predictions(
@@ -329,7 +453,7 @@ def apply_counterfactual_predictions(
     out = df.copy()
     out["expected_SEO_sessions"] = np.nan
 
-    mask = out["period"].isin(config.predict_periods)
+    mask = _evaluation_mask(out, config)
     valid = out.loc[mask].replace([np.inf, -np.inf], np.nan).dropna(subset=cols)
     if not valid.empty:
         out.loc[valid.index, "expected_SEO_sessions"] = np.expm1(model.predict(valid)).clip(
@@ -371,8 +495,12 @@ def run_site_counterfactual(
     evaluation = timeline[
         (timeline["period"] == "evaluation") & timeline["expected_SEO_sessions"].notna()
     ].copy()
+    if evaluation.empty:
+        raise ValueError(f"{site}: no evaluation weeks after holiday mask")
 
-    transition = site_df[site_df["period"] == "transition"]
+    transition = site_df[site_df["period"] == "transition"].copy()
+    if config.mask_holidays and not transition.empty:
+        transition = transition[~_holiday_mask(transition)]
     trans_last = transition.iloc[-1] if not transition.empty else None
     trans_pred = np.nan
     if trans_last is not None:
@@ -382,6 +510,8 @@ def run_site_counterfactual(
         if not pred_row.empty:
             trans_pred = float(np.expm1(model.predict(pred_row).iloc[0]))
 
+    holiday_weeks_excluded = int(_holiday_mask(site_df).sum()) if config.mask_holidays else 0
+
     summary = {
         "model_type": "site_specific",
         "site": site,
@@ -390,6 +520,9 @@ def run_site_counterfactual(
         "train_end": config.train_end,
         "include_transition_in_training": config.include_transition_in_training,
         "include_trend": config.include_trend,
+        "include_holiday_seasonality": config.include_holiday_seasonality,
+        "mask_holidays": config.mask_holidays,
+        "holiday_weeks_excluded_site": holiday_weeks_excluded,
         "training_weeks": len(baseline),
         "evaluation_weeks": len(evaluation),
         "transition_last_actual": float(trans_last["SEO_sessions"]) if trans_last is not None else np.nan,
@@ -403,14 +536,7 @@ def run_site_counterfactual(
         if evaluation["expected_SEO_sessions"].sum()
         else np.nan,
         "model_r2": float(model.rsquared),
-        **{
-            f"{p}_coef": float(model.params.get(p, np.nan))
-            for p in TREND_PREDICTORS + (["trend"] if config.include_trend else [])
-        },
-        **{
-            f"{p}_p": float(model.pvalues.get(p, np.nan))
-            for p in TREND_PREDICTORS + (["trend"] if config.include_trend else [])
-        },
+        **_coef_summary(model, config),
     }
     return evaluation, timeline, summary, model
 
@@ -455,6 +581,8 @@ def run_panel_counterfactual(
         "train_end": config.train_end,
         "include_transition_in_training": config.include_transition_in_training,
         "include_trend": config.include_trend,
+        "include_holiday_seasonality": config.include_holiday_seasonality,
+        "mask_holidays": config.mask_holidays,
         "training_weeks": len(baseline),
         "evaluation_weeks": len(evaluation),
         "actual_sessions": float(evaluation["SEO_sessions"].sum()),
@@ -466,14 +594,7 @@ def run_panel_counterfactual(
         if evaluation["expected_SEO_sessions"].sum()
         else np.nan,
         "model_r2": float(model.rsquared),
-        **{
-            f"{p}_coef": float(model.params.get(p, np.nan))
-            for p in TREND_PREDICTORS + (["trend"] if config.include_trend else [])
-        },
-        **{
-            f"{p}_p": float(model.pvalues.get(p, np.nan))
-            for p in TREND_PREDICTORS + (["trend"] if config.include_trend else [])
-        },
+        **_coef_summary(model, config),
     }
     return evaluation, timeline, summary, model
 
@@ -597,6 +718,16 @@ def main() -> None:
         help="Include linear week trend (can extrapolate old regime decline)",
     )
     parser.add_argument(
+        "--include-holiday-seasonality",
+        action="store_true",
+        help="Include christmas / easter week dummies (off by default when holidays are masked)",
+    )
+    parser.add_argument(
+        "--no-mask-holidays",
+        action="store_true",
+        help="Keep Christmas/Easter weeks in training and evaluation (default: mask them)",
+    )
+    parser.add_argument(
         "--no-transition-in-training",
         action="store_true",
         help="Exclude transition weeks from model training",
@@ -604,11 +735,14 @@ def main() -> None:
     args = parser.parse_args()
 
     train_start = BASELINE_START if args.long_baseline else args.train_start
+    mask_holidays = not args.no_mask_holidays
     config = ModelConfig(
         train_start=train_start,
         train_end=args.train_end,
         include_transition_in_training=not args.no_transition_in_training,
         include_trend=args.include_trend,
+        include_holiday_seasonality=args.include_holiday_seasonality,
+        mask_holidays=mask_holidays,
     )
 
     out_dir = args.output_dir.resolve()
@@ -627,7 +761,9 @@ def main() -> None:
     print(
         f"\nModel config: train {config.train_start} → {config.train_end}, "
         f"transition_in_training={config.include_transition_in_training}, "
-        f"include_trend={config.include_trend}"
+        f"include_trend={config.include_trend}, "
+        f"mask_holidays={config.mask_holidays}, "
+        f"holiday_dummies={config.include_holiday_seasonality}"
     )
 
     site_eval, site_timeline, site_summary, site_model = run_site_counterfactual(
@@ -649,6 +785,10 @@ def main() -> None:
             "model_r2",
             "transition_last_actual",
             "transition_last_in_sample_pred",
+            "mask_holidays",
+            "holiday_weeks_excluded_site",
+            "training_weeks",
+            "evaluation_weeks",
         ):
             print(f"  {k}: {v}")
 

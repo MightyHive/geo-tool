@@ -336,6 +336,35 @@ S1 ≡ S2 (same publisher sites). S3 ≡ S4 (same advertiser sites).
 
 **Caveat:** Panel gaps are volume-weighted; a large site can dominate. Phase 2b equal-weight / site-level views below can diverge (especially publisher SEO).
 
+
+### Charts (Phase 2)
+
+Actual vs expected (median + Site 1–6). Expected line shown in evaluation only.
+
+#### SEO sessions
+
+![SEO sessions — Publishers](charts/phase2_segment/seo_sessions_publishers.png)
+
+![SEO sessions — Advertisers](charts/phase2_segment/seo_sessions_advertisers.png)
+
+#### Branded PPC
+
+![Branded PPC — Publishers](charts/phase2_segment/ppc_brand_publishers.png)
+
+![Branded PPC — Advertisers](charts/phase2_segment/ppc_brand_advertisers.png)
+
+#### Non-branded PPC
+
+![Non-branded PPC — Publishers](charts/phase2_segment/ppc_nonbrand_publishers.png)
+
+![Non-branded PPC — Advertisers](charts/phase2_segment/ppc_nonbrand_advertisers.png)
+
+#### Direct & purchases (advertisers)
+
+![Direct sessions — Advertisers](charts/phase2_segment/direct_sessions_advertisers.png)
+
+![Purchases — Advertisers](charts/phase2_segment/purchases_advertisers.png)
+
 Outputs: `research/analysis/outputs/segment_counterfactuals/`
 
 ---
@@ -360,6 +389,28 @@ Outputs: `research/analysis/outputs/segment_counterfactuals/`
 
 Equal-weight publisher SEO is near flat (−2%), vs +14% in the volume-weighted segment panel — large sites were driving the Phase 2 publisher SEO gap.
 
+### Charts — overall (normalised)
+
+#### SEO sessions
+
+![SEO overall publishers (normalised)](charts/phase2b_overall/seo_sessions_overall_publishers_norm.png)
+
+![SEO overall advertisers (normalised)](charts/phase2b_overall/seo_sessions_overall_advertisers_norm.png)
+
+#### PPC / Direct / Purchases
+
+![Non-branded PPC overall publishers (normalised)](charts/phase2b_overall/ppc_nonbrand_overall_publishers_norm.png)
+
+![Non-branded PPC overall advertisers (normalised)](charts/phase2b_overall/ppc_nonbrand_overall_advertisers_norm.png)
+
+![Branded PPC overall advertisers (normalised)](charts/phase2b_overall/ppc_brand_overall_advertisers_norm.png)
+
+![Direct overall advertisers (normalised)](charts/phase2b_overall/direct_sessions_overall_advertisers_norm.png)
+
+![Purchases overall advertisers (normalised)](charts/phase2b_overall/purchases_overall_advertisers_norm.png)
+
+
+
 ### By site — SEO sessions (raw, site-specific)
 
 | Site | Gap % | R² |
@@ -372,6 +423,22 @@ Equal-weight publisher SEO is near flat (−2%), vs +14% in the volume-weighted 
 | Site 6 | −16.0% | 0.78 |
 
 All six sites are at or below their own site-specific SEO counterfactual; advertiser Sites 4–5 are the weakest.
+
+### Charts — SEO by site
+
+![SEO Site 1](charts/phase2b_site/seo_sessions_site_1.png)
+
+![SEO Site 2](charts/phase2b_site/seo_sessions_site_2.png)
+
+![SEO Site 3](charts/phase2b_site/seo_sessions_site_3.png)
+
+![SEO Site 4](charts/phase2b_site/seo_sessions_site_4.png)
+
+![SEO Site 5](charts/phase2b_site/seo_sessions_site_5.png)
+
+![SEO Site 6](charts/phase2b_site/seo_sessions_site_6.png)
+
+
 
 ### By site — Direct (advertisers)
 
@@ -413,6 +480,47 @@ All six sites are at or below their own site-specific SEO counterfactual; advert
 
 \*Unreliable: thin series (expected ≈ 0 in eval / little pre-period history). Treat with caution. Publisher branded-PPC overall panel skipped for the same reason (only one site scalable).
 
+
+### Charts — Direct, purchases, and PPC by site
+
+#### Direct (advertisers)
+
+![Direct Site 4](charts/phase2b_site/direct_sessions_site_4.png)
+
+![Direct Site 5](charts/phase2b_site/direct_sessions_site_5.png)
+
+![Direct Site 6](charts/phase2b_site/direct_sessions_site_6.png)
+
+#### Purchases (advertisers)
+
+![Purchases Site 4](charts/phase2b_site/purchases_site_4.png)
+
+![Purchases Site 5](charts/phase2b_site/purchases_site_5.png)
+
+![Purchases Site 6](charts/phase2b_site/purchases_site_6.png)
+
+#### Non-branded PPC
+
+![Non-brand PPC Site 1](charts/phase2b_site/ppc_nonbrand_site_1.png)
+
+![Non-brand PPC Site 2](charts/phase2b_site/ppc_nonbrand_site_2.png)
+
+![Non-brand PPC Site 3](charts/phase2b_site/ppc_nonbrand_site_3.png)
+
+![Non-brand PPC Site 4](charts/phase2b_site/ppc_nonbrand_site_4.png)
+
+![Non-brand PPC Site 5](charts/phase2b_site/ppc_nonbrand_site_5.png)
+
+![Non-brand PPC Site 6](charts/phase2b_site/ppc_nonbrand_site_6.png)
+
+#### Branded PPC (where series is usable)
+
+![Brand PPC Site 1](charts/phase2b_site/ppc_brand_site_1.png)
+
+![Brand PPC Site 4](charts/phase2b_site/ppc_brand_site_4.png)
+
+![Brand PPC Site 6](charts/phase2b_site/ppc_brand_site_6.png)
+
 ### Interpretation (Phase 2b)
 
 1. **Equal-weight overall** softens the publisher SEO story (near flat) and still shows advertiser SEO under-performing (~−12%).
@@ -436,6 +544,14 @@ Outputs: `research/analysis/outputs/site_counterfactuals/`
 | Spend | £ spend still missing; lagged PPC sessions are a proxy only. |
 
 ---
+
+## Charts
+
+Anonymised PNGs live under `research/analysis/charts/` (Site 1–6 labels only):
+
+- `charts/phase2_segment/` — volume-weighted segment panels
+- `charts/phase2b_overall/` — equal-weight normalised overall
+- `charts/phase2b_site/` — site-specific models
 
 ## Reproduce
 

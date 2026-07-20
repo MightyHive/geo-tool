@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,7 @@ _ROW_FIELDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_FATAL_HTTP_CODES = frozenset({400, 401, 402, 403, 429})
+_FATAL_HTTP_CODES = frozenset({401, 402, 403, 429})
 _FATAL_MESSAGE_HINTS = (
     "usage limit",
     "usage limits",
@@ -88,7 +88,9 @@ def _load_state() -> dict[str, Any]:
 def _save_state(state: dict[str, Any]) -> None:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def get_excluded_platforms() -> set[str]:
@@ -96,7 +98,33 @@ def get_excluded_platforms() -> set[str]:
     excluded = state.get("excluded") or {}
     if not isinstance(excluded, dict):
         return set()
-    return {str(k).strip().lower() for k in excluded if str(k).strip().lower() in PLATFORM_KEYS}
+    ttl_hours = max(float(os.getenv("PROMPT_PLATFORM_EXCLUSION_TTL_HOURS", "1")), 0.0)
+    cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+    active: set[str] = set()
+    expired: list[str] = []
+    for key, value in excluded.items():
+        platform = str(key).strip().lower()
+        if platform not in PLATFORM_KEYS or not isinstance(value, dict):
+            expired.append(str(key))
+            continue
+        try:
+            excluded_at = datetime.fromisoformat(
+                str(value.get("excluded_at") or "").replace("Z", "+00:00")
+            )
+            if excluded_at.tzinfo is None:
+                excluded_at = excluded_at.replace(tzinfo=UTC)
+        except ValueError:
+            expired.append(str(key))
+            continue
+        if excluded_at < cutoff:
+            expired.append(str(key))
+        else:
+            active.add(platform)
+    if expired:
+        for key in expired:
+            excluded.pop(key, None)
+        _save_state(state)
+    return active
 
 
 def exclude_platform(platform: str, reason: str) -> None:
@@ -162,7 +190,6 @@ def sanitize_live_probe(live: dict[str, Any]) -> dict[str, Any]:
             for pk in PLATFORM_KEYS:
                 err = str(row.get(f"error_{pk}") or "").strip()
                 if err and is_fatal_platform_error(pk, err):
-                    exclude_platform(pk, err)
                     excluded.add(pk)
             for pk in excluded:
                 strip_platform_from_row(row, pk)

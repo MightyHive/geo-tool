@@ -27,7 +27,7 @@ from competitor_suggest import (
     _https_ssl_context,
     _truthy_env,
 )
-from geo_market import resolve_primary_market
+from geo_market import lat_lng_for_market, resolve_primary_market
 
 # Grounded search requires a model that supports the google_search tool.
 # gemini-2.0-flash and gemini-2.5-flash support it; fall back to the default
@@ -67,7 +67,7 @@ def _grounded_model() -> str:
     configured = (_get_config("GEMINI_GROUNDED_MODEL") or "").strip()
     if configured:
         return configured
-    # Try to use a model known to support google_search tool; fall back to
+    # Try to use a model known to support the google_search tool; fall back to
     # the standard default if not explicitly configured.
     return _GROUNDED_MODELS_PREFERENCE[0]
 
@@ -77,6 +77,8 @@ def _gemini_grounded_request(
     model: str,
     user_text: str,
     system_instruction: str = "",
+    *,
+    lat_lng: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Raw API call with google_search tool enabled. Returns the full response dict."""
     url = (
@@ -84,21 +86,34 @@ def _gemini_grounded_request(
         f":generateContent?key={api_key}"
     )
     sys_text = system_instruction or _AIO_SYSTEM_INSTRUCTION_BASE
-    body = json.dumps(
-        {
-            "contents": [
-                {"role": "user", "parts": [{"text": (user_text or "").strip()[:12000]}]}
-            ],
-            "systemInstruction": {
-                "parts": [{"text": sys_text}]
-            },
-            "tools": [{"google_search": {}}],
-            "generationConfig": {
-                "temperature": 0.4,
-                "maxOutputTokens": 1200,
-            },
+    payload: dict[str, Any] = {
+        "contents": [
+            {"role": "user", "parts": [{"text": (user_text or "").strip()[:12000]}]}
+        ],
+        "systemInstruction": {
+            "parts": [{"text": sys_text}]
+        },
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 8192,
+        },
+    }
+    # Bias Google Search grounding toward the configured market (capital / major city).
+    if (
+        isinstance(lat_lng, dict)
+        and isinstance(lat_lng.get("latitude"), (int, float))
+        and isinstance(lat_lng.get("longitude"), (int, float))
+    ):
+        payload["toolConfig"] = {
+            "retrievalConfig": {
+                "latLng": {
+                    "latitude": float(lat_lng["latitude"]),
+                    "longitude": float(lat_lng["longitude"]),
+                }
+            }
         }
-    ).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -112,7 +127,9 @@ def _gemini_grounded_request(
 def _extract_text_from_response(payload: dict[str, Any]) -> str:
     try:
         parts = payload["candidates"][0]["content"]["parts"]
-        return " ".join(str(p.get("text") or "") for p in parts).strip()
+        raw = " ".join(str(p.get("text") or "") for p in parts).strip()
+        from backend.prompt_suggest import _strip_gemini_artifacts
+        return _strip_gemini_artifacts(raw)
     except (KeyError, IndexError, TypeError):
         return ""
 
@@ -287,6 +304,7 @@ def gemini_grounded_answer(
             {"url": str, "domain": str, "title": str}, ...
           ],
           "error": str | None,
+          "grounding_lat_lng": {"latitude": float, "longitude": float} | None,
         }
     """
     key = (api_key or _gemini_api_key() or "").strip()
@@ -295,23 +313,40 @@ def gemini_grounded_answer(
             "response": "",
             "citations": [],
             "error": "GEMINI_API_KEY not configured — Google AIO probes unavailable.",
+            "grounding_lat_lng": None,
         }
     model = _grounded_model()
     sys_instr = _aio_system_instruction(market_country=market_country, market_country_code=market_country_code)
+    lat_lng = lat_lng_for_market(market_country, market_country_code)
     try:
         payload = _gemini_grounded_request(
-            api_key=key, model=model, user_text=user_prompt, system_instruction=sys_instr
+            api_key=key,
+            model=model,
+            user_text=user_prompt,
+            system_instruction=sys_instr,
+            lat_lng=lat_lng,
         )
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:800]
-        return {"response": "", "citations": [], "error": f"Gemini HTTP {e.code}: {detail}"}
+        return {
+            "response": "",
+            "citations": [],
+            "error": f"Gemini HTTP {e.code}: {detail}",
+            "grounding_lat_lng": lat_lng,
+        }
     except Exception as e:
-        return {"response": "", "citations": [], "error": str(e)[:400]}
+        return {
+            "response": "",
+            "citations": [],
+            "error": str(e)[:400],
+            "grounding_lat_lng": lat_lng,
+        }
 
     return {
         "response": _extract_text_from_response(payload),
         "citations": _extract_grounding_citations(payload),
         "error": None,
+        "grounding_lat_lng": lat_lng,
     }
 
 

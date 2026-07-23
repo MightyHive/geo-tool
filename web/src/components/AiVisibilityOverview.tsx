@@ -1,8 +1,32 @@
-import { useEffect, useState } from "react";
-import { Loader2, TrendingUp, Eye, BarChart2, Award } from "lucide-react";
-import { fetchPromptPerformanceContext } from "../api/client";
-import type { PromptPerformanceContext, TopCitedSite } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import { TrendingUp, Eye, Smile, Award } from "lucide-react";
+import { fetchPromptSentiment, fetchScoreBreakdown } from "../api/client";
+import { PageLoading } from "./PageLoading";
+import { usePromptPerformanceContext } from "../lib/promptPerformanceStore";
+import type { PromptSentimentAnalysis, TopCitedSite } from "../types";
 import { PlatformLogo, PLATFORM_META } from "./PlatformLogo";
+import { computeOverallSentiment, sentimentFromKeywordAggregate } from "../lib/sentimentCalc";
+import {
+  buildGeminiPromptSentimentMap,
+  geminiSentimentForPrompt,
+  type GeminiSentimentLabel,
+} from "../lib/geminiPromptSentiment";
+import { platformScoreColor } from "../lib/platformScoreColor";
+import { computeVisibilityMetrics, PRIMARY_VISIBILITY_PLATFORMS } from "../lib/visibilityMetrics";
+import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales";
+import VisibilityOverTime from "./VisibilityOverTime";
+import CitationOverTime from "./CitationOverTime";
+import SentimentOverTime from "./SentimentOverTime";
+import {
+  BrandCompetitorVisibility,
+  BrandCompetitorVisibilityTable,
+} from "./BrandCompetitorVisibility";
+import { buildInformationSourceDomainPredicate } from "../lib/citationSource";
+import { PromptLocaleFilter, liveProbeForLocale } from "./PromptLocaleFilter";
+import { OVERALL_LOCALE_KEY } from "../lib/localeProbeView";
+import { preferredInitialLocaleKey } from "../lib/defaultLocaleView";
+import { DeferredChart } from "./DeferredChart";
+import { prefetchProbeHistory } from "../lib/probeHistoryFetch";
 
 interface AiVisibilityOverviewProps {
   auditDirOrSlug: string;
@@ -11,7 +35,7 @@ interface AiVisibilityOverviewProps {
 
 function pct(val: number | undefined): string {
   if (val == null) return "—";
-  return `${Math.round(val)}%`;
+  return `${val.toFixed(1)}%`;
 }
 
 function ScoreCard({
@@ -28,7 +52,7 @@ function ScoreCard({
   color: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
+    <div className="h-full bg-white rounded-xl border border-gray-200 p-5">
       <div className="flex items-center gap-2 mb-3">
         <span
           className="inline-flex h-8 w-8 items-center justify-center rounded-lg"
@@ -46,15 +70,15 @@ function ScoreCard({
 
 function PlatformBar({
   platform,
-  brandPct,
-  compPct,
+  visibilityPct,
+  sovPct,
 }: {
   platform: string;
-  brandPct: number;
-  compPct: number;
+  visibilityPct: number;
+  sovPct: number;
 }) {
   const meta = PLATFORM_META[platform];
-  const color = meta?.color ?? "#6b7280";
+  const color = meta?.color ?? "#4B5563";
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
@@ -62,14 +86,86 @@ function PlatformBar({
           <PlatformLogo platform={platform} size={16} />
           <span className="font-medium text-[#0d0d0d]">{meta?.label ?? platform}</span>
         </div>
-        <span className="text-gray-400">{pct(brandPct)} brand · {pct(compPct)} competitor</span>
+        <span className="text-gray-400">{pct(visibilityPct)} visibility · {pct(sovPct)} SOV</span>
       </div>
       <div className="flex gap-1 h-2 rounded-full overflow-hidden bg-gray-100">
         <div
           className="h-full rounded-full transition-all"
-          style={{ width: `${Math.min(brandPct, 100)}%`, background: color }}
+          style={{ width: `${Math.min(visibilityPct, 100)}%`, background: color }}
         />
       </div>
+    </div>
+  );
+}
+
+// ── Sentiment helpers ─────────────────────────────────────────────────────────
+
+const SENTIMENT_COLORS: Record<string, { fg: string; bg: string }> = {
+  Positive: { fg: "#00b894", bg: "#e8f8f5" },
+  positive: { fg: "#00b894", bg: "#e8f8f5" },
+  Mixed: { fg: "#e17055", bg: "#fdf0ed" },
+  Negative: { fg: "#d63031", bg: "#ffeaea" },
+  negative: { fg: "#d63031", bg: "#ffeaea" },
+  Neutral: { fg: "#636e72", bg: "#f0f0f0" },
+  neutral: { fg: "#636e72", bg: "#f0f0f0" },
+};
+
+function SentimentBadge({ sentiment }: { sentiment: GeminiSentimentLabel | string | null }) {
+  if (!sentiment) return <span className="text-xs text-gray-300 font-bold">—</span>;
+  const s = String(sentiment).trim().toLowerCase();
+  if (s === "positive") {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 text-emerald-600 text-sm font-bold" title="Positive">+</span>
+    );
+  }
+  if (s === "negative") {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-100 text-red-500 text-sm font-bold" title="Negative">−</span>
+    );
+  }
+  if (s === "mixed") {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-orange-100 text-orange-600 text-sm font-bold" title="Mixed">±</span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-400 text-sm font-bold" title="Neutral">~</span>
+  );
+}
+
+function OverallSentimentSummary({ sentiment }: { sentiment: PromptSentimentAnalysis }) {
+  const { fg, bg } = SENTIMENT_COLORS[sentiment.overall_sentiment] ?? SENTIMENT_COLORS.Neutral;
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="flex items-center gap-3 mb-3">
+        <Smile className="w-4 h-4" style={{ color: fg }} />
+        <span className="text-sm font-semibold text-[#0d0d0d]">AI Sentiment</span>
+        <span
+          className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold"
+          style={{ background: bg, color: fg }}
+        >
+          {sentiment.overall_sentiment}
+        </span>
+      </div>
+      <p className="text-sm text-gray-500 leading-relaxed">{sentiment.overall_summary}</p>
+      {sentiment.by_category?.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+          {sentiment.by_category.map((cat) => {
+            const c = SENTIMENT_COLORS[cat.sentiment] ?? SENTIMENT_COLORS.Neutral;
+            return (
+              <div key={cat.category} className="flex items-center justify-between gap-3">
+                <span className="text-xs text-gray-600 font-medium">{cat.category}</span>
+                <span
+                  className="text-xs font-bold px-2 py-0.5 rounded-full shrink-0"
+                  style={{ background: c.bg, color: c.fg }}
+                >
+                  {cat.sentiment}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -124,83 +220,148 @@ function TopDomainsTable({ sites }: { sites: TopCitedSite[] }) {
 }
 
 export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewProps) {
-  const [ctx, setCtx] = useState<PromptPerformanceContext | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { ctx, loading: ctxLoading, error, ensureScope } = usePromptPerformanceContext(auditDirOrSlug);
+  const [llmSentiment, setLlmSentiment] = useState<PromptSentimentAnalysis | null>(null);
+  const [scoreBreakdown, setScoreBreakdown] = useState<Awaited<ReturnType<typeof fetchScoreBreakdown>> | null>(null);
+  const [selectedLocaleKey, setSelectedLocaleKey] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    fetchPromptPerformanceContext(auditDirOrSlug)
-      .then(setCtx)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
-      .finally(() => setLoading(false));
+    fetchScoreBreakdown(auditDirOrSlug)
+      .then((scores) => setScoreBreakdown(scores))
+      .catch(() => setScoreBreakdown(null));
   }, [auditDirOrSlug]);
 
+  useEffect(() => {
+    if (!auditDirOrSlug) return;
+    // Warm probe-history after first paint so over-time charts share one fetch.
+    const ric = window.requestIdleCallback?.bind(window);
+    if (ric) {
+      const id = ric(() => prefetchProbeHistory(auditDirOrSlug), { timeout: 500 });
+      return () => window.cancelIdleCallback?.(id);
+    }
+    const timer = window.setTimeout(() => prefetchProbeHistory(auditDirOrSlug), 0);
+    return () => window.clearTimeout(timer);
+  }, [auditDirOrSlug]);
+
+  useEffect(() => {
+    setSelectedLocaleKey(null);
+  }, [auditDirOrSlug]);
+
+  useEffect(() => {
+    if (!ctx) return;
+    setSelectedLocaleKey((prev) => (prev == null ? preferredInitialLocaleKey(ctx) : prev));
+    if (!ctx.live_probe?.per_prompt?.length) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = () => {
+      fetchPromptSentiment(auditDirOrSlug)
+        .then((r) => {
+          if (cancelled) return;
+          if (r.sentiment) {
+            setLlmSentiment(r.sentiment);
+            return;
+          }
+          if (r.status && ["queued", "starting", "running"].includes(r.status)) {
+            timer = window.setTimeout(load, 4000);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setLlmSentiment(null);
+        });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [auditDirOrSlug, ctx]);
+
+  const geminiByPromptId = useMemo(
+    () => buildGeminiPromptSentimentMap(llmSentiment),
+    [llmSentiment],
+  );
+
+  const onLocaleChange = (key: string) => {
+    setSelectedLocaleKey(key);
+    void ensureScope(
+      key === OVERALL_LOCALE_KEY ? { allLocales: true } : { locale: key },
+    ).catch(() => undefined);
+  };
+
+  // Don't block first paint on score-breakdown — probe metrics are preferred.
+  const loading = ctxLoading;
+
+  const localeKey = selectedLocaleKey || OVERALL_LOCALE_KEY;
+  const live = liveProbeForLocale(ctx, localeKey);
+  const localeCtx = useMemo(() => {
+    if (!ctx) return null;
+    return { ...ctx, live_probe: live };
+  }, [ctx, live]);
+
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[40vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
-      </div>
-    );
+    return <PageLoading />;
   }
 
   if (error) {
     return <div className="alert-error m-6">{error}</div>;
   }
 
-  const live = ctx?.live_probe;
   const agg = live?.aggregate;
   const perPrompt = live?.per_prompt ?? [];
-  const topSites = live?.top_cited_sites ?? [];
+  const isInformationSourceDomain = buildInformationSourceDomainPredicate(localeCtx);
+  const topSites = (live?.top_cited_sites ?? []).filter((site) =>
+    isInformationSourceDomain(site.domain)
+  );
 
-  const platforms = ["gemini", "openai", "claude", "google_aio"] as const;
+  const platforms = PRIMARY_VISIBILITY_PLATFORMS;
 
-  // Visibility score: avg brand mention pct across all platforms and prompts
-  let totalBrandPct = 0;
-  let brandPctCount = 0;
-  platforms.forEach((p) => {
-    const share = agg?.[p]?.brand_share_pct;
-    if (share != null) {
-      totalBrandPct += share;
-      brandPctCount++;
-    }
-  });
-  const visibilityScore = brandPctCount > 0 ? totalBrandPct / brandPctCount : null;
+  const brandTokens = live?.brand_match_tokens ?? [];
 
-  // SOV: brand share vs competitor share
-  let totalComp = 0;
-  let compCount = 0;
-  platforms.forEach((p) => {
-    const share = agg?.[p]?.competitor_share_pct;
-    if (share != null) {
-      totalComp += share;
-      compCount++;
-    }
-  });
-  const avgCompPct = compCount > 0 ? totalComp / compCount : null;
-  const sovNumerator = visibilityScore != null && avgCompPct != null
-    ? visibilityScore
-    : null;
-  const sovDenominator = (visibilityScore ?? 0) + (avgCompPct ?? 0);
-  const sovPct = sovNumerator != null && sovDenominator > 0
-    ? (sovNumerator / sovDenominator) * 100
-    : null;
+  const visibilityMetrics = localeCtx ? computeVisibilityMetrics(localeCtx) : null;
+  // Prefer locale-scoped probe metrics so scorecards match the Brand & competitor
+  // table on this page (same ctx / same SOV definition).
+  const visibilityScore = visibilityMetrics?.visibilityPct ?? scoreBreakdown?.prompt_metrics?.visibility_pct ?? null;
+  const sovPct = visibilityMetrics?.sovPct ?? scoreBreakdown?.prompt_metrics?.sov_pct ?? null;
+  const aiVisibilityScore = visibilityMetrics?.score ?? scoreBreakdown?.ai_visibility ?? null;
+  const brandPctCount = visibilityMetrics
+    ? platforms.filter((platform) => visibilityMetrics.perPlatform[platform]?.responseCount > 0).length
+    : 0;
 
+  const filterLocales = normalizePromptLocales(
+    ctx?.prompt_locales as PromptLocale[] | undefined,
+    ctx?.primary_market?.country ?? "",
+    ctx?.primary_market?.country_id ?? "",
+  );
+
+  // Sentiment score from keyword analysis (prefer server precompute when replies omitted)
+  // eslint-disable-next-line react-hooks/rules-of-hooks — sentimentResult must be computed unconditionally
+  const sentimentResult =
+    sentimentFromKeywordAggregate(live?.keyword_sentiment)
+    ?? computeOverallSentiment(
+      perPrompt as Array<Record<string, unknown>>,
+      brandTokens,
+      Array.from(platforms),
+    );
   // Average rank: how often brand is mentioned first vs later in responses
   let avgPosition = 0;
   let posCount = 0;
   perPrompt.forEach((row) => {
+    const precomputed = (row as { list_metrics?: { avg_position?: number | null } }).list_metrics?.avg_position;
+    if (precomputed != null && Number.isFinite(Number(precomputed))) {
+      avgPosition += Number(precomputed);
+      posCount++;
+      return;
+    }
     platforms.forEach((p) => {
       const resp = row[`${p}_response` as keyof typeof row] as string | undefined;
       if (!resp || typeof resp !== "string") return;
-      const brandTokens = live?.brand_match_tokens ?? [];
-      if (!brandTokens.length) return;
+      const tokens = live?.brand_match_tokens ?? [];
+      if (!tokens.length) return;
       const lower = resp.toLowerCase();
-      // Find earliest mention position (normalised 0-100 based on position in text)
-      for (const tok of brandTokens) {
+      for (const tok of tokens) {
         const idx = lower.indexOf(tok.toLowerCase());
         if (idx >= 0) {
-          avgPosition += (idx / resp.length) * 10 + 1; // 1–10 scale
+          avgPosition += (idx / resp.length) * 10 + 1;
           posCount++;
           break;
         }
@@ -229,59 +390,179 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
         </p>
       </div>
 
+      <PromptLocaleFilter
+        locales={filterLocales}
+        selectedKey={localeKey}
+        onChange={onLocaleChange}
+        hideIfSingle={false}
+        ctx={ctx}
+      />
+
+      {localeKey !== OVERALL_LOCALE_KEY && !live?.per_prompt?.length ? (
+        <div className="alert-info">
+          No probe data for this market/language yet. Re-run failed markets from the Prompts section to fill it in.
+        </div>
+      ) : (
+        <>
+      {aiVisibilityScore != null && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div
+              className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-[8px] text-xl font-bold"
+              style={{
+                borderColor: `${platformScoreColor(aiVisibilityScore)}33`,
+                color: platformScoreColor(aiVisibilityScore),
+              }}
+            >
+              {Math.round(aiVisibilityScore)}
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">AI Visibility Score</p>
+              <p className="mt-1 text-sm leading-relaxed text-gray-600">
+                {ctx?.brand_name || "The brand"} appears in {(visibilityScore ?? 0).toFixed(1)}% of analysed platform responses
+                and has {(sovPct ?? 0).toFixed(1)}% raw share of voice.
+              </p>
+              <p className="mt-1 text-xs text-gray-400">
+                60% response-level visibility + 40% share-of-voice performance against the 10 most-mentioned competitors.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <ScoreCard
           icon={Eye}
           label="Visibility"
           value={visibilityScore != null ? pct(visibilityScore) : "—"}
-          sub="Prompts mentioning your brand"
-          color="#4285F4"
+          sub="Responses mentioning your brand"
+          color={platformScoreColor(visibilityScore ?? 0)}
         />
         <ScoreCard
           icon={TrendingUp}
           label="SOV"
           value={sovPct != null ? pct(sovPct) : "—"}
-          sub="Share of AI mentions vs competitors"
-          color="#10a37f"
+          sub="Your brand’s mention hits ÷ brand + website-backed competitor hits"
+          color={platformScoreColor(sovPct ?? 0)}
         />
         <ScoreCard
           icon={Award}
           label="Position"
           value={avgPos != null ? avgPos.toFixed(1) : "—"}
           sub="Avg mention position (lower = earlier)"
-          color="#D97706"
+          color={platformScoreColor(avgPos == null ? 0 : Math.max(0, 100 - avgPos * 10))}
         />
         <ScoreCard
-          icon={BarChart2}
-          label="Platforms"
-          value={String(brandPctCount)}
-          sub="Active AI platforms scored"
-          color="#8B5CF6"
+          icon={Smile}
+          label="Positive rate"
+          value={
+            sentimentResult?.scorePercent != null
+              ? `${sentimentResult.scorePercent.toFixed(0)}%`
+              : "—"
+          }
+          sub={
+            sentimentResult?.mentionedCount
+              ? `${sentimentResult.positiveCount}/${sentimentResult.mentionedCount} keyword-positive mentions`
+              : "No brand mentions yet"
+          }
+          color={
+            sentimentResult?.label === "positive"
+              ? "#00b894"
+              : sentimentResult?.label === "negative"
+                ? "#d63031"
+                : "#8B5CF6"
+          }
         />
       </div>
 
-      {brandPctCount > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="text-sm font-semibold text-[#0d0d0d] mb-5">Brand visibility by platform</h3>
-          <div className="space-y-4">
-            {platforms.map((p) => {
-              const share = agg?.[p]?.brand_share_pct;
-              const compShare = agg?.[p]?.competitor_share_pct;
-              if (share == null) return null;
-              return (
-                <PlatformBar
-                  key={p}
-                  platform={p}
-                  brandPct={share}
-                  compPct={compShare ?? 0}
-                />
-              );
-            })}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] items-stretch">
+        {brandPctCount > 0 && visibilityMetrics && (
+          <div className="bg-white rounded-xl border border-gray-200 p-5 h-full">
+            <h3 className="text-sm font-semibold text-[#0d0d0d] mb-5">Brand visibility by platform</h3>
+            <div className="space-y-4">
+              {platforms.map((p) => {
+                const metrics = visibilityMetrics.perPlatform[p];
+                if (!metrics || metrics.responseCount === 0) return null;
+                return (
+                  <PlatformBar
+                    key={p}
+                    platform={p}
+                    visibilityPct={metrics.visibilityPct}
+                    sovPct={metrics.sovPct}
+                  />
+                );
+              })}
+            </div>
           </div>
+        )}
+        <DeferredChart
+          waitUntilVisible={false}
+          fallback={
+            <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-100 bg-white text-sm text-gray-400 shadow-sm">
+              Loading visibility history…
+            </div>
+          }
+        >
+          <VisibilityOverTime
+            auditId={auditDirOrSlug}
+            brandLabel={ctx?.brand_name ?? "Brand"}
+          />
+        </DeferredChart>
+      </div>
+
+      <div className={`grid items-stretch gap-6 ${llmSentiment ? "lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]" : ""}`}>
+        {llmSentiment && <OverallSentimentSummary sentiment={llmSentiment} />}
+        <DeferredChart
+          fallback={
+            <div className="flex h-52 items-center justify-center rounded-2xl border border-gray-100 bg-white text-sm text-gray-400 shadow-sm">
+              Loading sentiment history…
+            </div>
+          }
+        >
+          <SentimentOverTime auditId={auditDirOrSlug} />
+        </DeferredChart>
+      </div>
+
+      {localeCtx && (
+        <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+          <BrandCompetitorVisibilityTable
+            ctx={localeCtx}
+            auditId={auditDirOrSlug}
+            competitorLimit={5}
+          />
+          <DeferredChart
+            fallback={
+              <div className="flex h-64 items-center justify-center rounded-2xl border border-gray-200 bg-white text-sm text-gray-400">
+                Loading visibility history…
+              </div>
+            }
+          >
+            <BrandCompetitorVisibility
+              auditId={auditDirOrSlug}
+              ctx={localeCtx}
+              showComparison={false}
+              title="Brand & competitor visibility over time"
+              competitorLimit={5}
+            />
+          </DeferredChart>
         </div>
       )}
 
-      <TopDomainsTable sites={topSites} />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] items-stretch">
+        <TopDomainsTable sites={topSites} />
+        <DeferredChart
+          fallback={
+            <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-100 bg-white text-sm text-gray-400 shadow-sm">
+              Loading citation history…
+            </div>
+          }
+        >
+          <CitationOverTime
+            auditId={auditDirOrSlug}
+            allowedDomains={topSites.map((site) => site.domain)}
+          />
+        </DeferredChart>
+      </div>
 
       {perPrompt.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -293,11 +574,15 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
                   <th className="px-6 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-400 min-w-[200px]">Prompt</th>
+                  <th className="px-4 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-400">Sentiment</th>
                   {platforms.map((p) => (
                     agg?.[p] != null ? (
                       <th key={p} className="px-4 py-2 text-center">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-center gap-1">
                           <PlatformLogo platform={p} size={16} />
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                            {PLATFORM_META[p]?.label ?? p}
+                          </span>
                         </div>
                       </th>
                     ) : null
@@ -305,17 +590,22 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
                 </tr>
               </thead>
               <tbody>
-                {perPrompt.slice(0, 10).map((row, i) => (
+                {perPrompt.slice(0, 10).map((row, i) => {
+                  const rowSentiment = geminiSentimentForPrompt(row, geminiByPromptId);
+                  return (
                   <tr key={i} className="border-b border-gray-50 last:border-0">
                     <td className="px-6 py-3 text-gray-700 text-xs max-w-xs">
                       <span className="line-clamp-2">{row.prompt}</span>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <SentimentBadge sentiment={rowSentiment} />
                     </td>
                     {platforms.map((p) => {
                       if (agg?.[p] == null) return null;
                       const mentionPct = row[`${p}_brand_mention_pct` as keyof typeof row] as number | undefined;
                       const mentioned = (mentionPct ?? 0) > 0;
                       return (
-                        <td key={p} className="px-4 py-3 text-right">
+                        <td key={p} className="px-4 py-3 text-center">
                           <span
                             className={`inline-flex items-center justify-center rounded-full w-6 h-6 text-xs font-bold ${mentioned ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-400"}`}
                           >
@@ -325,12 +615,16 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
                       );
                     })}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       )}
+        </>
+      )}
+
     </div>
   );
 }

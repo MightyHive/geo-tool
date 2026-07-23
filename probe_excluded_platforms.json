@@ -1,8 +1,3 @@
 {
-  "excluded": {
-    "claude": {
-      "excluded_at": "2026-06-26T09:14:08.689664+00:00",
-      "reason": "Anthropic HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You have reached your specified workspace API usage limits. You will regain access on 2026-07-01 at 00:00 UTC.\"},\"request_id\":\"req_011CcRcgCMajPDBcdUSmgUeJ\"}"
-    }
-  }
+  "excluded": {}
 }

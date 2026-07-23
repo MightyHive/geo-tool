@@ -9,6 +9,11 @@ cd "$ROOT"
 PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
 REGION="${GCP_REGION:-europe-west1}"
 SERVICE="${CLOUD_RUN_SERVICE:-geo-audit-staging}"
+PROMPT_JOB="${PROMPT_PROBE_JOB_NAME:-geo-audit-staging-prompt-probes}"
+CRAWL_JOB="${AUDIT_CRAWL_JOB_NAME:-geo-audit-staging-site-crawls}"
+PDF_JOB="${PDF_EXPORT_JOB_NAME:-geo-audit-staging-pdf-exports}"
+SENTIMENT_JOB="${PROMPT_SENTIMENT_JOB_NAME:-geo-audit-staging-prompt-sentiment}"
+CONTENT_QUALITY_JOB="${CONTENT_QUALITY_JOB_NAME:-geo-audit-staging-content-quality}"
 SA_EMAIL="${CLOUD_RUN_SA:-geo-audit-tool@${PROJECT}.iam.gserviceaccount.com}"
 AR_REPO="${ARTIFACT_REGISTRY_REPO:-geo-audit}"
 IMAGE_NAME="${IMAGE_NAME:-web}"
@@ -116,7 +121,7 @@ while true; do
   esac
 done
 
-ENV_VARS="APP_ENV=staging,GEO_DATA_ROOT=/var/geo-data,CLOUD_RUN_REGION=${REGION}"
+ENV_VARS="APP_ENV=staging,GEO_DATA_ROOT=/var/geo-data,CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT}"
 SECRETS_FILE="${ROOT}/env/.env.staging"
 if [[ -f "${SECRETS_FILE}" ]]; then
   # shellcheck disable=SC1090
@@ -125,24 +130,222 @@ if [[ -f "${SECRETS_FILE}" ]]; then
   set +a
 fi
 
+# Resolve secrets to mount. Prefer hard-coded geo-tool secret names (deploy SA
+# often cannot ``secrets describe``); fall back to probing when names may vary.
+# Must stay aligned with scripts/deploy_cloud_run_dev.sh — omitting a required
+# secret from --set-secrets wipes it on the next deploy.
 SET_SECRETS=""
 _add_secret() {
-  local env_name="$1" secret_name="$2"
+  local env_name="$1" secret_name="$2" require="${3:-0}"
+  if [[ "${require}" == "1" ]]; then
+    SET_SECRETS="${SET_SECRETS}${env_name}=${secret_name}:latest,"
+    echo "==> Will mount Secret Manager secret: ${secret_name} → ${env_name}"
+    return
+  fi
   if gcloud secrets describe "${secret_name}" --project="${PROJECT}" >/dev/null 2>&1; then
     SET_SECRETS="${SET_SECRETS}${env_name}=${secret_name}:latest,"
     echo "==> Will mount Secret Manager secret: ${secret_name} → ${env_name}"
+  else
+    echo "==> Skipping Secret Manager secret (not found / no access): ${secret_name}"
   fi
 }
-# Same Secret Manager names as geo-audit-dev
-_add_secret GA4_OAUTH_CLIENT_ID google-oauth-client-id-geo-tool
-_add_secret GA4_OAUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool
-_add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool
-_add_secret GEMINI_API_KEY gemini-api-key-geo-tool
-_add_secret OPENAI_API_KEY openai-api-key-geo-tool
-_add_secret ANTHROPIC_API_KEY anthropic-api-key-geo-tool
+# Always remount known geo-audit secrets (do not rely on secrets.describe).
+_add_secret GA4_OAUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
+_add_secret GA4_OAUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
+_add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool 1
+_add_secret GEMINI_API_KEY gemini-api-key-geo-tool 1
+_add_secret OPENAI_API_KEY openai-api-key-geo-tool 1
+_add_secret ANTHROPIC_API_KEY anthropic-api-key-geo-tool 1
+_add_secret YOUTUBE_API_KEY youtube-api-key-geo-tool 1
+_add_secret REDDIT_CLIENT_ID REDDIT_CLIENT_ID 0
+_add_secret REDDIT_CLIENT_SECRET REDDIT_CLIENT_SECRET 0
+_add_secret SENDGRID_API_KEY sendgrid-api-key-geo-tool 0
 SET_SECRETS="${SET_SECRETS%,}"
 
-echo "==> Deploying Cloud Run service (audit runs in-container, not locally)…"
+# Prompt probes fan out one Job execution per configured locale (see api/prompt_jobs.py).
+# The 12h task-timeout is a safety net for a single locale's platforms — multi-market
+# audits no longer run all locales sequentially in one execution.
+echo "==> Deploying Cloud Run prompt probe Job ${PROMPT_JOB}…"
+PROMPT_JOB_CMD=(
+  gcloud run jobs deploy "${PROMPT_JOB}"
+  --project="${PROJECT}"
+  --region="${REGION}"
+  --image="${IMAGE}"
+  --service-account="${SA_EMAIL}"
+  --cpu=2
+  --memory=4Gi
+  --tasks=1
+  --parallelism=1
+  --max-retries=0
+  --task-timeout=43200s
+  --command=python
+  --args=-m,jobs.prompt_probe.run_job
+  --set-env-vars="${ENV_VARS}"
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+)
+if [[ -n "${SET_SECRETS}" ]]; then
+  PROMPT_JOB_CMD+=(--set-secrets="${SET_SECRETS}")
+fi
+"${PROMPT_JOB_CMD[@]}"
+gcloud run jobs add-iam-policy-binding "${PROMPT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${PROMPT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run site crawl Job ${CRAWL_JOB}…"
+CRAWL_JOB_CMD=(
+  gcloud run jobs deploy "${CRAWL_JOB}"
+  --project="${PROJECT}"
+  --region="${REGION}"
+  --image="${IMAGE}"
+  --service-account="${SA_EMAIL}"
+  --cpu=2
+  --memory=4Gi
+  --tasks=1
+  --parallelism=1
+  --max-retries=0
+  --task-timeout=7200s
+  --command=python
+  --args=-m,jobs.audit_crawl.run_job
+  --set-env-vars="${ENV_VARS}"
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+)
+if [[ -n "${SET_SECRETS}" ]]; then
+  CRAWL_JOB_CMD+=(--set-secrets="${SET_SECRETS}")
+fi
+"${CRAWL_JOB_CMD[@]}"
+gcloud run jobs add-iam-policy-binding "${CRAWL_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${CRAWL_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run PDF export Job ${PDF_JOB}…"
+PDF_JOB_CMD=(
+  gcloud run jobs deploy "${PDF_JOB}"
+  --project="${PROJECT}"
+  --region="${REGION}"
+  --image="${IMAGE}"
+  --service-account="${SA_EMAIL}"
+  --cpu=2
+  --memory=4Gi
+  --tasks=1
+  --parallelism=1
+  --max-retries=0
+  --task-timeout=3600s
+  --command=python
+  --args=-m,jobs.pdf_export.run_job
+  --set-env-vars="${ENV_VARS}"
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+)
+if [[ -n "${SET_SECRETS}" ]]; then
+  PDF_JOB_CMD+=(--set-secrets="${SET_SECRETS}")
+fi
+"${PDF_JOB_CMD[@]}"
+gcloud run jobs add-iam-policy-binding "${PDF_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${PDF_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run prompt sentiment Job ${SENTIMENT_JOB}…"
+SENTIMENT_JOB_CMD=(
+  gcloud run jobs deploy "${SENTIMENT_JOB}"
+  --project="${PROJECT}"
+  --region="${REGION}"
+  --image="${IMAGE}"
+  --service-account="${SA_EMAIL}"
+  --cpu=1
+  --memory=2Gi
+  --tasks=1
+  --parallelism=1
+  --max-retries=0
+  --task-timeout=1800s
+  --command=python
+  --args=-m,jobs.prompt_sentiment.run_job
+  --set-env-vars="${ENV_VARS}"
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+)
+if [[ -n "${SET_SECRETS}" ]]; then
+  SENTIMENT_JOB_CMD+=(--set-secrets="${SET_SECRETS}")
+fi
+"${SENTIMENT_JOB_CMD[@]}"
+gcloud run jobs add-iam-policy-binding "${SENTIMENT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${SENTIMENT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run content-quality Job ${CONTENT_QUALITY_JOB}…"
+CONTENT_QUALITY_JOB_CMD=(
+  gcloud run jobs deploy "${CONTENT_QUALITY_JOB}"
+  --project="${PROJECT}"
+  --region="${REGION}"
+  --image="${IMAGE}"
+  --service-account="${SA_EMAIL}"
+  --cpu=1
+  --memory=2Gi
+  --tasks=1
+  --parallelism=1
+  --max-retries=0
+  --task-timeout=1800s
+  --command=python
+  --args=-m,jobs.content_quality_gemini.run_job
+  --set-env-vars="${ENV_VARS}"
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+)
+if [[ -n "${SET_SECRETS}" ]]; then
+  CONTENT_QUALITY_JOB_CMD+=(--set-secrets="${SET_SECRETS}")
+fi
+"${CONTENT_QUALITY_JOB_CMD[@]}"
+gcloud run jobs add-iam-policy-binding "${CONTENT_QUALITY_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${CONTENT_QUALITY_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run service…"
 DEPLOY_CMD=(
   gcloud run deploy "${SERVICE}"
   --project="${PROJECT}"
@@ -181,6 +384,21 @@ gcloud run services update "${SERVICE}" \
   --region="${REGION}" \
   --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback,GA4_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/ga4/callback"
 
+# WEB_PUBLIC_ORIGIN is also used as the YouTube Data API Referer header
+# (api/youtube_insights.py) for HTTP-referrer-restricted API keys.
+for _job in "${PROMPT_JOB}" "${CRAWL_JOB}" "${PDF_JOB}" "${SENTIMENT_JOB}" "${CONTENT_QUALITY_JOB}"; do
+  gcloud run jobs update "${_job}" \
+    --project="${PROJECT}" \
+    --region="${REGION}" \
+    --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL}" \
+    --quiet || true
+done
+
 echo ""
 echo "Deployed ${SERVICE} → ${SERVICE_URL}"
+echo "Prompt probes → Cloud Run Job ${PROMPT_JOB} (${REGION})."
+echo "Site crawls → Cloud Run Job ${CRAWL_JOB} (${REGION})."
+echo "PDF exports → Cloud Run Job ${PDF_JOB} (${REGION})."
+echo "Prompt sentiment → Cloud Run Job ${SENTIMENT_JOB} (${REGION})."
+echo "Content quality → Cloud Run Job ${CONTENT_QUALITY_JOB} (${REGION})."
 echo "Audits write to gs://${BUCKET} (mounted at /var/geo-data)."

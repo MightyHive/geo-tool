@@ -8,7 +8,7 @@ A Generative Engine Optimization (GEO) audit platform that crawls websites, scor
 
 ## What the tool does
 
-1. **Crawls** the client site and up to five competitors (robots.txt, llms.txt, sitemaps, sample pages, JSON-LD, Open Graph).
+1. **Crawls** the client site and up to ten competitors (robots.txt, llms.txt, sitemaps, sample pages, JSON-LD, Open Graph).
 2. **Scores** GEO readiness across three weighted categories (AI Visibility, Technical Setup, Content Quality & Structure).
 3. **Optionally connects GA4** via Google OAuth to append AI traffic trends and channel-gap analysis.
 4. **Runs live AI probes** (Gemini, OpenAI, Claude) against wizard-defined prompts and computes share of voice.
@@ -107,6 +107,11 @@ seo-geo-tool/
 | `.streamlit/secrets.toml` | OAuth client, cookie secret, optional LLM keys |
 | `env/.env.development` | `WEB_PUBLIC_ORIGIN`, optional GA4 defaults |
 | `GEO_DATA_ROOT` | Writable data root (GCS mount `/var/geo-data` on Cloud Run) |
+| `REDIS_URL` | Optional Memorystore URL for slim prompt-performance metrics cache |
+| `REDIS_TTL_SEC` | Redis TTL seconds (default 300) |
+| `SLIM_METRICS_REDIS` | Disable Redis slim cache with `0` even if `REDIS_URL` is set |
+| `SLIM_METRICS_GCS_CACHE` | Write per-locale slim JSON under the audit dir (`1` to enable) |
+| `SLIM_METRICS_CDN_BASE_URL` | Optional CDN/public base for slim JSON URLs |
 
 See `geo_app_env.py` for dotenv loading order.
 

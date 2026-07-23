@@ -1,9 +1,12 @@
 import { CheckCircle2, Circle, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils";
-import type { AuditRunProgressPayload } from "../types";
+import { formatProbeRunEta } from "../lib/probeRunEta";
+import type { AuditRunProgressPayload, ProbeProgressSummary } from "../types";
 
 interface AuditRunProgressProps {
   progress: AuditRunProgressPayload | null;
+  /** Fallback market count from wizard config before probe events arrive. */
+  marketCount?: number;
 }
 
 const DEFAULT_STEPS = [
@@ -20,10 +23,63 @@ const DEFAULT_STEPS = [
   { id: "finish", label: "Finishing up", status: "pending" as const },
 ];
 
-export function AuditRunProgress({ progress }: AuditRunProgressProps) {
+function probeEtaLine(probe: ProbeProgressSummary | null | undefined): string | null {
+  if (!probe) return null;
+  const planned = probe.planned_calls ?? 0;
+  const completed = probe.completed_calls ?? 0;
+  if (planned > 0) {
+    const remaining = Math.max(0, planned - completed);
+    return formatProbeRunEta({ remainingCalls: remaining, totalCalls: planned });
+  }
+  if (probe.eta_seconds != null && probe.eta_seconds > 0) {
+    const mins = Math.max(1, Math.ceil(probe.eta_seconds / 60));
+    return `About ${mins} minute${mins === 1 ? "" : "s"} remaining`;
+  }
+  if (probe.eta_total_seconds != null && probe.eta_total_seconds > 0) {
+    const mins = Math.max(1, Math.ceil(probe.eta_total_seconds / 60));
+    return `Estimated time: ~${mins} minute${mins === 1 ? "" : "s"}`;
+  }
+  return null;
+}
+
+function probeStatsLine(
+  probe: ProbeProgressSummary | null | undefined,
+  fallbackMarkets: number | undefined,
+): string | null {
+  const markets = probe?.market_count || fallbackMarkets || 0;
+  const parts: string[] = [];
+
+  if (probe?.prompt_total && probe.prompt_total > 0) {
+    const done = Math.min(probe.prompt_index || 0, probe.prompt_total);
+    parts.push(`Prompts ${done}/${probe.prompt_total}`);
+  }
+
+  if (probe?.planned_calls && probe.planned_calls > 0) {
+    const label =
+      markets > 1
+        ? `Platform calls ${probe.completed_calls ?? 0}/${probe.planned_calls} per market`
+        : `Platform calls ${probe.completed_calls ?? 0}/${probe.planned_calls}`;
+    parts.push(label);
+  }
+
+  if (markets > 0) {
+    parts.push(markets === 1 ? "1 market" : `${markets} markets`);
+  }
+
+  const eta = probeEtaLine(probe);
+  if (eta) parts.push(eta);
+
+  return parts.length ? parts.join(" · ") : null;
+}
+
+export function AuditRunProgress({ progress, marketCount }: AuditRunProgressProps) {
   const percent = progress?.percent ?? 2;
   const detail = progress?.detail ?? "Starting audit…";
   const steps = progress?.steps?.length ? progress.steps : DEFAULT_STEPS;
+  const probe = progress?.probe_progress;
+  const stats = probeStatsLine(probe, progress?.market_count ?? marketCount);
+  const probing = progress?.current_step === "prompt_probes";
+  const etaOnly = !stats ? probeEtaLine(probe) : null;
 
   return (
     <div className="mt-4" aria-live="polite" aria-busy="true">
@@ -37,7 +93,28 @@ export function AuditRunProgress({ progress }: AuditRunProgressProps) {
           style={{ width: `${percent}%` }}
         />
       </div>
-      <p className="text-sm text-gray-600 mb-4">{detail}</p>
+      <p className="text-sm text-gray-600 mb-1">{detail}</p>
+      {stats && (
+        <p
+          className={cn(
+            "text-sm mb-4 tabular-nums",
+            probing ? "text-brand-dark font-medium" : "text-gray-500",
+          )}
+        >
+          {stats}
+        </p>
+      )}
+      {!stats && etaOnly && (
+        <p
+          className={cn(
+            "text-sm mb-4 tabular-nums",
+            probing ? "text-brand-dark font-medium" : "text-gray-500",
+          )}
+        >
+          {etaOnly}
+        </p>
+      )}
+      {!stats && !etaOnly && <div className="mb-3" />}
       <ul className="space-y-2">
         {steps.map((step) => (
           <li key={step.id} className="flex items-start gap-2 text-sm">

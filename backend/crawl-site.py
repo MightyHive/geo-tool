@@ -1271,6 +1271,58 @@ def _rough_visible_text(html: str, max_chars: int = 48000) -> str:
     return t[:max_chars]
 
 
+_ORIGINALITY_PATTERNS: dict[str, tuple[str, ...]] = {
+    "first_party_research": (
+        r"\b(?:we|our team|our researchers?)\b.{0,100}\b(?:conducted|ran|carried out|published|analysed|analyzed)\b.{0,80}\b(?:research|study|survey|experiment|analysis)\b",
+        r"\b(?:our|first[- ]party|original|proprietary)\s+(?:research|study|survey|experiment|analysis|findings?)\b",
+    ),
+    "quantified_findings": (
+        r"\b(?:we|our team|our researchers?)\b.{0,100}\b(?:tested|measured|analysed|analyzed|surveyed|compared|tracked)\b.{0,140}\b\d[\d,.]*\s*(?:%|percent|people|customers?|users?|respondents?|sites?|pages?|products?|months?|years?)\b",
+        r"\b(?:our|the)\s+(?:study|survey|analysis|experiment|test)\b.{0,140}\b(?:found|showed|revealed|identified|demonstrated)\b.{0,100}\b\d[\d,.]*%?\b",
+    ),
+    "first_party_data": (
+        r"\b(?:our(?:\s+proprietary)?|first[- ]party|internal|proprietary)\s+(?:data|dataset|metrics?|usage data|customer insights?)\b",
+        r"\bdata from (?:our|the company(?:'s)?)\s+(?:customers?|users?|platform|products?|operations?)\b",
+    ),
+    "benchmark_or_dataset": (
+        r"\b(?:our|original|proprietary|annual|industry)\s+(?:benchmark|index|dataset|data set|tracker)\b",
+        r"\bbenchmark(?:ed|ing)?\b.{0,100}\b\d[\d,.]*\s+(?:companies|brands|sites|pages|products|responses|results)\b",
+    ),
+    "proprietary_framework": (
+        r"\b(?:our|original|proprietary|custom)\s+(?:framework|model|index|calculator|tool|taxonomy|scoring system|decision model)\b",
+        r"\b(?:we|our team)\s+(?:created|developed|built)\b.{0,80}\b(?:framework|model|index|calculator|tool|taxonomy|scoring system)\b",
+    ),
+}
+
+
+def extract_originality_evidence(text: str, limit: int = 4) -> dict[str, list[str]]:
+    """Return bounded evidence of a novel contribution, not generic experience."""
+    sentences = [
+        re.sub(r"\s+", " ", sentence).strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        if 45 <= len(sentence.strip()) <= 700
+    ]
+    evidence: list[str] = []
+    signal_types: list[str] = []
+    for sentence in sentences:
+        matched_types = [
+            signal_type
+            for signal_type, patterns in _ORIGINALITY_PATTERNS.items()
+            if any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in patterns)
+        ]
+        if not matched_types:
+            continue
+        for signal_type in matched_types:
+            if signal_type not in signal_types:
+                signal_types.append(signal_type)
+        snippet = sentence[:420]
+        if snippet not in evidence:
+            evidence.append(snippet)
+        if len(evidence) >= limit:
+            break
+    return {"evidence": evidence, "signal_types": signal_types}
+
+
 def compute_page_content_signals(html: str) -> dict[str, Any]:
     """
     Heuristics for product-grid vs editorial prose (crawl-only; not manual passage review).
@@ -1341,6 +1393,111 @@ def compute_page_content_signals(html: str) -> dict[str, Any]:
         )
     )
     has_editorial = len(meaningful_sents) >= 3 or markers >= 3 or q_like >= 2
+    representative_excerpt = ""
+    if meaningful_sents:
+        representative_excerpt = re.sub(r"\s+", " ", meaningful_sents[0]).strip()[:420]
+
+    # Bounded, criterion-specific evidence for the E-E-A-T report. These are
+    # deliberately conservative content matches: a score should be explainable
+    # with public copy from the sampled URL, not inferred from unrelated scores.
+    evidence_candidates = [
+        re.sub(r"\s+", " ", sentence).strip()
+        for sentence in sents
+        if 45 <= len(sentence.strip()) <= 700
+    ]
+    eeat_patterns: dict[str, tuple[str, ...]] = {
+        "experience": (
+            r"\b(?:i|we|our team|our experts)\b.{0,100}\b(?:tested|used|implemented|built|created|developed|found|learned|observed|measured|reviewed)\b",
+            r"\b(?:case study|in practice|first-hand|hands-on|our process|our methodology|step[- ]by[- ]step)\b",
+            r"\b(?:results?|outcomes?)\b.{0,80}\b\d+(?:\.\d+)?%?\b",
+        ),
+        "expertise": (
+            r"\b(?:expert|specialist|qualified|certified|accredited|licensed|consultant|doctor|dermatologist|engineer|researcher)\b",
+            r"\b(?:research|study|evidence|data|methodology|analysis|according to|references?|sources?)\b",
+            r"\b\d+\+?\s+years?(?:'| of)?\s+(?:experience|expertise|practice)\b",
+            r"\b(?:how|why)\b.{0,160}\b(?:because|therefore|means|works|causes|depends)\b",
+        ),
+        "authoritativeness": (
+            r"\b(?:award(?:ed|[- ]winning)?|recognised|recognized|featured in|cited by|trusted by|endorsed by)\b",
+            r"\b(?:member of|accredited by|certified by|partner(?:ed)? with|approved by|regulated by)\b",
+            r"\b(?:leading|established|founded in|since)\b.{0,100}\b(?:provider|brand|company|practice|organisation|organization|specialist)\b",
+        ),
+        "trust": (
+            r"\b(?:privacy policy|terms (?:and conditions|of service)|returns? policy|refund policy|corrections? policy|editorial policy)\b",
+            r"\b(?:contact us|customer service|support team|registered office|company number)\b",
+            r"\b(?:reviewed by|medically reviewed|fact[- ]checked|last updated|published on|updated on)\b",
+            r"\b(?:disclosure|affiliate|sponsored|independent review|sources?|references?)\b",
+        ),
+    }
+
+    def evidence_for(patterns: tuple[str, ...]) -> list[str]:
+        matches: list[str] = []
+        for sentence in evidence_candidates:
+            if any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in patterns):
+                snippet = sentence[:420]
+                if snippet not in matches:
+                    matches.append(snippet)
+            if len(matches) >= 3:
+                break
+        return matches
+
+    eeat_evidence = {
+        criterion: evidence_for(patterns)
+        for criterion, patterns in eeat_patterns.items()
+    }
+    has_author_signal = bool(re.search(
+        r"\b(?:written|authored|reviewed|fact[- ]checked)\s+by\b|class=[\"'][^\"']*(?:author|byline)",
+        html,
+        flags=re.IGNORECASE,
+    ))
+    has_credential_signal = bool(eeat_evidence["expertise"])
+    has_source_signal = bool(re.search(
+        r"\b(?:according to|source|reference|research|study|data)\b",
+        lower,
+    ))
+    has_process_signal = bool(re.search(
+        r"\b(?:our process|our methodology|how we|case study|step[- ]by[- ]step|we tested|we used)\b",
+        lower,
+    ))
+    has_recognition_signal = bool(eeat_evidence["authoritativeness"])
+    has_policy_signal = bool(re.search(
+        r"\b(?:privacy policy|terms and conditions|terms of service|returns? policy|refund policy|editorial policy|corrections? policy)\b",
+        lower,
+    ))
+    has_contact_signal = bool(re.search(
+        r"\b(?:contact us|customer service|support team|registered office|company number)\b",
+        lower,
+    ))
+    has_review_date_signal = bool(re.search(
+        r"<time\b|datePublished|dateModified|\b(?:reviewed by|last updated|published on|updated on)\b",
+        html,
+        flags=re.IGNORECASE,
+    ))
+    heading_texts: list[str] = []
+    for raw_heading in re.findall(r"<h[2-3]\b[^>]*>(.*?)</h[2-3]>", html, flags=re.IGNORECASE | re.DOTALL):
+        heading = html_unescape_json(re.sub(r"<[^>]+>", " ", raw_heading))
+        heading = re.sub(r"\s+", " ", heading).strip()
+        if 4 <= len(heading) <= 180 and heading not in heading_texts:
+            heading_texts.append(heading)
+    faq_questions = [
+        re.sub(r"\s+", " ", match).strip()
+        for match in re.findall(
+            r"(?:^|[.!?]\s+)((?:what|how|why|when|which|where|who|can|does|do|is|are|should)\b[^?]{4,160}\?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    ]
+    direct_answer_snippets = [
+        re.sub(r"\s+", " ", sentence).strip()[:420]
+        for sentence in meaningful_sents
+        if re.search(r"\b(?:is|are|means|because|therefore|works by|helps to|used to)\b", sentence, flags=re.IGNORECASE)
+    ][:3]
+    formatting_evidence = (
+        [f"Heading: {heading}" for heading in heading_texts[:2]]
+        + [f"FAQ: {question}" for question in faq_questions[:2]]
+        + direct_answer_snippets[:2]
+    )[:4]
+    originality = extract_originality_evidence(text)
     return {
         "visible_words": len(text.split()),
         "add_to_cart_n": int(add_n),
@@ -1352,6 +1509,26 @@ def compute_page_content_signals(html: str) -> dict[str, Any]:
         "question_like_n": int(q_like),
         "is_product_grid": bool(is_grid),
         "has_editorial_content": bool(has_editorial),
+        # Retain one bounded, public on-page passage so report evidence can show
+        # what the content-quality score is based on without storing page bodies.
+        "representative_excerpt": representative_excerpt,
+        "eeat_evidence": eeat_evidence,
+        "originality_evidence": originality["evidence"],
+        "originality_signal_types": originality["signal_types"],
+        "eeat_signals": {
+            "author": has_author_signal,
+            "credentials": has_credential_signal,
+            "sources": has_source_signal,
+            "process": has_process_signal,
+            "recognition": has_recognition_signal,
+            "policy": has_policy_signal,
+            "contact": has_contact_signal,
+            "review_date": has_review_date_signal,
+        },
+        "heading_h2_h3_n": len(heading_texts),
+        "faq_question_n": len(faq_questions),
+        "direct_answer_n": len(direct_answer_snippets),
+        "formatting_evidence": formatting_evidence,
     }
 
 
@@ -2020,7 +2197,7 @@ def main() -> int:
         default=[],
         dest="competitors",
         metavar="URL",
-        help="Competitor site to audit with the same settings (max 5). Reports go under primary output in competitors/. Repeat flag.",
+        help="Competitor site to audit with the same settings (max 10). Reports go under primary output in competitors/. Repeat flag.",
     )
     parser.add_argument(
         "--brand",
@@ -2060,8 +2237,8 @@ def main() -> int:
     except ImportError:
         close_browser_session = None  # type: ignore[assignment,misc]
 
-    if len(args.competitors) > 5:
-        print("Error: at most 5 --competitor URLs allowed.", file=sys.stderr)
+    if len(args.competitors) > 10:
+        print("Error: at most 10 --competitor URLs allowed.", file=sys.stderr)
         return 2
 
     tls_info = configure_tls(insecure=args.insecure, no_certifi=args.no_certifi)

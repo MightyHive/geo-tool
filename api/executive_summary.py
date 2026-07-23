@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from api import geo_services as geo
 from executive_summary_llm import (
     EXECUTIVE_SUMMARY_FILE,
+    EXECUTIVE_SUMMARY_SCHEMA_VERSION,
     generate_and_cache_for_audit_dir,
     load_cached_executive_summary,
     sanitize_executive_html,
@@ -51,7 +52,11 @@ def post_executive_summary(audit_id: str, body: ExecutiveSummaryBody | None = No
     model = body.model if body is not None else None
     if not refresh:
         cached = load_cached_executive_summary(audit_dir)
-        if cached and str(cached.get("paragraph_html") or "").strip():
+        if (
+            cached
+            and cached.get("schema_version") == EXECUTIVE_SUMMARY_SCHEMA_VERSION
+            and str(cached.get("paragraph_html") or "").strip()
+        ):
             return {
                 "audit_dir": geo.audit_dir_api_rel(audit_dir),
                 "cached": True,

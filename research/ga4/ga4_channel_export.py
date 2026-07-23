@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
 """
-Pull daily GA4 sessions and ecommerce purchases by channel group via the Data API.
+Pull daily/weekly GA4 sessions and ecommerce purchases by custom channel rules.
 
-Uses GA4's **default** session channel group (``sessionDefaultChannelGroup``): Direct,
-Organic Search, Paid Search, Paid Social, Organic Social, Email, Affiliates, Referral,
-Video, and Display. This script does not use custom Admin channel groupings.
+Dimensions used for classification:
+  ``sessionSource``, ``sessionMedium``, ``sessionDefaultChannelGroup``
 
-Auth: Google OAuth — same web flow as the deployed FastAPI app on Cloud Run
-(``GET /api/ga4/login`` → Google consent → ``/api/ga4/callback``).
+Channel rules (first match wins)::
 
-Uses ``ga4_oauth.build_flow`` with redirect URI ``{WEB_PUBLIC_ORIGIN}/api/ga4/callback``
-(or ``GA4_OAUTH_REDIRECT_URI`` when set, as on Cloud Run). Tokens cache to
-``research/.ga4_oauth_token.json``.
+  1. AI   — sessionSource matches chatgpt|copilot|gemini|perplexity|claude
+  2. PPC  — default channel group in Paid Search / Cross-network / Paid Shopping /
+            Paid Video / Display / Paid Other, OR sessionMedium == cpc
+  3. SEO  — default channel group in Organic Search / Google Places / Organic Shopping,
+            OR sessionSource == search.brave.com, OR sessionSource matches Google Places
+  4. Other Traffic — everything else
 
-Configure via env (see ``env/.env.development``) or ``.streamlit/secrets.toml`` —
-same OAuth client as the deployed app.
+Auth: Google OAuth — same CLI flow as other research GA4 scripts
+(``research/.ga4_oauth_token.json``).
 
 Environment:
-  WEB_PUBLIC_ORIGIN                    App origin (default: http://localhost:5173)
-  GA4_OAUTH_REDIRECT_URI               Override callback (Cloud Run sets this to …/api/ga4/callback)
-  GA4_PROPERTY_ID / GA4_PROPERTY_NAME        Fallback when CLI flags omitted
+  GA4_PROPERTY_ID / GA4_PROPERTY_NAME
   GA4_START_DATE / GA4_END_DATE        Override default YYYY-MM-DD range (ISO only)
-  GA4_OAUTH_CLIENT_ID / GA4_OAUTH_CLIENT_SECRET
 
 Default date range: 2022-06-01 through 2026-05-31.
 
-Outputs (default: ``research/ga4/exports/daily/``):
-  ga4_channel_long_{name}_{property_id}.csv
-  ga4_channel_wide_{name}_{property_id}.csv
+Outputs (default: ``research/ga4/exports/daily/``)::
+
+  ga4_channel_long_{name}_{property_id}.csv     — date × channel
+  ga4_channel_wide_{name}_{property_id}.csv     — one row per day
+  ga4_channel_weekly_{name}_{property_id}.csv   — Sunday-start week × channel metrics
 """
 
 from __future__ import annotations
@@ -69,31 +69,40 @@ from geo_app_env import load_app_environment  # noqa: E402
 
 DEFAULT_START = "2022-06-01"
 DEFAULT_END = "2026-05-31"
-CHANNEL_DIMENSION = "sessionDefaultChannelGroup"
 
-# GA4 default session channel group labels → wide CSV column prefixes.
-DEFAULT_CHANNEL_GROUPS: tuple[str, ...] = (
-    "Direct",
-    "Organic Search",
-    "Paid Search",
-    "Paid Social",
-    "Organic Social",
-    "Email",
-    "Affiliates",
-    "Referral",
-    "Video",
-    "Display",
+CHANNEL_AI = "AI"
+CHANNEL_PPC = "PPC"
+CHANNEL_SEO = "SEO"
+CHANNEL_OTHER = "Other Traffic"
+CHANNEL_ORDER: tuple[str, ...] = (CHANNEL_AI, CHANNEL_PPC, CHANNEL_SEO, CHANNEL_OTHER)
+
+PPC_CHANNEL_GROUPS = frozenset(
+    {
+        "Paid Search",
+        "Cross-network",
+        "Paid Shopping",
+        "Paid Video",
+        "Display",
+        "Paid Other",
+    }
+)
+SEO_CHANNEL_GROUPS = frozenset(
+    {
+        "Organic Search",
+        "Google Places",
+        "Organic Shopping",
+    }
 )
 
-_CHANNEL_LABEL_TO_PREFIX: dict[str, str] = {
-    label.lower(): re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_")
-    for label in DEFAULT_CHANNEL_GROUPS
-}
-_CHANNEL_LABEL_TO_PREFIX["(not set)"] = "Unassigned"
-
-WIDE_CHANNEL_PREFIXES: tuple[str, ...] = tuple(
-    _CHANNEL_LABEL_TO_PREFIX[label.lower()] for label in DEFAULT_CHANNEL_GROUPS
-) + ("Unassigned",)
+# Case-insensitive source patterns (mirrors GA4 REGEXP_CONTAINS intent).
+_AI_SOURCE_RE = re.compile(
+    r"chatgpt|copilot|gemini|perplexity|claude",
+    re.IGNORECASE,
+)
+_GOOGLE_PLACES_SOURCE_RE = re.compile(
+    r"Google Places|Google\+Places",
+    re.IGNORECASE,
+)
 
 
 def _filename_slug(name: str) -> str:
@@ -126,13 +135,14 @@ def export_output_paths(
     *,
     property_name: str,
     property_id: str,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     slug = _filename_slug(property_name)
     pid = normalize_property_id(property_id)
     stem = f"ga4_channel_{{kind}}_{slug}_{pid}.csv"
     return (
         output_dir / stem.format(kind="long"),
         output_dir / stem.format(kind="wide"),
+        output_dir / stem.format(kind="weekly"),
     )
 
 
@@ -186,13 +196,35 @@ def _ga4_date_to_iso(raw: str) -> str:
     return s
 
 
-def _channel_column_prefix(channel: str) -> str:
-    label = (channel or "").strip() or "(not set)"
-    mapped = _CHANNEL_LABEL_TO_PREFIX.get(label.lower())
-    if mapped:
-        return mapped
-    safe = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_")
-    return safe or "Other"
+def sunday_week_start(d: date) -> date:
+    """Sunday-start week label (matches Google Trends / PPC brand exports)."""
+    return d - timedelta(days=(d.weekday() + 1) % 7)
+
+
+def classify_channel(
+    session_source: str,
+    session_medium: str,
+    default_channel_group: str,
+) -> str:
+    """Map a GA4 traffic row to AI / PPC / SEO / Other Traffic."""
+    source = (session_source or "").strip()
+    medium = (session_medium or "").strip()
+    group = (default_channel_group or "").strip()
+
+    if _AI_SOURCE_RE.search(source):
+        return CHANNEL_AI
+
+    if group in PPC_CHANNEL_GROUPS or medium.lower() == "cpc":
+        return CHANNEL_PPC
+
+    if (
+        group in SEO_CHANNEL_GROUPS
+        or source.lower() == "search.brave.com"
+        or _GOOGLE_PLACES_SOURCE_RE.search(source)
+    ):
+        return CHANNEL_SEO
+
+    return CHANNEL_OTHER
 
 
 def _year_chunks(start: date, end: date) -> list[tuple[str, str]]:
@@ -204,15 +236,59 @@ def _year_chunks(start: date, end: date) -> list[tuple[str, str]]:
     return chunks
 
 
-def fetch_daily_channel_metrics(
+_EVENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def parse_conversion_event_names(raw: str | None, *, default: str = "purchase") -> list[str]:
+    """
+    Extract GA4 event names from a comma-separated spec.
+
+    Accepts an optional series label encoded as ``event:Label`` on the first
+    token (and legacy per-event ``event:Label`` / ``event=Label``) and ignores
+    labels for the Data API pull. Multiple events are summed into one
+    conversions metric.
+    """
+    text = (raw or "").strip() or default
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if ":" in token:
+            event_part = token.split(":", 1)[0]
+        elif "=" in token:
+            event_part = token.split("=", 1)[0]
+        else:
+            event_part = token
+        event_name = event_part.strip()
+        if not event_name or not _EVENT_NAME_RE.match(event_name):
+            raise ValueError(
+                "Conversion event must start with a letter and use letters, numbers, underscores, or hyphens"
+            )
+        if event_name in seen:
+            continue
+        seen.add(event_name)
+        names.append(event_name)
+    return names or [default]
+
+
+def fetch_daily_traffic_rows(
     property_id: str,
-    channel_dim: str,
     start_date: str,
     end_date: str,
+    *,
+    conversion_event_name: str = "purchase",
 ) -> list[tuple[str, str, int, int]]:
     """
-    Return rows of (iso_date, channel_group, sessions, purchases) for the range.
-    Fetches calendar-year chunks with pagination.
+    Return rows of (iso_date, classified_channel, sessions, conversions).
+
+    Fetches ``date × sessionSource × sessionMedium × sessionDefaultChannelGroup``
+    in calendar-year chunks with pagination, then applies ``classify_channel``.
+    ``purchase`` uses ``ecommercePurchases``. Other events use a separate
+    ``eventName × eventCount`` report so sessions are not duplicated. When
+    multiple events are listed (comma-separated, optional ``event:Label``),
+    their counts are summed into the conversions column.
     """
     from google.analytics.data_v1beta.types import (
         DateRange,
@@ -228,14 +304,19 @@ def fetch_daily_channel_metrics(
     start_d = _parse_iso_date(start_date)
     end_d = _parse_iso_date(end_date)
     chunks = _year_chunks(start_d, end_d)
+    event_names = parse_conversion_event_names(conversion_event_name)
+    use_ecommerce_purchases = "purchase" in event_names
+    custom_events = [name for name in event_names if name != "purchase"]
 
     ga4_log(
-        f"channel_export: property={pid} dim={channel_dim!r} "
-        f"{start_date}→{end_date} ({len(chunks)} year chunk(s))"
+        f"channel_export: property={pid} dims=source/medium/defaultChannelGroup "
+        f"{start_date}→{end_date} ({len(chunks)} year chunk(s)); "
+        f"conversions={','.join(event_names)}"
     )
 
-    out: list[tuple[str, str, int, int]] = []
-    dim_label = channel_dim.replace(":", "_")
+    # Aggregate early by (date, classified_channel) to keep memory down.
+    agg: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
+    raw_rows = 0
 
     for chunk_start, chunk_end in chunks:
         dr = [DateRange(start_date=chunk_start, end_date=chunk_end, name="range")]
@@ -246,11 +327,13 @@ def fetch_daily_channel_metrics(
                 date_ranges=dr,
                 dimensions=[
                     Dimension(name="date"),
-                    Dimension(name=channel_dim),
+                    Dimension(name="sessionSource"),
+                    Dimension(name="sessionMedium"),
+                    Dimension(name="sessionDefaultChannelGroup"),
                 ],
                 metrics=[
                     Metric(name="sessions"),
-                    Metric(name="ecommercePurchases"),
+                    *([Metric(name="ecommercePurchases")] if use_ecommerce_purchases else []),
                 ],
                 limit=100_000,
                 offset=offset,
@@ -259,39 +342,89 @@ def fetch_daily_channel_metrics(
         for row in _paginate_run_report(
             client,
             request_factory,
-            label=f"daily_channel_{dim_label}_{chunk_start}_{chunk_end}",
+            label=f"daily_traffic_{chunk_start}_{chunk_end}",
         ):
             dims = [d.value for d in row.dimension_values]
-            if len(dims) < 2:
+            if len(dims) < 4:
                 continue
             iso_date = _ga4_date_to_iso(dims[0])
-            channel = (dims[1] or "").strip() or "(not set)"
+            source = (dims[1] or "").strip() or "(direct)"
+            medium = (dims[2] or "").strip() or "(none)"
+            group = (dims[3] or "").strip() or "(not set)"
+            channel = classify_channel(source, medium, group)
             sessions = _row_metric_int(row, 0)
-            purchases = _row_metric_int(row, 1)
-            out.append((iso_date, channel, sessions, purchases))
+            purchases = _row_metric_int(row, 1) if use_ecommerce_purchases else 0
+            agg[(iso_date, channel)][0] += sessions
+            agg[(iso_date, channel)][1] += purchases
+            raw_rows += 1
 
-    ga4_log(f"channel_export: fetched {len(out)} raw row(s)")
+        if custom_events:
+            from google.analytics.data_v1beta.types import Filter, FilterExpression
+
+            for event_name in custom_events:
+
+                def conversion_request_factory(
+                    offset: int,
+                    *,
+                    _event_name: str = event_name,
+                ) -> RunReportRequest:
+                    return RunReportRequest(
+                        property=prop,
+                        date_ranges=dr,
+                        dimensions=[
+                            Dimension(name="date"),
+                            Dimension(name="sessionSource"),
+                            Dimension(name="sessionMedium"),
+                            Dimension(name="sessionDefaultChannelGroup"),
+                            Dimension(name="eventName"),
+                        ],
+                        metrics=[Metric(name="eventCount")],
+                        dimension_filter=FilterExpression(
+                            filter=Filter(
+                                field_name="eventName",
+                                string_filter=Filter.StringFilter(
+                                    match_type=Filter.StringFilter.MatchType.EXACT,
+                                    value=_event_name,
+                                    case_sensitive=True,
+                                ),
+                            )
+                        ),
+                        limit=100_000,
+                        offset=offset,
+                    )
+
+                for row in _paginate_run_report(
+                    client,
+                    conversion_request_factory,
+                    label=f"daily_conversion_{event_name}_{chunk_start}_{chunk_end}",
+                ):
+                    dims = [d.value for d in row.dimension_values]
+                    if len(dims) < 5 or dims[4] != event_name:
+                        continue
+                    iso_date = _ga4_date_to_iso(dims[0])
+                    source = (dims[1] or "").strip() or "(direct)"
+                    medium = (dims[2] or "").strip() or "(none)"
+                    group = (dims[3] or "").strip() or "(not set)"
+                    channel = classify_channel(source, medium, group)
+                    agg[(iso_date, channel)][1] += _row_metric_int(row, 0)
+                    raw_rows += 1
+
+    out = [
+        (iso_date, channel, sessions, purchases)
+        for (iso_date, channel), (sessions, purchases) in sorted(agg.items())
+    ]
+    ga4_log(
+        f"channel_export: fetched {raw_rows} raw row(s) → "
+        f"{len(out)} date×channel aggregate(s)"
+    )
     return out
-
-
-def _wide_channel_columns(seen_prefixes: set[str]) -> list[str]:
-    channels = list(WIDE_CHANNEL_PREFIXES)
-    if "Other" in seen_prefixes:
-        channels.append("Other")
-    return channels
 
 
 def build_long_rows(
     raw_rows: list[tuple[str, str, int, int]],
 ) -> list[dict[str, int | str]]:
-    agg: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
-    for iso_date, channel, sessions, purchases in raw_rows:
-        key = (iso_date, channel)
-        agg[key][0] += sessions
-        agg[key][1] += purchases
-
     long_rows: list[dict[str, int | str]] = []
-    for (iso_date, channel), (sessions, purchases) in sorted(agg.items()):
+    for iso_date, channel, sessions, purchases in raw_rows:
         long_rows.append(
             {
                 "date": iso_date,
@@ -310,19 +443,11 @@ def build_wide_rows(
     end_date: str,
 ) -> tuple[list[str], list[dict[str, int | str]]]:
     by_date_channel: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
-    channel_prefixes: dict[str, str] = {}
-    prefix_counts: dict[str, int] = defaultdict(int)
-
     for iso_date, channel, sessions, purchases in raw_rows:
-        prefix = _channel_column_prefix(channel)
-        prefix_counts[prefix] += 1
-        channel_prefixes[channel] = prefix
-        by_date_channel[(iso_date, prefix)][0] += sessions
-        by_date_channel[(iso_date, prefix)][1] += purchases
+        by_date_channel[(iso_date, channel)][0] += sessions
+        by_date_channel[(iso_date, channel)][1] += purchases
 
-    seen_prefixes = set(channel_prefixes.values())
-    channels = _wide_channel_columns(seen_prefixes)
-
+    channels = list(CHANNEL_ORDER)
     start_d = _parse_iso_date(start_date)
     end_d = _parse_iso_date(end_date)
     all_dates: list[str] = []
@@ -331,8 +456,15 @@ def build_wide_rows(
         all_dates.append(_format_iso_date(cursor))
         cursor += timedelta(days=1)
 
-    purchase_cols = [f"{ch}_purchases" for ch in channels]
-    session_cols = [f"{ch}_sessions" for ch in channels]
+    # Column-safe prefixes for wide CSV.
+    prefix_map = {
+        CHANNEL_AI: "AI",
+        CHANNEL_PPC: "PPC",
+        CHANNEL_SEO: "SEO",
+        CHANNEL_OTHER: "Other_Traffic",
+    }
+    purchase_cols = [f"{prefix_map[ch]}_purchases" for ch in channels]
+    session_cols = [f"{prefix_map[ch]}_sessions" for ch in channels]
     fieldnames = ["date", "Ecommerce_purchases", "Sessions", *purchase_cols, *session_cols]
 
     wide_rows: list[dict[str, int | str]] = []
@@ -340,24 +472,87 @@ def build_wide_rows(
         row: dict[str, int | str] = {"date": iso_date}
         total_sessions = 0
         total_purchases = 0
-        per_ch_sessions: dict[str, int] = defaultdict(int)
-        per_ch_purchases: dict[str, int] = defaultdict(int)
-
         for ch in channels:
             sessions, purchases = by_date_channel.get((iso_date, ch), [0, 0])
-            per_ch_sessions[ch] = sessions
-            per_ch_purchases[ch] = purchases
+            prefix = prefix_map[ch]
+            row[f"{prefix}_sessions"] = sessions
+            row[f"{prefix}_purchases"] = purchases
             total_sessions += sessions
             total_purchases += purchases
-
         row["Ecommerce_purchases"] = total_purchases
         row["Sessions"] = total_sessions
-        for ch in channels:
-            row[f"{ch}_purchases"] = per_ch_purchases[ch]
-            row[f"{ch}_sessions"] = per_ch_sessions[ch]
         wide_rows.append(row)
 
     return fieldnames, wide_rows
+
+
+def build_weekly_rows(
+    raw_rows: list[tuple[str, str, int, int]],
+    *,
+    property_name: str,
+    property_id: str,
+    start_date: str,
+    end_date: str,
+) -> tuple[list[str], list[dict[str, int | str]]]:
+    """Sunday-start weekly wide rows with sessions + purchases by classified channel."""
+    by_week_channel: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
+    for iso_date, channel, sessions, purchases in raw_rows:
+        week = _format_iso_date(sunday_week_start(_parse_iso_date(iso_date)))
+        by_week_channel[(week, channel)][0] += sessions
+        by_week_channel[(week, channel)][1] += purchases
+
+    start_d = _parse_iso_date(start_date)
+    end_d = _parse_iso_date(end_date)
+    weeks: list[str] = []
+    cursor = sunday_week_start(start_d)
+    last_week = sunday_week_start(end_d)
+    while cursor <= last_week:
+        weeks.append(_format_iso_date(cursor))
+        cursor += timedelta(days=7)
+
+    prefix_map = {
+        CHANNEL_AI: "ai",
+        CHANNEL_PPC: "ppc",
+        CHANNEL_SEO: "seo",
+        CHANNEL_OTHER: "other_traffic",
+    }
+    fieldnames = [
+        "property_name",
+        "property_id",
+        "week",
+        "sessions",
+        "purchases",
+        "ai_sessions",
+        "ai_purchases",
+        "ppc_sessions",
+        "ppc_purchases",
+        "seo_sessions",
+        "seo_purchases",
+        "other_traffic_sessions",
+        "other_traffic_purchases",
+    ]
+
+    weekly_rows: list[dict[str, int | str]] = []
+    for week in weeks:
+        row: dict[str, int | str] = {
+            "property_name": property_name,
+            "property_id": property_id,
+            "week": week,
+        }
+        total_sessions = 0
+        total_purchases = 0
+        for ch in CHANNEL_ORDER:
+            sessions, purchases = by_week_channel.get((week, ch), [0, 0])
+            pfx = prefix_map[ch]
+            row[f"{pfx}_sessions"] = sessions
+            row[f"{pfx}_purchases"] = purchases
+            total_sessions += sessions
+            total_purchases += purchases
+        row["sessions"] = total_sessions
+        row["purchases"] = total_purchases
+        weekly_rows.append(row)
+
+    return fieldnames, weekly_rows
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, int | str]]) -> None:
@@ -379,7 +574,8 @@ def run_export(
     token_path: Path | None = None,
     force_login: bool = False,
     auth_code: str | None = None,
-) -> tuple[Path, Path]:
+    conversion_event_name: str = "purchase",
+) -> tuple[Path, Path, Path]:
     out_dir = (output_dir or GA4_DAILY).resolve()
     token_file = (token_path or _DEFAULT_CLI_TOKEN_PATH).expanduser().resolve()
     pid = normalize_property_id(property_id)
@@ -393,11 +589,23 @@ def run_export(
 
     iso_start, iso_end = resolve_export_dates(start_date, end_date)
 
-    raw = fetch_daily_channel_metrics(pid, CHANNEL_DIMENSION, iso_start, iso_end)
+    raw = fetch_daily_traffic_rows(
+        pid,
+        iso_start,
+        iso_end,
+        conversion_event_name=conversion_event_name,
+    )
     long_rows = build_long_rows(raw)
     wide_fieldnames, wide_rows = build_wide_rows(raw, start_date=iso_start, end_date=iso_end)
+    weekly_fieldnames, weekly_rows = build_weekly_rows(
+        raw,
+        property_name=property_name,
+        property_id=pid,
+        start_date=iso_start,
+        end_date=iso_end,
+    )
 
-    long_path, wide_path = export_output_paths(
+    long_path, wide_path, weekly_path = export_output_paths(
         out_dir,
         property_name=property_name,
         property_id=pid,
@@ -409,21 +617,35 @@ def run_export(
         long_rows,
     )
     write_csv(wide_path, wide_fieldnames, wide_rows)
+    write_csv(weekly_path, weekly_fieldnames, weekly_rows)
+
+    # Channel totals for a quick sanity check
+    totals: dict[str, int] = defaultdict(int)
+    for _, channel, sessions, _ in raw:
+        totals[channel] += sessions
 
     print(f"Property: {property_name} ({pid})")
-    print(f"Channel dimension: {CHANNEL_DIMENSION}")
+    print("Channel rules: AI → PPC → SEO → Other Traffic")
     print(f"Date range: {iso_start} → {iso_end}")
-    print(f"Long CSV:  {long_path}")
-    print(f"Wide CSV:  {wide_path}")
-    print(f"Days: {len(wide_rows):,}  |  long rows: {len(long_rows):,}")
-    return long_path, wide_path
+    print(f"Conversion event: {conversion_event_name}")
+    print(f"Long CSV:    {long_path}")
+    print(f"Wide CSV:    {wide_path}")
+    print(f"Weekly CSV:  {weekly_path}")
+    print(f"Days: {len(wide_rows):,}  |  long rows: {len(long_rows):,}  |  weeks: {len(weekly_rows):,}")
+    print(
+        "Session totals: "
+        + ", ".join(f"{ch}={totals.get(ch, 0):,}" for ch in CHANNEL_ORDER)
+    )
+    return long_path, wide_path, weekly_path
 
 
 def main() -> None:
     load_app_environment()
 
     parser = argparse.ArgumentParser(
-        description="Export daily GA4 sessions and purchases by channel group."
+        description=(
+            "Export daily/weekly GA4 sessions and purchases by AI/PPC/SEO/Other Traffic rules."
+        )
     )
     parser.add_argument(
         "--property-id",
@@ -469,6 +691,14 @@ def main() -> None:
         default=_DEFAULT_CLI_TOKEN_PATH,
         help=f"Path for cached OAuth token (default: {_DEFAULT_CLI_TOKEN_PATH})",
     )
+    parser.add_argument(
+        "--conversion-event",
+        default=(os.environ.get("GA4_CONVERSION_EVENT_NAME") or "purchase").strip(),
+        help=(
+            "GA4 conversion event(s), comma-separated; optional event:Label "
+            "(default: purchase). Multiple events are summed."
+        ),
+    )
     args = parser.parse_args()
 
     property_id = resolve_property_id(args.property_id)
@@ -483,6 +713,7 @@ def main() -> None:
         token_path=args.token_path,
         force_login=args.login,
         auth_code=args.auth_code,
+        conversion_event_name=args.conversion_event,
     )
 
 

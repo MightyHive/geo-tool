@@ -33,3 +33,85 @@ export function filterSentimentCategories<T extends { category: string }>(
   if (hasCustom) return categories;
   return categories.filter((c) => !isCustomPromptsCategory(c.category));
 }
+
+export interface CustomPromptCsvRow {
+  prompt: string;
+  category: string;
+  tags: string[];
+}
+
+function splitCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  cells.push(current);
+  return cells.map((cell) => cell.trim());
+}
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/^\ufeff/, "");
+}
+
+/**
+ * Parse a CSV with required headers Prompt, Category, Tags.
+ * Tags must be comma-separated within the Tags cell (quote the cell if needed).
+ */
+export function parseCustomPromptsCsv(text: string): {
+  rows: CustomPromptCsvRow[];
+  error?: string;
+} {
+  const raw = (text || "").replace(/^\ufeff/, "").trim();
+  if (!raw) return { rows: [], error: "CSV file is empty." };
+
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length < 2) {
+    return { rows: [], error: "CSV needs a header row and at least one data row." };
+  }
+
+  const headers = splitCsvLine(lines[0]).map(normalizeHeader);
+  const promptIdx = headers.indexOf("prompt");
+  const categoryIdx = headers.indexOf("category");
+  const tagsIdx = headers.indexOf("tags");
+  if (promptIdx < 0 || categoryIdx < 0 || tagsIdx < 0) {
+    return {
+      rows: [],
+      error: "CSV must include columns: Prompt, Category, Tags.",
+    };
+  }
+
+  const rows: CustomPromptCsvRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = splitCsvLine(lines[i]);
+    const prompt = (cells[promptIdx] || "").trim();
+    if (!prompt) continue;
+    const category = (cells[categoryIdx] || "").trim() || CUSTOM_PROMPTS_LABEL;
+    const tagsRaw = (cells[tagsIdx] || "").trim();
+    const tags = tagsRaw
+      ? tagsRaw.split(",").map((tag) => tag.trim()).filter(Boolean)
+      : [];
+    rows.push({ prompt, category, tags });
+  }
+
+  if (!rows.length) {
+    return { rows: [], error: "No valid prompt rows found in the CSV." };
+  }
+  return { rows };
+}

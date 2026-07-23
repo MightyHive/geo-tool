@@ -12,6 +12,7 @@ export interface WizardDraft {
   industry: string;
   marketCountry: string;
   marketCountryCode: string;
+  promptLocales?: import("../lib/promptLocales").PromptLocale[];
   previewUnlocked: boolean;
   sitePreviewPhase: SitePreviewPhase;
   verifiedSite: VerifiedSite | null;
@@ -20,6 +21,7 @@ export interface WizardDraft {
   competitorDetails: CompetitorDetail[];
   ga4PropertyId?: string;
   ga4AiChannels?: string;
+  ga4ConversionEventName?: string;
   wizardStep?: number;
   promptsReady?: boolean;
   crawlUrls?: string[];

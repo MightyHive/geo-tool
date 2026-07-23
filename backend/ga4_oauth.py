@@ -24,6 +24,7 @@ import tomllib
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Event
@@ -418,7 +419,12 @@ def _web_client_config(client_id: str, client_secret: str, redirect_uri: str) ->
     }
 
 
-def build_flow(client_id: str, client_secret: str, redirect_uri: str) -> Any:
+def build_flow(
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    scopes: list[str] | tuple[str, ...] | None = None,
+) -> Any:
     """Return a ``google_auth_oauthlib.flow.Flow`` for installed/web config."""
     from google_auth_oauthlib.flow import Flow
 
@@ -427,7 +433,7 @@ def build_flow(client_id: str, client_secret: str, redirect_uri: str) -> Any:
     # code_challenge but token exchange uses a new Flow without the verifier → invalid_grant.
     return Flow.from_client_config(
         cfg,
-        scopes=list(GA4_OAUTH_SCOPES),
+        scopes=list(scopes) if scopes is not None else list(GA4_OAUTH_SCOPES),
         redirect_uri=redirect_uri.strip(),
         autogenerate_code_verifier=False,
     )
@@ -479,10 +485,15 @@ def credentials_to_dict(creds: Credentials) -> dict[str, Any]:
         "client_id": creds.client_id,
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes or list(GA4_OAUTH_SCOPES)),
+        "expiry": creds.expiry.isoformat() if creds.expiry else None,
     }
 
 
 def credentials_from_dict(data: dict[str, Any]) -> Credentials:
+    expiry_raw = str(data.get("expiry") or "").strip()
+    expiry = datetime.fromisoformat(expiry_raw.replace("Z", "+00:00")) if expiry_raw else None
+    if expiry is not None and expiry.tzinfo is not None:
+        expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
     return Credentials(
         token=data.get("token"),
         refresh_token=data.get("refresh_token"),
@@ -490,12 +501,16 @@ def credentials_from_dict(data: dict[str, Any]) -> Credentials:
         client_id=str(data["client_id"]),
         client_secret=str(data["client_secret"]),
         scopes=tuple(data.get("scopes") or GA4_OAUTH_SCOPES),
+        expiry=expiry,
     )
 
 
 def ensure_fresh_credentials(creds: Credentials) -> Credentials:
     """Refresh access token if expired or missing."""
-    if not creds.valid and creds.refresh_token:
+    # Session-backed credentials historically omitted ``expiry``. Google Auth
+    # treats a non-empty token with no expiry as valid indefinitely, even when
+    # Google has already expired it, so force a refresh in that case.
+    if (not creds.valid or creds.expiry is None) and creds.refresh_token:
         creds.refresh(Request())
     return creds
 
@@ -610,16 +625,21 @@ def fetch_top_pages_last_90_days(
     property_id: str,
     *,
     limit: int = 100,
+    hostname: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Top pages by ``screenPageViews`` for the last 90 days (exclusive of today in GA4-relative terms).
 
-    Each row: ``host``, ``path`` (no query), ``title``, ``pageviews``, ``full_url``.
+    Each row: ``host``, ``path``, ``title``, ``pageviews``, ``full_url``.
+    Rows are aggregated by host and path, sorted by total pageviews descending,
+    and limited only after aggregation.
     """
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
     from google.analytics.data_v1beta.types import (
         DateRange,
         Dimension,
+        Filter,
+        FilterExpression,
         Metric,
         OrderBy,
         RunReportRequest,
@@ -633,49 +653,69 @@ def fetch_top_pages_last_90_days(
         raise ValueError(f"Invalid GA4 property id: {property_id!r}")
 
     client = BetaAnalyticsDataClient(credentials=creds)
-    request = RunReportRequest(
-        property=f"properties/{pid}",
-        dimensions=[
+    request_kwargs: dict[str, Any] = {
+        "property": f"properties/{pid}",
+        "dimensions": [
             Dimension(name="hostName"),
-            Dimension(name="pagePathPlusQueryString"),
-            Dimension(name="pageTitle"),
+            Dimension(name="pagePath"),
         ],
-        metrics=[Metric(name="screenPageViews")],
-        date_ranges=[DateRange(start_date="90daysAgo", end_date="yesterday")],
-        order_bys=[
+        "metrics": [Metric(name="screenPageViews")],
+        "date_ranges": [DateRange(start_date="90daysAgo", end_date="yesterday")],
+        "order_bys": [
             OrderBy(
                 desc=True,
                 metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"),
             )
         ],
-        limit=min(max(limit, 1), 250),
+        "limit": min(max(limit * 5, 250), 1000),
+    }
+    if hostname and hostname.strip():
+        request_kwargs["dimension_filter"] = FilterExpression(
+            filter=Filter(
+                field_name="hostName",
+                string_filter=Filter.StringFilter(
+                    match_type=Filter.StringFilter.MatchType.EXACT,
+                    value=hostname.strip().lower(),
+                    case_sensitive=False,
+                ),
+            )
+        )
+    request = RunReportRequest(
+        **request_kwargs,
     )
     response = client.run_report(request)
-    out: list[dict[str, Any]] = []
+    aggregated: dict[tuple[str, str], int] = {}
     for row in response.rows or []:
         dv = row.dimension_values
         mv = row.metric_values
-        if len(dv) < 3 or not mv:
+        if len(dv) < 2 or not mv:
             continue
         host = (dv[0].value or "").strip()
         raw_path = (dv[1].value or "").strip()
-        title = (dv[2].value or "").strip()
+        if not host or host.lower() in {"(not set)", "not set"}:
+            continue
         try:
             views = int(float(mv[0].value or 0))
         except ValueError:
             views = 0
-        page_path = raw_path.split("?")[0] if raw_path else "/"
+        page_path = raw_path or "/"
         if not page_path.startswith("/"):
             page_path = "/" + page_path
-        scheme = "https"
-        full_url = f"{scheme}://{host}{page_path}" if host else page_path
+        aggregated[(host.lower(), page_path)] = (
+            aggregated.get((host.lower(), page_path), 0) + views
+        )
+
+    out: list[dict[str, Any]] = []
+    for (host, page_path), views in sorted(
+        aggregated.items(), key=lambda item: (-item[1], item[0][0], item[0][1])
+    )[:min(max(limit, 1), 1000)]:
         out.append(
             {
                 "host": host,
                 "path": page_path,
-                "title": title or "(not set)",
+                "title": "",
                 "pageviews": views,
-                "full_url": full_url,
+                "full_url": f"https://{host}{page_path}",
             }
         )
     return out

@@ -95,3 +95,16 @@
     @apply rounded-sm px-0.5;
   }
 }
+
+@keyframes page-loading-bar-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.page-loading-bar-indeterminate {
+  animation: page-loading-bar-slide 1.15s ease-in-out infinite;
+}

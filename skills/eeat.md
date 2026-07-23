@@ -123,9 +123,43 @@ Produce:
 
 ---
 
-# Optional scoring model
+# E-E-A-T criterion scores
 
-Use this when a numeric E-E-A-T / people-first content score is needed.
+Score each E-E-A-T criterion independently on a simple **0–100 content-fit scale**:
+
+| Score | Meaning |
+|---:|---|
+| 90–100 | Exceptional, specific evidence appears consistently across important sampled pages |
+| 75–89 | Strong evidence across several relevant pages, with only minor gaps |
+| 50–74 | Mixed or partial evidence; useful examples exist but coverage is inconsistent |
+| 25–49 | Weak evidence limited to isolated or generic statements |
+| 0–24 | Little or no matching content was found in the sampled pages |
+
+The four scores answer only these questions:
+
+| Criterion | Score question |
+|---|---|
+| Experience | How strongly does the content show first-hand use, testing, implementation, observation, case studies, process or measured outcomes? |
+| Expertise | How strongly does the content show credible authorship, credentials, research, sourcing, methodology and subject-matter depth? |
+| Authoritativeness | How strongly does the content demonstrate recognised standing through awards, accreditation, trusted partnerships, citations or external recognition? |
+| Trust | How strongly does the content demonstrate accountability, policies, contact routes, sourcing, disclosures, review and publication/update transparency? |
+
+Do **not** calculate these four scores by blending overall category scores, technical scores, crawler access, Open Graph images, `llms.txt`, or generic structured-data presence.
+
+## Evidence requirement
+
+Every criterion score must be explainable:
+
+- Surface up to three verbatim, bounded snippets from the sampled site.
+- Show the source URL and page title for each snippet.
+- Only use a snippet for the criterion it directly supports.
+- If no matching snippet was found, state this explicitly instead of inventing evidence.
+- A structural signal without visible supporting copy must not be presented as a content snippet.
+- Keep excerpts short enough to review quickly and never store full page bodies solely for this feature.
+
+## Optional broader people-first scoring model
+
+Use this separate seven-theme model when a broader people-first content score is needed. It does not replace the four independent E-E-A-T criterion scores above.
 
 | Theme | Weight |
 |---|---:|
@@ -185,20 +219,22 @@ Final E-E-A-T score: 55/100
 
 ---
 
-# Automated proxy E-E-A-T scoring in `report.html`
+# Automated E-E-A-T scoring in `report.html`
 
-The HTML report may include E-E-A-T-style 0–100 scorecards. Treat these as **directional proxy scores**, not a full editorial assessment.
+The HTML report includes four 0–100 E-E-A-T content-fit scorecards. Treat them as **directional automated assessments**, not a full editorial or reputation review.
 
-Proxy scores may be derived from crawlable artifacts such as:
+Scores must be derived from matching content found on sampled pages:
 
-| E-E-A-T area | Possible proxy signals |
+| E-E-A-T area | Direct content evidence |
 |---|---|
-| Experience | Content depth, media, examples, Open Graph, JSON-LD |
-| Expertise | Content quality, author/schema signals, generated `llms.txt` presence |
-| Authoritativeness | Brand visibility, `sameAs`, third-party profile links |
-| Trust | HTTPS, technical setup, AI crawler access, indexability |
+| Experience | First-hand accounts, tests, case studies, processes and specific results |
+| Expertise | Bylines, credentials, research, sources, methodology and detailed explanation |
+| Authoritativeness | Awards, accreditation, trusted partnerships, citations and recognition |
+| Trust | Policies, contact details, sourcing, disclosures, review and visible dates |
 
-To turn the proxy into a true assessment, review:
+Each card must show the content snippets and URLs that support the score. When no matching content is found, the card must say so explicitly.
+
+To turn the automated assessment into a full assessment, also review:
 
 - Actual page content
 - Author and reviewer evidence
@@ -351,13 +387,16 @@ For GEO and AI citation readiness, content is stronger when it contributes somet
 |---|---|
 | Original research | Surveys, benchmarks, experiments, datasets |
 | First-party data | Usage data, internal metrics, anonymised customer insights |
-| First-hand experience | Product testing, site visits, implementation notes |
-| Expert commentary | Named experts with relevant credentials |
-| Case studies | Real examples, outcomes, constraints |
+| Novel findings or analysis | Quantified findings, new comparisons, non-obvious conclusions |
+| Benchmarks and datasets | Original indices, trackers, longitudinal or comparative datasets |
 | Proprietary frameworks | Decision models, calculators, evaluation tools |
 | Original media | Diagrams, screenshots, photos, videos created by the brand |
-| Practical interpretation | Explains what facts mean for a specific audience |
-| Methodology | Shows how data or conclusions were produced |
+| Supporting methodology | Shows how an original dataset, benchmark or conclusion was produced |
+
+Do not award Original information gain for a routine first-hand process, case study, expert
+comment, or methodology alone. Those can demonstrate Experience or Expertise. Originality
+requires evidence that the page contributes novel data, findings, analysis, a benchmark, or a
+proprietary framework.
 
 ## Status guidance
 
@@ -694,7 +733,7 @@ Crawl artifacts support, but do not replace, editorial review.
 | `llms.txt` | Stated purpose, curated source-of-truth pages |
 | `brand_visibility` | Off-site authority and corroboration |
 | Technical summary | HTTPS, indexability, rendering, access |
-| `report.html` proxy E-E-A-T | Directional score for follow-up manual review (`create-report.py` blends seven theme proxies per §Optional scoring model) |
+| `report.html` E-E-A-T cards | Four direct 0–100 content-fit scores with URL-attributed example snippets |
 
 ---
 

@@ -9,12 +9,13 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { discoverPages } from "../api/client";
+import { discoverPages, fetchGa4TopPages } from "../api/client";
 
 interface WizardPagesStepProps {
   brandWebsite: string;
   marketCountry: string;
   marketCountryCode: string;
+  ga4PropertyId?: string;
   /** Current crawl URL selection (undefined = use default sitemap discovery) */
   crawlUrls: string[] | undefined;
   onCrawlUrlsChange: (urls: string[] | undefined) => void;
@@ -46,6 +47,7 @@ export function WizardPagesStep({
   brandWebsite,
   marketCountry,
   marketCountryCode,
+  ga4PropertyId,
   crawlUrls,
   onCrawlUrlsChange,
   onBack,
@@ -59,41 +61,94 @@ export function WizardPagesStep({
   const [addInput, setAddInput] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const [source, setSource] = useState<"ga4" | "sitemap" | null>(null);
+  const [pageviewsByUrl, setPageviewsByUrl] = useState<Record<string, number>>({});
   // Whether the user has made any manual changes from the defaults
   const [touched, setTouched] = useState(false);
   const addInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!brandWebsite) return;
-
-    // If we have a saved crawlUrls from a previous visit to this step, restore state
-    if (crawlUrls !== undefined && crawlUrls.length > 0 && discovered.length === 0) {
-      setSelected(new Set(crawlUrls));
-      setTouched(true);
-    }
-
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    discoverPages({
-      brand_website: brandWebsite,
-      market_country: marketCountry,
-      market_country_code: marketCountryCode,
-    })
-      .then((res) => {
-        setDiscovered(res.urls);
-        setTruncated(res.truncated);
-        if (!touched) {
-          // Default: all discovered pages selected
-          setSelected(new Set(res.urls));
+
+    async function loadPages() {
+      let urls: string[] = [];
+      let nextSource: "ga4" | "sitemap" = "sitemap";
+      let nextPageviews: Record<string, number> = {};
+      let nextTruncated = false;
+
+      if (ga4PropertyId) {
+        try {
+          const ga4 = await fetchGa4TopPages(brandWebsite, 100);
+          if (ga4.pages.length) {
+            const rankedPages = [...ga4.pages].sort(
+              (a, b) => b.total_pageviews - a.total_pageviews || a.url.localeCompare(b.url),
+            );
+            urls = rankedPages.map((page) => page.url);
+            nextPageviews = Object.fromEntries(
+              rankedPages.map((page) => [page.url, page.total_pageviews]),
+            );
+            nextSource = "ga4";
+          } else {
+            throw new Error(
+              "GA4 returned no pageview rows matching this website hostname. Check that the selected property belongs to this site.",
+            );
+          }
+        } catch (ga4Error) {
+          const detail = ga4Error instanceof Error ? ga4Error.message : String(ga4Error);
+          throw new Error(
+            `Could not load GA4 Total Pageviews. Go back and reconnect or select the correct property. ${detail}`,
+          );
         }
-      })
+      }
+
+      if (!urls.length) {
+        const sitemap = await discoverPages({
+          brand_website: brandWebsite,
+          market_country: marketCountry,
+          market_country_code: marketCountryCode,
+        });
+        urls = sitemap.urls;
+        nextTruncated = sitemap.truncated;
+      }
+
+      if (cancelled) return;
+      setDiscovered(urls);
+      setSource(nextSource);
+      setPageviewsByUrl(nextPageviews);
+      setTruncated(nextTruncated);
+      if (crawlUrls !== undefined && crawlUrls.length > 0) {
+        setSelected(new Set(crawlUrls));
+        setExtraUrls(crawlUrls.filter((url) => !urls.includes(url)));
+        setTouched(true);
+      } else {
+        setSelected(new Set(urls));
+        setExtraUrls([]);
+        setTouched(false);
+      }
+    }
+
+    loadPages()
       .catch((err: unknown) => {
+        if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
       })
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brandWebsite]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    brandWebsite,
+    marketCountry,
+    marketCountryCode,
+    ga4PropertyId,
+    crawlUrls,
+  ]);
 
   function toggleUrl(url: string) {
     setTouched(true);
@@ -146,7 +201,7 @@ export function WizardPagesStep({
   }
 
   function handleContinue() {
-    if (!touched) {
+    if (!touched && source !== "ga4") {
       // No changes — pass undefined so audit uses default sitemap discovery
       onCrawlUrlsChange(undefined);
     } else {
@@ -172,15 +227,18 @@ export function WizardPagesStep({
       <div>
         <h2 className="text-xl font-semibold text-gray-900">Pages to crawl</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Choose which pages the audit crawls. All discovered pages are selected by default.
-          Deselect any you want to exclude, or add extra URLs the sitemap might have missed.
+          {ga4PropertyId
+            ? "Choose from your highest-traffic pages in GA4, ranked by Total Pageviews over the last 90 days. "
+            : "Choose which pages the audit crawls. "}
+          All suggested pages are selected by default. Deselect any you want to exclude, or add
+          extra URLs.
         </p>
       </div>
 
       {loading && (
         <div className="flex items-center gap-2 text-sm text-gray-500 py-6">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Discovering pages from sitemap…
+          {ga4PropertyId ? "Loading top pages from GA4…" : "Discovering pages from sitemap…"}
         </div>
       )}
 
@@ -188,10 +246,14 @@ export function WizardPagesStep({
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <p className="font-medium">Could not discover pages automatically</p>
+            <p className="font-medium">
+              {ga4PropertyId ? "Could not load GA4 top pages" : "Could not discover pages automatically"}
+            </p>
             <p className="mt-0.5 text-amber-700">{error}</p>
             <p className="mt-1 text-amber-700">
-              Add URLs manually below, or skip this step to use default sitemap discovery.
+              {ga4PropertyId
+                ? "Go back to reconnect GA4 or choose another property. You can also add URLs manually."
+                : "Add URLs manually below, or skip this step to use default sitemap discovery."}
             </p>
           </div>
         </div>
@@ -206,7 +268,10 @@ export function WizardPagesStep({
               {" of "}
               <span className="font-semibold text-gray-900">{totalCount}</span>
               {" pages selected"}
-              {truncated && (
+              {source === "ga4" && (
+                <span className="ml-1 text-blue-600">(top 100 by Total Pageviews, descending)</span>
+              )}
+              {source === "sitemap" && truncated && (
                 <span className="ml-1 text-amber-600">(capped at 100)</span>
               )}
             </span>
@@ -233,7 +298,40 @@ export function WizardPagesStep({
           {/* Page list */}
           {allUrls.length > 0 ? (
             <div className="max-h-72 overflow-y-auto rounded-lg border border-gray-200 divide-y divide-gray-100">
-              {/* Extra (manually added) URLs first */}
+              {/* GA4 or sitemap suggestions preserve their ranked source order. */}
+              {discovered.map((url) => (
+                <label
+                  key={url}
+                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(url)}
+                    onChange={() => toggleUrl(url)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="flex-1 min-w-0 text-sm text-gray-700 truncate font-mono text-xs" title={url}>
+                    {urlPath(url)}
+                  </span>
+                  {source === "ga4" && (
+                    <span className="shrink-0 text-xs tabular-nums text-gray-500">
+                      Total Pageviews: {(pageviewsByUrl[url] ?? 0).toLocaleString()}
+                    </span>
+                  )}
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="shrink-0 text-gray-400 hover:text-blue-500"
+                    title="Open in new tab"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </label>
+              ))}
+
+              {/* Manually added or previously saved URLs follow ranked suggestions. */}
               {extraUrls.map((url) => (
                 <label
                   key={url}
@@ -258,34 +356,6 @@ export function WizardPagesStep({
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
-                </label>
-              ))}
-
-              {/* Discovered URLs */}
-              {discovered.map((url) => (
-                <label
-                  key={url}
-                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(url)}
-                    onChange={() => toggleUrl(url)}
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="flex-1 min-w-0 text-sm text-gray-700 truncate font-mono text-xs" title={url}>
-                    {urlPath(url)}
-                  </span>
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="shrink-0 text-gray-400 hover:text-blue-500"
-                    title="Open in new tab"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
                 </label>
               ))}
             </div>

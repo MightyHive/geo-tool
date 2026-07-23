@@ -1,21 +1,11 @@
-"""PDF generation for GEO audit reports — screenshot-per-section via Playwright + Pillow."""
+"""PDF generation for GEO audit reports — one section per page via Playwright."""
+
 from __future__ import annotations
 
 import io
 import re
 import tempfile
 from pathlib import Path
-
-PANEL_IDS = [
-    "summary",
-    "ga4-traffic",
-    "recommendations",
-    "competitors",
-    "ai-visibility",
-    "technical",
-    "content",
-    "samples",
-]
 
 _SANITIZE = re.compile(r"[^\w\-.]")
 
@@ -31,166 +21,156 @@ def _pil_image_from_png(png_bytes: bytes):  # type: ignore[return]
     return Image.open(io.BytesIO(png_bytes)).convert("RGB")
 
 
-def _screenshots_for_report(report_html_path: Path, pw) -> list:  # type: ignore[return]
-    """Return one PIL image per tab panel in report.html."""
-    from playwright.sync_api import Browser  # noqa: F401
+def _screenshot_html_on_page(page, html_path: Path, *, chunk_tall: bool = True) -> list:  # type: ignore[return]
+    """Screenshot one HTML document into one or more PIL images."""
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.emulate_media(media="screen")
+    page.goto(html_path.as_uri(), wait_until="domcontentloaded")
+    try:
+        page.evaluate("() => (document.fonts && document.fonts.ready) || Promise.resolve()")
+    except Exception:
+        pass
+    page.wait_for_timeout(500)
 
-    browser = pw.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
+    metrics = page.evaluate(
+        """() => ({
+            height: Math.max(
+                document.body.scrollHeight,
+                document.documentElement.scrollHeight
+            ),
+            width: Math.max(
+                document.body.scrollWidth,
+                document.documentElement.scrollWidth,
+                1440
+            )
+        })"""
+    )
+    total_h = int(metrics.get("height") or 900)
+    width = int(metrics.get("width") or 1440)
     images = []
-    try:
-        page = browser.new_page()
-        page.set_viewport_size({"width": 1440, "height": 900})
-        page.emulate_media(media="screen")
-        page.goto(report_html_path.as_uri(), wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
+    if not chunk_tall or total_h <= 1800:
+        png = page.screenshot(full_page=True)
+        images.append(_pil_image_from_png(png))
+        return images
 
-        for panel_id in PANEL_IDS:
-            # Activate the panel via the tab button
-            activated = page.evaluate(
-                """(id) => {
-                    const btn = document.querySelector('[data-tab="' + id + '"]');
-                    if (btn) { btn.click(); return true; }
-                    // Fallback: show panel directly
-                    const panel = document.querySelector('[data-tab-panel="' + id + '"]');
-                    if (!panel) return false;
-                    document.querySelectorAll('[data-tab-panel]').forEach(p => p.hidden = true);
-                    panel.hidden = false;
-                    return true;
-                }""",
-                panel_id,
-            )
-            if not activated:
-                continue
-            page.wait_for_timeout(900)
-            png = page.screenshot(full_page=True)
-            images.append(_pil_image_from_png(png))
-    finally:
-        browser.close()
-
-    return images
-
-
-def _screenshot_for_prompt_performance(audit_dir: Path, pw) -> list:  # type: ignore[return]
-    """Return a list of PIL images for the prompt performance HTML page."""
-    from api.html_service import build_prompt_performance_section, _section_divider
-
-    pp_html = build_prompt_performance_section(audit_dir)
-    full_html = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: #f5f4f2;
-    color: #1a1a1a;
-    padding: 40px;
-  }
-  .page-header {
-    background: #0d0d0d;
-    color: #fff;
-    padding: 24px 40px;
-    margin: -40px -40px 32px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .page-title {
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: -.01em;
-  }
-  .section-label {
-    background: rgba(255,255,255,.12);
-    color: rgba(255,255,255,.8);
-    padding: 2px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: .08em;
-  }
-  .content { max-width: 960px; margin: 0 auto; }
-</style>
-</head>
-<body>
-<div class="page-header">
-  <span class="page-title">Prompt Performance</span>
-  <span class="section-label">AI Share of Voice</span>
-</div>
-<div class="content">""" + pp_html + """</div>
-</body>
-</html>"""
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".html", mode="w", encoding="utf-8", delete=False
-    ) as f:
-        f.write(full_html)
-        tmp_path = Path(f.name)
-
-    try:
-        browser = pw.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-        images = []
-        try:
-            page = browser.new_page()
-            page.set_viewport_size({"width": 1440, "height": 900})
-            page.emulate_media(media="screen")
-            page.goto(tmp_path.as_uri(), wait_until="domcontentloaded")
-            # Expand all pp-cards so everything is visible in the PDF
-            page.evaluate(
-                """() => {
-                    document.querySelectorAll('.pp-card').forEach(c => c.style.display = '');
-                    var btn = document.getElementById('pp-btn');
-                    if (btn) btn.style.display = 'none';
-                    var ct = document.getElementById('pp-count');
-                    if (ct) ct.textContent = 'All prompts';
-                }"""
-            )
-            page.wait_for_timeout(800)
-            png = page.screenshot(full_page=True)
-            images.append(_pil_image_from_png(png))
-        finally:
-            browser.close()
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
+    chunk = 1600
+    y = 0
+    while y < total_h:
+        page.set_viewport_size({"width": width, "height": min(chunk, total_h - y)})
+        page.evaluate(f"() => window.scrollTo(0, {y})")
+        page.wait_for_timeout(120)
+        png = page.screenshot()
+        images.append(_pil_image_from_png(png))
+        y += chunk
     return images
 
 
 def _images_to_pdf_bytes(images: list) -> bytes:
-    """Combine PIL images into a single PDF."""
     if not images:
-        raise ValueError("No images to combine into PDF")
+        raise RuntimeError("No pages were captured for PDF")
     buf = io.BytesIO()
-    images[0].save(
+    first, rest = images[0], images[1:]
+    first.save(
         buf,
         format="PDF",
         save_all=True,
-        append_images=images[1:],
+        append_images=rest,
         resolution=150,
     )
     return buf.getvalue()
 
 
 def generate_report_pdf(report_html_path: Path) -> bytes:
-    """Generate a multi-page PDF by screenshotting each tab + prompt performance section."""
+    """Full-report PDF (``report_html_path`` only locates the audit directory)."""
+    return generate_audit_pdf(report_html_path.parent)
+
+
+def generate_audit_pdf(audit_dir: Path) -> bytes:
+    """
+    Full-report PDF with each report section starting on its own page.
+    Screenshots one standalone HTML document per section, then merges pages.
+    Prefers precomputed ``exports/sections/*.html`` when fresh.
+    """
     from playwright.sync_api import sync_playwright
 
-    audit_dir = report_html_path.parent
+    from api.export_builders import FULL_REPORT_SECTIONS, iter_section_export_html
+    from api.export_precompute import precomputed_html_is_fresh, section_html_path
 
-    with sync_playwright() as pw:
-        images = _screenshots_for_report(report_html_path, pw)
-        pp_images = _screenshot_for_prompt_performance(audit_dir, pw)
+    use_precomputed = precomputed_html_is_fresh(audit_dir)
+    section_docs: list[tuple[str, str, str]] = []
+    if use_precomputed:
+        for section_id, label in FULL_REPORT_SECTIONS:
+            path = section_html_path(audit_dir, section_id)
+            if not path.is_file():
+                use_precomputed = False
+                break
+            section_docs.append((section_id, label, path.read_text(encoding="utf-8")))
+    if not use_precomputed:
+        section_docs = iter_section_export_html(audit_dir)
+    if not section_docs:
+        raise RuntimeError("No sections available for PDF export")
 
-    all_images = images + pp_images
-    if not all_images:
-        raise RuntimeError("No pages were captured for PDF")
+    images: list = []
+    tmp_paths: list[Path] = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
+            try:
+                page = browser.new_page()
+                for _section_id, _label, html in section_docs:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".html", mode="w", encoding="utf-8", delete=False
+                    ) as tmp:
+                        tmp.write(html)
+                        path = Path(tmp.name)
+                    tmp_paths.append(path)
+                    images.extend(_screenshot_html_on_page(page, path, chunk_tall=True))
+            finally:
+                browser.close()
+    finally:
+        for path in tmp_paths:
+            path.unlink(missing_ok=True)
 
-    return _images_to_pdf_bytes(all_images)
+    return _images_to_pdf_bytes(images)
 
 
-def pdf_filename_for_audit(audit_dir: Path) -> str:
-    safe = _sanitize_filename(audit_dir.name)
-    return f"geo-report-{safe}.pdf"
+def generate_section_pdf(audit_dir: Path, section: str) -> bytes:
+    """Single-section PDF from the report-styled export HTML."""
+    from playwright.sync_api import sync_playwright
+
+    from api.export_precompute import read_precomputed_section_html
+    from api.html_service import generate_section_html, resolve_export_section
+
+    target = resolve_export_section(section)
+    if not target:
+        raise ValueError(f"Section is not available for download: {section}")
+
+    section_html = read_precomputed_section_html(audit_dir, target)
+    if section_html is None:
+        _slug, section_html = generate_section_html(audit_dir, section)
+    with tempfile.NamedTemporaryFile(
+        suffix=".html", mode="w", encoding="utf-8", delete=False
+    ) as tmp:
+        tmp.write(section_html)
+        tmp_path = Path(tmp.name)
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
+            try:
+                page = browser.new_page()
+                images = _screenshot_html_on_page(page, tmp_path, chunk_tall=True)
+            finally:
+                browser.close()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return _images_to_pdf_bytes(images)
+
+
+def pdf_filename_for_audit(audit_dir: Path, *, section: str | None = None) -> str:
+    slug = _sanitize_filename(audit_dir.name)
+    if section:
+        sec = _sanitize_filename(section)
+        return f"geo-report-{slug}-{sec}.pdf"
+    return f"geo-report-{slug}.pdf"

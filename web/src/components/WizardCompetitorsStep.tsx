@@ -7,7 +7,7 @@ import {
   type UrlAutocompleteHandle,
 } from "./UrlAutocomplete";
 
-const MAX_COMPETITORS = 12;
+const MAX_COMPETITORS = 10;
 const INITIAL_GEMINI_BATCH = 10;
 
 interface WizardCompetitorsStepProps {
@@ -18,8 +18,6 @@ interface WizardCompetitorsStepProps {
   marketCountryCode: string;
   rows: CompetitorDetail[];
   onRowsChange: (rows: CompetitorDetail[]) => void;
-  runCompetitorAudit: boolean;
-  onRunCompetitorAuditChange: (val: boolean) => void;
   onBack: () => void;
   onContinue: () => void;
 }
@@ -55,8 +53,6 @@ export function WizardCompetitorsStep({
   marketCountryCode,
   rows,
   onRowsChange,
-  runCompetitorAudit,
-  onRunCompetitorAuditChange,
   onBack,
   onContinue,
 }: WizardCompetitorsStepProps) {
@@ -70,13 +66,29 @@ export function WizardCompetitorsStep({
   const siteReady = Boolean(brandWebsite.trim());
   const productsReady = productNames.length > 0;
   const rowCount = rows.filter((r) => r.competitor_website.trim()).length;
+  const includedCount = rows.filter((r) => r.included && r.competitor_website.trim()).length;
 
   function toggleIncluded(url: string) {
+    const target = rows.find((r) => r.competitor_website === url);
+    if (target && !target.included && includedCount >= MAX_COMPETITORS) {
+      setError(`You can select at most ${MAX_COMPETITORS} competitors.`);
+      return;
+    }
+    setError(null);
     onRowsChange(
       rows.map((r) =>
         r.competitor_website === url ? { ...r, included: !r.included } : r,
       ),
     );
+  }
+
+  function handleContinue() {
+    if (includedCount > MAX_COMPETITORS) {
+      setError(`Choose no more than ${MAX_COMPETITORS} competitors before continuing.`);
+      return;
+    }
+    setError(null);
+    onContinue();
   }
 
   async function handleGeminiInitial() {
@@ -196,7 +208,8 @@ export function WizardCompetitorsStep({
     <div className="card-surface p-6 mb-6">
       <h3>Competitors</h3>
       <p className="text-sm text-gray-600 mb-4">
-        Add competitor websites for comparison in the report. Up to {MAX_COMPETITORS} sites.
+        Add competitor websites for comparison in the report. Checked competitors are included
+        in the audit and site crawl automatically. Up to {MAX_COMPETITORS} sites.
         {brandName && (
           <>
             {" "}
@@ -354,31 +367,18 @@ export function WizardCompetitorsStep({
         )}
       </div>
 
-      <div className="mt-6 border border-gray-200 rounded-lg p-4 bg-gray-50">
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 shrink-0 accent-[#0d0d0d]"
-            checked={runCompetitorAudit}
-            onChange={(e) => onRunCompetitorAuditChange(e.target.checked)}
-          />
-          <span>
-            <span className="text-sm font-medium text-brand-dark">
-              Run full AI visibility audit against competitors
-            </span>
-            <span className="block text-xs text-gray-500 mt-0.5">
-              Runs prompt probes and scores for each checked competitor. Takes several additional
-              minutes.
-            </span>
-          </span>
-        </label>
-      </div>
+      {includedCount > 0 && (
+        <p className="mt-6 text-xs text-gray-500">
+          {includedCount} competitor{includedCount === 1 ? "" : "s"} will be included in the audit
+          and competitor site crawl.
+        </p>
+      )}
 
       <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200">
         <button type="button" className="btn-secondary" onClick={onBack} disabled={loading}>
           ← Back
         </button>
-        <button type="button" className="btn-primary" onClick={onContinue} disabled={loading}>
+        <button type="button" className="btn-primary" onClick={handleContinue} disabled={loading}>
           Continue →
         </button>
       </div>

@@ -8,11 +8,12 @@ import hmac
 import json
 import logging
 import time
+import urllib.parse
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.auth import cookie_secret
 from api.auth_config import resolve_web_public_origin
@@ -24,6 +25,17 @@ SESSION_CREDS_KEY = "ga4_user_creds_dict"
 SESSION_PROPERTY_KEY = "ga4_selected_property_id"
 SESSION_ACCOUNT_KEY = "ga4_selected_account_id"
 SESSION_AI_CHANNELS_KEY = "ga4_ai_channel_names"
+SESSION_CONVERSION_EVENT_KEY = "ga4_conversion_event_name"
+
+
+def _session_conversion_events(request: Request) -> list[dict[str, str]]:
+    from api.conversion_events import conversion_events_as_dicts, parse_conversion_events
+
+    raw = str(request.session.get(SESSION_CONVERSION_EVENT_KEY) or "purchase")
+    try:
+        return conversion_events_as_dicts(parse_conversion_events(raw))
+    except Exception:  # noqa: BLE001
+        return [{"event": "purchase", "label": "purchase"}]
 
 
 def resolve_ga4_for_audit_run(
@@ -66,11 +78,24 @@ def resolve_ga4_for_audit_run(
     return prop, channels, cred_path
 
 
+def _safe_return_to(raw: str | None) -> str | None:
+    """Allow only same-origin relative paths (no scheme / protocol-relative)."""
+    if not raw:
+        return None
+    path = str(raw).strip()
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return None
+    if any(c in path for c in ("\n", "\r", "\0")):
+        return None
+    return path
+
+
 def _sign_ga4_state(
     secret: str,
     *,
     wizard_step: int = 2,
     wiz_ga4_after_yes: bool = False,
+    return_to: str | None = None,
     ttl_sec: int = 900,
 ) -> str:
     payload: dict[str, Any] = {
@@ -80,6 +105,9 @@ def _sign_ga4_state(
     }
     if wiz_ga4_after_yes:
         payload["w"] = 1
+    safe = _safe_return_to(return_to)
+    if safe:
+        payload["r"] = safe
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     sig = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()[:32]
@@ -105,6 +133,15 @@ def _parse_ga4_state(state: str, secret: str) -> dict[str, Any] | None:
         return None
 
 
+def _callback_redirect(origin: str, state_data: dict[str, Any] | None, *, query: str) -> str:
+    """Redirect to return_to (AI Impact / report) or wizard step 2."""
+    ret = _safe_return_to((state_data or {}).get("r") if state_data else None)
+    if ret:
+        sep = "&" if "?" in ret else "?"
+        return f"{origin}{ret}{sep}{query}"
+    return f"{origin}/audit/new?step=2&{query}"
+
+
 def _web_origin(request: Request) -> str:
     return resolve_web_public_origin(request)
 
@@ -113,6 +150,22 @@ class Ga4PropertyBody(BaseModel):
     property_id: str = Field(..., min_length=1)
     account_id: str = ""
     ai_channel_names: str = ""
+    conversion_event_name: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @field_validator("conversion_event_name")
+    @classmethod
+    def _validate_conversion_event_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from api.conversion_events import (
+            ConversionEventParseError,
+            normalize_conversion_event_spec,
+        )
+
+        try:
+            return normalize_conversion_event_spec(value)
+        except ConversionEventParseError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 def ga4_status_payload(request: Request) -> dict[str, Any]:
@@ -157,6 +210,10 @@ def ga4_status_payload(request: Request) -> dict[str, Any]:
         "selected_account_id": selected_account_id,
         "selected_property_id": selected_property_id,
         "ai_channel_names": str(request.session.get(SESSION_AI_CHANNELS_KEY) or ""),
+        "conversion_event_name": str(
+            request.session.get(SESSION_CONVERSION_EVENT_KEY) or "purchase"
+        ),
+        "conversion_events": _session_conversion_events(request),
         "error": error,
     }
 
@@ -173,6 +230,7 @@ def create_ga4_router() -> APIRouter:
         request: Request,
         wizard_step: int = 2,
         after_yes: str = "1",
+        return_to: str = "",
     ) -> RedirectResponse:
         cfg = load_ga4_oauth_config()
         if cfg is None:
@@ -191,6 +249,7 @@ def create_ga4_router() -> APIRouter:
                 secret,
                 wizard_step=wizard_step,
                 wiz_ga4_after_yes=after_yes not in ("0", "false", "False"),
+                return_to=return_to or None,
             )
             flow = g4o.build_flow(cfg.client_id, cfg.client_secret, cfg.redirect_uri)
             url = g4o.authorization_url(flow, state=state)
@@ -203,16 +262,27 @@ def create_ga4_router() -> APIRouter:
     @router.get("/callback")
     def ga4_callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
         origin = _web_origin(request)
-        if not code or not state:
-            return RedirectResponse(f"{origin}/audit/new?step=2&ga4_error=missing", status_code=302)
-
         secret = cookie_secret()
-        if not _parse_ga4_state(state, secret):
-            return RedirectResponse(f"{origin}/audit/new?step=2&ga4_error=state", status_code=302)
+        state_data = _parse_ga4_state(state, secret) if state else None
+
+        if not code or not state:
+            return RedirectResponse(
+                _callback_redirect(origin, state_data, query="ga4_error=missing"),
+                status_code=302,
+            )
+
+        if not state_data:
+            return RedirectResponse(
+                _callback_redirect(origin, None, query="ga4_error=state"),
+                status_code=302,
+            )
 
         cfg = load_ga4_oauth_config()
         if cfg is None:
-            return RedirectResponse(f"{origin}/audit/new?step=2&ga4_error=config", status_code=302)
+            return RedirectResponse(
+                _callback_redirect(origin, state_data, query="ga4_error=config"),
+                status_code=302,
+            )
 
         try:
             import ga4_oauth as g4o
@@ -223,9 +293,15 @@ def create_ga4_router() -> APIRouter:
         except Exception as exc:
             log.exception("GA4 callback failed: %s", exc)
             request.session["ga4_oauth_error"] = str(exc)
-            return RedirectResponse(f"{origin}/audit/new?step=2&ga4_error=exchange", status_code=302)
+            return RedirectResponse(
+                _callback_redirect(origin, state_data, query="ga4_error=exchange"),
+                status_code=302,
+            )
 
-        return RedirectResponse(f"{origin}/audit/new?step=2&ga4_connected=1", status_code=302)
+        return RedirectResponse(
+            _callback_redirect(origin, state_data, query="ga4_connected=1"),
+            status_code=302,
+        )
 
     @router.put("/selection")
     def ga4_selection(request: Request, body: Ga4PropertyBody) -> dict[str, Any]:
@@ -239,7 +315,96 @@ def create_ga4_router() -> APIRouter:
         if account_id:
             request.session[SESSION_ACCOUNT_KEY] = account_id
         request.session[SESSION_AI_CHANNELS_KEY] = body.ai_channel_names.strip()
+        if body.conversion_event_name is not None:
+            request.session[SESSION_CONVERSION_EVENT_KEY] = body.conversion_event_name
         return {"ok": True, "property_id": pid, "account_id": account_id or None}
+
+    @router.delete("/selection")
+    def ga4_clear_selection(request: Request) -> dict[str, bool]:
+        for key in (
+            SESSION_PROPERTY_KEY,
+            SESSION_ACCOUNT_KEY,
+            SESSION_AI_CHANNELS_KEY,
+            SESSION_CONVERSION_EVENT_KEY,
+        ):
+            request.session.pop(key, None)
+        return {"ok": True}
+
+    @router.get("/top-pages")
+    def ga4_top_pages(
+        request: Request,
+        origin: str,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        creds_dict = request.session.get(SESSION_CREDS_KEY)
+        property_id = str(request.session.get(SESSION_PROPERTY_KEY) or "").strip()
+        if not isinstance(creds_dict, dict) or not creds_dict.get("refresh_token"):
+            raise HTTPException(401, "Connect Google Analytics first.")
+        if not property_id:
+            raise HTTPException(400, "Select a GA4 property first.")
+
+        raw_origin = origin.strip()
+        if not raw_origin.startswith(("http://", "https://")):
+            raw_origin = f"https://{raw_origin}"
+        parsed = urllib.parse.urlparse(raw_origin)
+        target_host = (parsed.hostname or "").lower().removeprefix("www.")
+        if not target_host:
+            raise HTTPException(400, "A valid website origin is required.")
+        result_limit = min(max(limit, 1), 100)
+
+        try:
+            import ga4_oauth as g4o
+
+            creds = g4o.credentials_from_dict(creds_dict)
+            creds = g4o.ensure_fresh_credentials(creds)
+            request.session[SESSION_CREDS_KEY] = g4o.credentials_to_dict(creds)
+            rows = []
+            for hostname in (target_host, f"www.{target_host}"):
+                rows.extend(
+                    g4o.fetch_top_pages_last_90_days(
+                        creds,
+                        property_id,
+                        limit=result_limit,
+                        hostname=hostname,
+                    )
+                )
+        except Exception as exc:
+            log.exception("GA4 top-pages report failed: %s", exc)
+            raise HTTPException(502, f"Could not load GA4 top pages: {exc}") from exc
+
+        ranked_rows = sorted(
+            (
+                row for row in rows
+                if str(row.get("host") or "").lower().removeprefix("www.") == target_host
+            ),
+            key=lambda row: (
+                -int(row.get("pageviews") or 0),
+                str(row.get("path") or "/"),
+            ),
+        )
+        pages: list[dict[str, Any]] = []
+        scheme = parsed.scheme if parsed.scheme in {"http", "https"} else "https"
+        seen_urls: set[str] = set()
+        for row in ranked_rows:
+            host = str(row.get("host") or "").lower()
+            path = str(row.get("path") or "/")
+            url = f"{scheme}://{host}{path}"
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            pages.append({
+                "url": url,
+                "total_pageviews": int(row.get("pageviews") or 0),
+            })
+            if len(pages) >= result_limit:
+                break
+
+        return {
+            "pages": pages,
+            "metric": "screenPageViews",
+            "date_range": "last_90_days",
+            "limit": result_limit,
+        }
 
     @router.post("/disconnect")
     def ga4_disconnect(request: Request) -> dict[str, Any]:

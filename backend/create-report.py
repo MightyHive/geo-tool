@@ -516,6 +516,14 @@ def build_crawl_argv(args: argparse.Namespace) -> list[str]:
         str(args.sample_robots),
         "--sample-llms",
         str(args.sample_llms),
+        "--mimic-urls-per-bot",
+        str(max(1, min(6, int(getattr(args, "mimic_urls_per_bot", 4) or 4)))),
+        "--mimic-crawl-max-pages",
+        str(max(2, min(40, int(getattr(args, "mimic_crawl_max_pages", 12) or 12)))),
+        "--mimic-crawl-depth",
+        str(max(0, min(4, int(getattr(args, "mimic_crawl_depth", 2) or 2)))),
+        "--mimic-crawl-links-per-page",
+        str(max(2, min(60, int(getattr(args, "mimic_crawl_links_per_page", 20) or 20)))),
     ]
     if args.insecure:
         cmd.append("--insecure")
@@ -535,6 +543,9 @@ def build_crawl_argv(args: argparse.Namespace) -> list[str]:
         cmd.extend(["--market-country", mcc])
     if mid:
         cmd.extend(["--market-country-code", mid])
+    extra = getattr(args, "extra_markets_json", "")
+    if str(extra or "").strip():
+        cmd.extend(["--extra-markets-json", str(extra)])
     for c in args.competitors:
         cmd.extend(["--competitor", c])
     # Pass user-selected crawl URLs from wizard (loaded from onboarding_context.json)
@@ -4577,6 +4588,75 @@ def _sitemap_access_points(
     return 0.0, notes
 
 
+def _ai_mimic_results_by_token(audit: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    root = audit.get("ai_bot_mimic")
+    if not isinstance(root, dict):
+        return out
+    bots = root.get("bots")
+    if not isinstance(bots, list):
+        return out
+    for row in bots:
+        if not isinstance(row, dict):
+            continue
+        token = str(row.get("robots_token") or "").strip()
+        if not token:
+            continue
+        summary = row.get("summary")
+        if isinstance(summary, dict):
+            out[token] = summary
+    return out
+
+
+def _regional_access_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    rows = audit.get("regional_crawls")
+    if not isinstance(rows, list) or not rows:
+        return {
+            "regions": 0,
+            "with_data": 0,
+            "avg_access": 0.0,
+            "modifier": 0.0,
+        }
+    access_scores: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        http_ratio = float(row.get("pages_http_200_ratio") or 0.0)
+        mimic = row.get("mimic_fetch") or {}
+        mimic_ratios: list[float] = []
+        if isinstance(mimic, dict):
+            for token in ("chatgpt", "gemini"):
+                sm = mimic.get(token)
+                if not isinstance(sm, dict):
+                    continue
+                attempted = int(sm.get("crawl_pages_fetched") or sm.get("attempted_fetches") or 0)
+                if attempted <= 0:
+                    continue
+                ratio = float(sm.get("crawl_http_200_ratio") or sm.get("http_200_ratio") or 0.0)
+                mimic_ratios.append(ratio)
+        if mimic_ratios:
+            access = 0.6 * (sum(mimic_ratios) / len(mimic_ratios)) + 0.4 * http_ratio
+        else:
+            access = http_ratio
+        access_scores.append(_clamp01(access))
+    if not access_scores:
+        return {
+            "regions": len(rows),
+            "with_data": 0,
+            "avg_access": 0.0,
+            "modifier": 0.0,
+        }
+    avg_access = sum(access_scores) / len(access_scores)
+    # Apply a bounded technical modifier: -5 to +5 around midpoint 0.5.
+    modifier = max(-5.0, min(5.0, (avg_access - 0.5) * 10.0))
+    return {
+        "regions": len(rows),
+        "with_data": len(access_scores),
+        "avg_access": round(avg_access, 3),
+        "modifier": round(modifier, 2),
+    }
+
+
 def score_ai_crawler_robots(
     robots_text: str | None,
     *,
@@ -4673,11 +4753,16 @@ def score_ai_crawler_robots(
     files_pts += key_page_pts
     files_pts = min(10.0, files_pts)
 
+    regional = _regional_access_summary(audit)
+    regional_mod = float(regional.get("modifier") or 0.0)
+
     score = tier1_pts + foundational_pts + eco_pts + blanket_pts + files_pts
+    score += regional_mod
     score = max(0.0, min(100.0, round(score, 1)))
 
     major_ok = t1_ok + f_ok + eco_ok
     major_total = n1 + n_f + n_eco
+    mimic = _ai_mimic_results_by_token(audit)
 
     breakdown: dict[str, Any] = {
         "total": score,
@@ -4698,6 +4783,11 @@ def score_ai_crawler_robots(
         "discovery_key_pages_points": round(key_page_pts, 2),
         "major_allowed": major_ok,
         "major_total": major_total,
+        "regional_access": regional,
+        "mimic_fetch": {
+            "chatgpt": mimic.get("ChatGPT-User"),
+            "gemini": mimic.get("GoogleOther"),
+        },
     }
 
     strengths: list[str] = []
@@ -4745,6 +4835,37 @@ def score_ai_crawler_robots(
             "Improve discovery: live llms.txt, reachable Sitemap: in robots.txt, and key URLs in sitemap (+10 max)."
         )
 
+    for token, label in (("ChatGPT-User", "ChatGPT"), ("GoogleOther", "Gemini")):
+        info = mimic.get(token) or {}
+        attempted = int(info.get("crawl_pages_fetched") or info.get("attempted_fetches") or 0)
+        ok = int(info.get("crawl_http_200") or info.get("http_200") or 0)
+        blocked = int(info.get("crawl_blocked_in_robots") or 0) + int(info.get("blocked_in_robots") or 0)
+        ratio = float(info.get("crawl_http_200_ratio") or info.get("http_200_ratio") or 0.0)
+        if attempted <= 0:
+            if blocked > 0:
+                improvements.append(
+                    f"{label} simulated crawl was blocked by robots on sampled URLs; verify intended {token} policy."
+                )
+            continue
+        if ratio >= 0.85 and ok >= 2:
+            strengths.append(f"{label} simulated crawl mostly returned HTTP 200 ({ok}/{attempted}).")
+        elif ratio < 0.6:
+            improvements.append(
+                f"{label} simulated crawl was weak ({ok}/{attempted} HTTP 200). Review redirects, bot handling, and bot-targeted headers."
+            )
+
+    if int(regional.get("regions") or 0) > 0:
+        avg = float(regional.get("avg_access") or 0.0)
+        used = int(regional.get("with_data") or 0)
+        if avg >= 0.75:
+            strengths.append(
+                f"Regional access looks strong across additional markets ({used}/{int(regional.get('regions') or 0)} regions with data; avg access {avg:.2f})."
+            )
+        elif avg < 0.5:
+            improvements.append(
+                f"Regional crawl access is weak in additional markets (avg access {avg:.2f}); check geo-dependent bot controls, redirects, and edge policies."
+            )
+
     # GEO policy nudges (Bytespider, etc.) — informational vs numeric score
     if rp is not None:
         try:
@@ -4773,6 +4894,7 @@ def _ai_crawler_access_table_html(robots_text: str | None, audit: dict[str, Any]
         rp.parse(robots_text.splitlines())
     except Exception:
         return "<p class='table-note'>robots.txt could not be parsed for crawler checks.</p>"
+    mimic = _ai_mimic_results_by_token(audit)
     rows: list[str] = []
     rec_class = {"ALLOW": "rec-allow", "BLOCK": "rec-block", "Context": "rec-context"}
     for s in AI_CRAWLER_SPECS:
@@ -4783,6 +4905,19 @@ def _ai_crawler_access_table_html(robots_text: str | None, audit: dict[str, Any]
         live = "Can fetch" if cf else "Cannot fetch"
         live_cls = "crawler-live-yes" if cf else "crawler-live-no"
         rc = rec_class.get(s.rec_label, "rec-context")
+        mimic_cell = "—"
+        if s.token in mimic:
+            mm = mimic[s.token]
+            attempted = int(mm.get("crawl_pages_fetched") or mm.get("attempted_fetches") or 0)
+            ok = int(mm.get("crawl_http_200") or mm.get("http_200") or 0)
+            blocked = int(mm.get("crawl_blocked_in_robots") or 0) + int(mm.get("blocked_in_robots") or 0)
+            if attempted > 0:
+                mode = "crawl" if int(mm.get("crawl_pages_fetched") or 0) > 0 else "probe"
+                mimic_cell = f"{mode}: {ok}/{attempted} HTTP 200"
+            elif blocked > 0:
+                mimic_cell = "Blocked by robots"
+            else:
+                mimic_cell = "No fetch data"
         if s.policy == "context":
             ok_cell = '<span class="crawler-match-na">—</span>'
         else:
@@ -4799,17 +4934,19 @@ def _ai_crawler_access_table_html(robots_text: str | None, audit: dict[str, Any]
             f"<td><span class=\"crawler-rec {rc}\">{html.escape(s.rec_label)}</span></td>"
             f"<td>{html.escape(s.reason)}</td>"
             f"<td class=\"{live_cls}\">{html.escape(live)}</td>"
+            f"<td>{html.escape(mimic_cell)}</td>"
             f"<td>{ok_cell}</td>"
             "</tr>"
         )
     thead = (
         "<thead><tr>"
         "<th>Crawler</th><th>Tier</th><th>GEO recommendation</th><th>Reason</th>"
-        "<th>Your robots (homepage)</th><th>Aligned</th>"
+        "<th>Your robots (homepage)</th><th>Mimic fetch (sample)</th><th>Aligned</th>"
         "</tr></thead>"
     )
     return (
         '<div class="crawler-table-wrap">'
+        "<p class='table-note'>Mimic results now include a small simulated crawl for ChatGPT and Gemini-like user agents (robots-aware, link-following), with HTTP outcomes summarized here.</p>"
         '<table class="data-table crawler-access-table" aria-label="AI crawler robots alignment">'
         f"{thead}<tbody>{''.join(rows)}</tbody></table>"
         "</div>"
@@ -5843,7 +5980,7 @@ def score_audit(
             "AI crawler access / robots",
             "ai-crawler-report.md",
             ai_robots,
-            "Composite 0–100: Tier 1 (45) + Googlebot/Bingbot (20) + Tier-2 eco (15) + blanket block check (10) + discovery (10).",
+            "Composite 0–100: Tier 1 (45) + Googlebot/Bingbot (20) + Tier-2 eco (15) + blanket block check (10) + discovery (10), then regional-access modifier (-5..+5) from extra market crawl outcomes when configured.",
             ar_s,
             ar_i,
         ),
@@ -7006,9 +7143,44 @@ def render_html(
     _t2p = float(_bd.get("tier2_eco_points") or _bd.get("tier2_points") or 0)
     _blp = float(_bd.get("blanket_points") or 0)
     _fip = float(_bd.get("files_points") or 0)
+    _reg = _bd.get("regional_access") if isinstance(_bd.get("regional_access"), dict) else {}
+    _reg_regions = int(_reg.get("regions") or 0)
+    _reg_with_data = int(_reg.get("with_data") or 0)
+    _reg_avg = float(_reg.get("avg_access") or 0.0)
+    _reg_mod = float(_reg.get("modifier") or 0.0)
+    _reg_pct = max(0.0, min(100.0, _reg_avg * 100.0))
+    _reg_score_5 = max(0.0, min(5.0, _reg_avg * 5.0))
+    _reg_pct_label = f"{_reg_pct:.1f}".rstrip("0").rstrip(".")
+    _reg_score_5_label = f"{_reg_score_5:.1f}".rstrip("0").rstrip(".")
     _t1a = html.escape(str(_bd.get("tier1_allowed") or "?"))
     _fa = html.escape(str(_bd.get("foundational_allowed") or "?"))
     _t2a = html.escape(str(_bd.get("tier2_eco_allowed") or _bd.get("tier2_allowed") or "?"))
+    _regional_rows = audit.get("regional_crawls")
+    _region_names: list[str] = []
+    if isinstance(_regional_rows, list):
+        for _row in _regional_rows:
+            if not isinstance(_row, dict):
+                continue
+            _country = str(_row.get("country") or "").strip()
+            _code = str(_row.get("country_code") or "").strip().upper()
+            if _country and _code:
+                _label = f"{_country} ({_code})"
+            else:
+                _label = _country or _code
+            if _label:
+                _region_names.append(_label)
+    _region_names = list(dict.fromkeys(_region_names))
+    _region_names_preview = ", ".join(_region_names[:3])
+    if len(_region_names) > 3:
+        _region_names_preview += f", +{len(_region_names) - 3} more"
+    _region_names_html = html.escape(_region_names_preview) if _region_names_preview else ""
+    _reg_summary_line = (
+        f" Regional coverage summary: crawled {_reg_regions} additional region(s), "
+        f"coverage {_reg_pct_label}%, score {_reg_score_5_label}/5 "
+        f"(technical modifier {_reg_mod:+.1f})."
+        if _reg_regions > 0
+        else ""
+    )
     crawler_composite_note = (
         "<p class=\"table-note crawler-composite\">"
         "<strong>Composite (0–100):</strong> "
@@ -7020,11 +7192,25 @@ def render_html(
         "Crawler rows use robots.txt plus hero-page <code>meta robots</code> / "
         "<code>X-Robots-Tag</code> (noindex). Blanket uses <code>User-agent: *</code> "
         "<code>Disallow: /</code> and sampled <code>noai</code>."
+        f"{html.escape(_reg_summary_line)}"
         "</p>"
     )
+    regional_crawler_summary_html = ""
+    if _reg_regions > 0:
+        _regions_clause = f" in {_region_names_html}" if _region_names_html else ""
+        regional_crawler_summary_html = (
+            '<p class="table-note">'
+            f"<strong>Regional crawl summary:</strong> "
+            f"crawled {_reg_regions} additional region(s){_regions_clause} with "
+            f"<strong>{_reg_pct_label}% coverage</strong>. "
+            f"Regional coverage score: <strong>{_reg_score_5_label}/5</strong> "
+            f"({_reg_with_data}/{_reg_regions} regions produced usable data; technical modifier {_reg_mod:+.1f})."
+            "</p>"
+        )
     crawler_block_for_tech = f"""<div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="crawler-heading">
   {_report_subhead("AI crawler access", "crawler-heading")}
   <p class="score-breakdown-subdesc">This table shows which search and AI crawlers can access the site’s public pages under the current rules. For AI visibility, the practical goal is to let answer-oriented crawlers read the pages you want cited, while deciding separately whether training-only crawlers fit your data-use policy.</p>
+  {regional_crawler_summary_html}
   <details class="crawler-composite-details"><summary class="table-note">Technical scoring detail (how the composite is built)</summary>
   {crawler_composite_note}
   </details>
@@ -7590,6 +7776,30 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--max-sitemaps", type=int, default=40, help="Max sitemap files when following indexes (default: 40)")
     p.add_argument("--delay", type=float, default=0.25, help="Seconds between HTTP requests (default: 0.25)")
+    p.add_argument(
+        "--mimic-urls-per-bot",
+        type=int,
+        default=4,
+        help="URLs per bot for AI mimic fetch checks (ChatGPT + Gemini simulation, default: 4, max 6).",
+    )
+    p.add_argument(
+        "--mimic-crawl-max-pages",
+        type=int,
+        default=12,
+        help="Max pages per bot for simulated AI-platform crawl pass (default: 12, max 40).",
+    )
+    p.add_argument(
+        "--mimic-crawl-depth",
+        type=int,
+        default=2,
+        help="Max link depth for simulated AI-platform crawl pass (default: 2, max 4).",
+    )
+    p.add_argument(
+        "--mimic-crawl-links-per-page",
+        type=int,
+        default=20,
+        help="Max internal links queued per page in mimic crawl (default: 20, max 60).",
+    )
     p.add_argument("--insecure", action="store_true", help="Do not verify TLS certificates")
     p.add_argument("--no-certifi", action="store_true", help="Do not use certifi CA bundle")
     p.add_argument(
@@ -7640,6 +7850,12 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
         default="",
         metavar="ISO2",
         help="Primary market ISO-3166-1 alpha-2 code (wizard). Guides regional sitemap prioritisation.",
+    )
+    p.add_argument(
+        "--extra-markets-json",
+        default="",
+        metavar="JSON",
+        help="JSON array of additional regional crawls, e.g. [{\"country\":\"France\",\"country_code\":\"FR\"}].",
     )
 
 

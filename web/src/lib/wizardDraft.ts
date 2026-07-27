@@ -12,6 +12,7 @@ export interface WizardDraft {
   industry: string;
   marketCountry: string;
   marketCountryCode: string;
+  additionalCrawlMarkets?: { country: string; country_code: string }[];
   previewUnlocked: boolean;
   sitePreviewPhase: SitePreviewPhase;
   verifiedSite: VerifiedSite | null;

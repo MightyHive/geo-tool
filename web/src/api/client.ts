@@ -18,6 +18,7 @@ import type {
   PromptSentimentResponse,
   VerifiedSite,
   ProbeSiteProtection,
+  CrawlMarket,
 } from "../types";
 
 const API = "/api";
@@ -280,6 +281,7 @@ export interface RunAuditPayload {
   delay?: number;
   wizard_market_country?: string;
   wizard_market_country_code?: string;
+  wizard_additional_markets?: CrawlMarket[];
   wizard_products?: { product_or_service: string; prompts: string[] }[];
   wizard_competitors?: {
     competitor_brand: string;

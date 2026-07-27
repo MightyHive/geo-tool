@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { suggestPromptsForProducts } from "../api/client";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
 import type { ProductServiceRow } from "../types";
@@ -65,7 +65,6 @@ export function WizardGeneratePromptsStep({
     { id: "generate", label: "Generating AI prompts (Gemini)", status: "pending" },
     { id: "ready", label: "Prompts ready to review", status: "pending" },
   ]);
-  const started = useRef(false);
 
   const linesNeedingPrompts = useMemo(
     () =>
@@ -79,12 +78,10 @@ export function WizardGeneratePromptsStep({
   );
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-
     let cancelled = false;
 
     async function run() {
+      setReady(false);
       setError(null);
       setProgressSteps([
         { id: "check", label: "Checking product lines", status: "active" },
@@ -144,7 +141,6 @@ export function WizardGeneratePromptsStep({
               : s,
           ),
         );
-        started.current = false;
       }
     }
 
@@ -152,8 +148,14 @@ export function WizardGeneratePromptsStep({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per visit
-  }, []);
+  }, [
+    brandWebsite,
+    linesNeedingPrompts.join("|"),
+    marketCountry,
+    marketCountryCode,
+    onRowsChange,
+    rows,
+  ]);
 
   return (
     <div className="card-surface p-6 mb-6">

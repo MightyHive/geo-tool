@@ -3007,6 +3007,7 @@ def seed_audit_dir_from_wizard(
     industry: str,
     market_country: str,
     market_country_code: str,
+    additional_markets: list[dict[str, Any]] | None,
     competitor_urls: list[str],
     products_rows: list[dict[str, Any]],
     competitors_detail: list[dict[str, Any]],
@@ -3103,6 +3104,16 @@ def seed_audit_dir_from_wizard(
                 "label": f"{market_country.strip() or 'Market'}: English",
             }
         ]
+    extra_markets: list[dict[str, str]] = []
+    for row in additional_markets or []:
+        if not isinstance(row, dict):
+            continue
+        c = str(row.get("country") or "").strip()
+        cc = str(row.get("country_code") or "").strip().upper()
+        if not c or not cc:
+            continue
+        extra_markets.append({"country": c, "country_code": cc})
+    onboarding["additional_crawl_markets"] = extra_markets
     onboarding["accepted_competitors"] = list(competitor_urls)
     if crawl_urls:
         onboarding["crawl_urls"] = [u for u in crawl_urls if str(u).strip()]
@@ -3230,6 +3241,7 @@ def create_report_cmd_env(
     industry: str = "",
     market_country: str = "",
     market_country_code: str = "",
+    additional_markets: list[dict[str, Any]] | None = None,
     ga4_property_id: str | None = None,
     ga4_ai_channels: str | None = None,
     ga4_oauth_credentials_path: str | None = None,
@@ -3262,6 +3274,8 @@ def create_report_cmd_env(
         cmd.extend(["--market-country", market_country.strip()])
     if market_country_code.strip():
         cmd.extend(["--market-country-code", market_country_code.strip()])
+    if additional_markets:
+        cmd.extend(["--extra-markets-json", json.dumps(additional_markets, ensure_ascii=False)])
     for c in competitors:
         c = c.strip()
         if c:

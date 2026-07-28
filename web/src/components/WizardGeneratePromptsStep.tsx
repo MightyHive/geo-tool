@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { suggestPromptsForProducts } from "../api/client";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
 import type { PromptLocale } from "../lib/promptLocales";
@@ -109,6 +109,12 @@ export function WizardGeneratePromptsStep({
     if (cancelledRef.current) return;
 
     if (linesNeedingPrompts.length === 0) {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      setReady(false);
+      setError(null);
       setProgressSteps([
         { id: "check", label: "Checking product lines", status: "done" },
         {
@@ -164,11 +170,50 @@ export function WizardGeneratePromptsStep({
         ),
       );
       setPhase("error");
+
+      try {
+        const { rows: generated } = await suggestPromptsForProducts({
+          brand_website: brandWebsite.trim(),
+          products: linesNeedingPrompts,
+          market_country: marketCountry.trim(),
+          market_country_code: marketCountryCode.trim(),
+        });
+        if (cancelled) return;
+        onRowsChange(mergeGeneratedPrompts(rows, generated));
+        setProgressSteps([
+          { id: "check", label: "Checking product lines", status: "done" },
+          { id: "generate", label: "AI prompts generated", status: "done" },
+          { id: "ready", label: "Prompts ready to review", status: "done" },
+        ]);
+        setReady(true);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Gemini request failed");
+        setProgressSteps((prev) =>
+          prev.map((s) =>
+            s.id === "generate"
+              ? { ...s, label: "Prompt generation failed", status: "done" }
+              : s,
+          ),
+        );
+      }
     }
   }
 
   const busy = phase === "generating";
   const ready = phase === "ready";
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    brandWebsite,
+    linesNeedingPrompts.join("|"),
+    marketCountry,
+    marketCountryCode,
+    onRowsChange,
+    rows,
+  ]);
 
   return (
     <div className="card-surface p-6 mb-6 space-y-6">

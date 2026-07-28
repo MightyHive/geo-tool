@@ -72,6 +72,7 @@ META_DESC_RE_ALT = re.compile(
     r'<meta[^>]+content\s*=\s*["\']([^"\']+)["\'][^>]+name\s*=\s*["\']description["\']',
     re.IGNORECASE,
 )
+LINK_HREF_RE = re.compile(r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 
 
 @dataclass
@@ -84,10 +85,36 @@ class FetchResult:
     headers: dict[str, str] | None = None
 
 
-def _request_urllib(url: str) -> FetchResult:
+@dataclass(frozen=True)
+class BotMimicSpec:
+    key: str
+    label: str
+    user_agent: str
+    robots_token: str
+
+
+BOT_MIMIC_SPECS: tuple[BotMimicSpec, ...] = (
+    # ChatGPT browsing/session retrieval user-agent token.
+    BotMimicSpec(
+        key="chatgpt",
+        label="ChatGPT",
+        user_agent="Mozilla/5.0 (compatible; ChatGPT-User/1.0; +https://openai.com/bot)",
+        robots_token="ChatGPT-User",
+    ),
+    # Gemini/Google AI ecosystem fetch simulation via GoogleOther token.
+    BotMimicSpec(
+        key="gemini",
+        label="Gemini",
+        user_agent="Mozilla/5.0 (compatible; GoogleOther/2.1; +http://www.google.com/bot.html)",
+        robots_token="GoogleOther",
+    ),
+)
+
+
+def _request_urllib(url: str, *, user_agent: str = USER_AGENT) -> FetchResult:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+        headers={"User-Agent": user_agent, "Accept": "*/*"},
         method="GET",
     )
     open_kw: dict[str, Any] = {"timeout": REQUEST_TIMEOUT}
@@ -121,8 +148,15 @@ def _request_urllib(url: str) -> FetchResult:
         return FetchResult(url=url, status=None, error=str(e))
 
 
-def _request(url: str) -> FetchResult:
-    fr = _request_urllib(url)
+def _request(
+    url: str,
+    *,
+    user_agent: str = USER_AGENT,
+    allow_browser_fallback: bool = True,
+) -> FetchResult:
+    fr = _request_urllib(url, user_agent=user_agent)
+    if not allow_browser_fallback:
+        return fr
     try:
         from browser_fetch import fetch_with_browser_fallback
 
@@ -135,6 +169,305 @@ def _request(url: str) -> FetchResult:
         return fr
     status, body, final_url = fallback
     return FetchResult(url=url, status=status, body=body, final_url=final_url, headers=None)
+
+
+def _robot_parser_from_text(base: str, robots_text: str | None) -> Any | None:
+    if not robots_text or not robots_text.strip():
+        return None
+    try:
+        from urllib import robotparser
+
+        rp = robotparser.RobotFileParser()
+        rp.set_url(urllib.parse.urljoin(base.rstrip("/") + "/", "robots.txt"))
+        rp.parse(robots_text.splitlines())
+        return rp
+    except Exception:
+        return None
+
+
+def _xrobots_has_noindex(val: str | None) -> bool:
+    if not val:
+        return False
+    txt = val.lower()
+    for clause in txt.split(","):
+        if ":" in clause:
+            _, rest = clause.split(":", 1)
+            if "noindex" in rest:
+                return True
+        elif "noindex" in clause:
+            return True
+    return False
+
+
+def _normalize_internal_url(base: str, page_url: str, raw_href: str) -> str | None:
+    href = raw_href.strip()
+    if not href:
+        return None
+    low = href.lower()
+    if low.startswith(("javascript:", "mailto:", "tel:", "data:")):
+        return None
+    joined = urllib.parse.urljoin(page_url, href)
+    clean = urllib.parse.urldefrag(joined)[0]
+    try:
+        p = urllib.parse.urlparse(clean)
+        b = urllib.parse.urlparse(base.rstrip("/") + "/")
+    except Exception:
+        return None
+    if p.scheme not in ("http", "https"):
+        return None
+    if p.netloc.lower() != b.netloc.lower():
+        return None
+    # Skip common static assets; focus crawl on HTML endpoints.
+    if re.search(r"\.(?:jpg|jpeg|png|gif|webp|svg|ico|pdf|zip|mp4|mov|css|js|xml|json)(?:$|\?)", p.path.lower()):
+        return None
+    norm_path = p.path or "/"
+    if len(norm_path) > 1 and norm_path.endswith("/"):
+        norm_path = norm_path[:-1]
+    return urllib.parse.urlunparse((p.scheme, p.netloc, norm_path, "", p.query, ""))
+
+
+def _extract_internal_links(base: str, page_url: str, html: str, max_links: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in LINK_HREF_RE.finditer(html):
+        norm = _normalize_internal_url(base, page_url, m.group(1))
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+        if len(out) >= max_links:
+            break
+    return out
+
+
+def _run_ai_platform_simulated_crawl(
+    *,
+    spec: BotMimicSpec,
+    base: str,
+    rp: Any | None,
+    seed_urls: list[str],
+    delay: float,
+    max_pages: int,
+    max_depth: int,
+    max_links_per_page: int,
+) -> dict[str, Any]:
+    queue: list[tuple[str, int]] = []
+    queued: set[str] = set()
+    for u in seed_urls:
+        if u not in queued:
+            queue.append((u, 0))
+            queued.add(u)
+
+    crawled: list[dict[str, Any]] = []
+    fetched_n = 0
+    ok_200 = 0
+    blocked_n = 0
+    noindex_n = 0
+    html_200_n = 0
+    discovered_links_n = 0
+    max_depth_seen = 0
+
+    while queue and fetched_n < max_pages:
+        url, depth = queue.pop(0)
+        max_depth_seen = max(max_depth_seen, depth)
+        robots_allowed: bool | None = None
+        if rp is not None:
+            try:
+                robots_allowed = bool(rp.can_fetch(spec.robots_token, url))
+            except Exception:
+                robots_allowed = None
+        if robots_allowed is False:
+            blocked_n += 1
+            crawled.append(
+                {
+                    "url": url,
+                    "depth": depth,
+                    "robots_allowed": False,
+                    "status": None,
+                    "error": "blocked_by_robots",
+                    "content_type": None,
+                    "is_html": False,
+                    "noindex_signal": False,
+                    "discovered_links": 0,
+                }
+            )
+            continue
+
+        time.sleep(delay)
+        fr = _request(url, user_agent=spec.user_agent, allow_browser_fallback=False)
+        fetched_n += 1
+        xrt = (fr.headers or {}).get("x-robots-tag")
+        noindex_flag = _xrobots_has_noindex(xrt)
+        if noindex_flag:
+            noindex_n += 1
+        if fr.status == 200:
+            ok_200 += 1
+
+        ctype = ((fr.headers or {}).get("content-type") or "").lower()
+        is_html = bool(fr.status == 200 and fr.body and ("text/html" in ctype or "<html" in fr.body[:600].decode("latin-1", errors="ignore").lower()))
+        links_added = 0
+        if is_html:
+            html_200_n += 1
+            if depth < max_depth:
+                try:
+                    html = fr.body.decode("utf-8", errors="replace")
+                except Exception:
+                    html = fr.body.decode("latin-1", errors="replace")
+                for nxt in _extract_internal_links(base, fr.final_url or url, html, max_links=max_links_per_page):
+                    if nxt in queued:
+                        continue
+                    queued.add(nxt)
+                    queue.append((nxt, depth + 1))
+                    links_added += 1
+                discovered_links_n += links_added
+
+        crawled.append(
+            {
+                "url": url,
+                "depth": depth,
+                "robots_allowed": robots_allowed,
+                "status": fr.status,
+                "error": fr.error,
+                "final_url": fr.final_url,
+                "x_robots_tag": xrt,
+                "content_type": ctype or None,
+                "is_html": is_html,
+                "noindex_signal": noindex_flag,
+                "discovered_links": links_added,
+            }
+        )
+
+    return {
+        "max_pages": max_pages,
+        "max_depth": max_depth,
+        "max_links_per_page": max_links_per_page,
+        "visited_samples": crawled[:60],
+        "summary": {
+            "seed_urls": len(seed_urls),
+            "crawl_pages_fetched": fetched_n,
+            "crawl_http_200": ok_200,
+            "crawl_http_200_ratio": round((ok_200 / fetched_n), 3) if fetched_n else 0.0,
+            "crawl_html_200": html_200_n,
+            "crawl_blocked_in_robots": blocked_n,
+            "crawl_noindex_hits": noindex_n,
+            "crawl_discovered_links": discovered_links_n,
+            "crawl_unique_urls_seen": len(queued),
+            "crawl_max_depth_reached": max_depth_seen,
+        },
+    }
+
+
+def run_ai_bot_mimic_fetches(
+    *,
+    base: str,
+    page_urls: list[str],
+    robots_text: str | None,
+    max_urls_per_bot: int,
+    delay: float,
+    crawl_max_pages: int,
+    crawl_max_depth: int,
+    crawl_max_links_per_page: int,
+) -> dict[str, Any]:
+    rp = _robot_parser_from_text(base, robots_text)
+    targets: list[str] = []
+    home = base.rstrip("/") + "/"
+    if home not in targets:
+        targets.append(home)
+    for u in page_urls:
+        if u not in targets:
+            targets.append(u)
+        if len(targets) >= max_urls_per_bot:
+            break
+
+    bots: list[dict[str, Any]] = []
+    for spec in BOT_MIMIC_SPECS:
+        checks: list[dict[str, Any]] = []
+        for url in targets:
+            robots_allowed: bool | None = None
+            if rp is not None:
+                try:
+                    robots_allowed = bool(rp.can_fetch(spec.robots_token, url))
+                except Exception:
+                    robots_allowed = None
+            if robots_allowed is False:
+                checks.append(
+                    {
+                        "url": url,
+                        "robots_allowed": False,
+                        "status": None,
+                        "error": "blocked_by_robots",
+                        "x_robots_tag": None,
+                        "noindex_signal": False,
+                    }
+                )
+                continue
+            time.sleep(delay)
+            fr = _request(
+                url,
+                user_agent=spec.user_agent,
+                allow_browser_fallback=False,
+            )
+            xrt = (fr.headers or {}).get("x-robots-tag")
+            checks.append(
+                {
+                    "url": url,
+                    "robots_allowed": robots_allowed,
+                    "status": fr.status,
+                    "error": fr.error,
+                    "final_url": fr.final_url,
+                    "x_robots_tag": xrt,
+                    "noindex_signal": _xrobots_has_noindex(xrt),
+                }
+            )
+        attempted = [c for c in checks if c.get("robots_allowed") is not False]
+        ok_200 = [c for c in attempted if c.get("status") == 200]
+        sim = _run_ai_platform_simulated_crawl(
+            spec=spec,
+            base=base,
+            rp=rp,
+            seed_urls=targets,
+            delay=delay,
+            max_pages=max(1, crawl_max_pages),
+            max_depth=max(0, crawl_max_depth),
+            max_links_per_page=max(1, crawl_max_links_per_page),
+        )
+        sim_summary = sim.get("summary") if isinstance(sim, dict) else {}
+        if not isinstance(sim_summary, dict):
+            sim_summary = {}
+        bots.append(
+            {
+                "key": spec.key,
+                "label": spec.label,
+                "robots_token": spec.robots_token,
+                "user_agent": spec.user_agent,
+                "checks": checks,
+                "crawl_simulation": sim,
+                "summary": {
+                    "targets": len(checks),
+                    "attempted_fetches": len(attempted),
+                    "blocked_in_robots": len([c for c in checks if c.get("robots_allowed") is False]),
+                    "http_200": len(ok_200),
+                    "http_200_ratio": round((len(ok_200) / len(attempted)), 3) if attempted else 0.0,
+                    "noindex_hits": len([c for c in attempted if c.get("noindex_signal")]),
+                    "crawl_pages_fetched": int(sim_summary.get("crawl_pages_fetched") or 0),
+                    "crawl_http_200": int(sim_summary.get("crawl_http_200") or 0),
+                    "crawl_http_200_ratio": float(sim_summary.get("crawl_http_200_ratio") or 0.0),
+                    "crawl_blocked_in_robots": int(sim_summary.get("crawl_blocked_in_robots") or 0),
+                    "crawl_noindex_hits": int(sim_summary.get("crawl_noindex_hits") or 0),
+                    "crawl_html_200": int(sim_summary.get("crawl_html_200") or 0),
+                    "crawl_discovered_links": int(sim_summary.get("crawl_discovered_links") or 0),
+                },
+            }
+        )
+
+    return {
+        "enabled": True,
+        "max_urls_per_bot": max_urls_per_bot,
+        "crawl_max_pages": crawl_max_pages,
+        "crawl_max_depth": crawl_max_depth,
+        "crawl_max_links_per_page": crawl_max_links_per_page,
+        "bots": bots,
+    }
 
 
 def normalize_base(url: str) -> str:
@@ -1722,6 +2055,11 @@ def run_site_audit(
             "path": None,
             "lookback": None,
         },
+        "ai_bot_mimic": {
+            "enabled": False,
+            "max_urls_per_bot": 0,
+            "bots": [],
+        },
         "sitemap_pages_scanned": 0,
         "pages": [],
         "summary": {
@@ -1842,6 +2180,17 @@ def run_site_audit(
             seen.add(u)
             ordered.append(u)
     page_urls = ordered[: args.max_sitemap_urls]
+
+    report["ai_bot_mimic"] = run_ai_bot_mimic_fetches(
+        base=base,
+        page_urls=page_urls,
+        robots_text=robots_text,
+        max_urls_per_bot=max(1, min(6, int(getattr(args, "mimic_urls_per_bot", 4) or 4))),
+        delay=args.delay,
+        crawl_max_pages=max(2, min(40, int(getattr(args, "mimic_crawl_max_pages", 12) or 12))),
+        crawl_max_depth=max(0, min(4, int(getattr(args, "mimic_crawl_depth", 2) or 2))),
+        crawl_max_links_per_page=max(2, min(60, int(getattr(args, "mimic_crawl_links_per_page", 20) or 20))),
+    )
 
     all_same_as: set[str] = set()
     home_title: str | None = None
@@ -2134,6 +2483,39 @@ def write_comparison_files(
     return json_path, md_path
 
 
+def parse_extra_markets_json(raw: str) -> list[dict[str, str]]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        country = str(row.get("country") or "").strip()
+        code = str(row.get("country_code") or "").strip().upper()
+        if not country or not code:
+            continue
+        key = (country.lower(), code)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"country": country, "country_code": code})
+    return out
+
+
+def safe_region_name(country: str, code: str) -> str:
+    cc = re.sub(r"[^A-Z0-9]+", "_", (code or "").upper()).strip("_") or "REGION"
+    cn = re.sub(r"[^a-z0-9]+", "_", (country or "").lower()).strip("_")[:48] or "region"
+    return f"{cc}_{cn}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit robots, llms.txt, sitemap pages for JSON-LD / og:image / sameAs.")
     parser.add_argument("url", help="Website URL (e.g. https://example.com)")
@@ -2230,6 +2612,35 @@ def main() -> int:
         metavar="ISO2",
         help="Primary market ISO-3166-1 alpha-2 code from wizard (e.g. GB). Guides regional sitemap prioritisation.",
     )
+    parser.add_argument(
+        "--extra-markets-json",
+        default="",
+        help="JSON list of additional regional crawls, e.g. [{\"country\":\"France\",\"country_code\":\"FR\"}].",
+    )
+    parser.add_argument(
+        "--mimic-urls-per-bot",
+        type=int,
+        default=4,
+        help="How many URLs each AI-bot mimic fetch checks (ChatGPT + Gemini simulation). Default: 4, max 6.",
+    )
+    parser.add_argument(
+        "--mimic-crawl-max-pages",
+        type=int,
+        default=12,
+        help="Max pages per bot for simulated AI-platform crawl pass. Default: 12, max 40.",
+    )
+    parser.add_argument(
+        "--mimic-crawl-depth",
+        type=int,
+        default=2,
+        help="Max link depth for simulated AI-platform crawl pass. Default: 2, max 4.",
+    )
+    parser.add_argument(
+        "--mimic-crawl-links-per-page",
+        type=int,
+        default=20,
+        help="Max internal links to enqueue per crawled page in mimic crawl. Default: 20, max 60.",
+    )
     args = parser.parse_args()
 
     try:
@@ -2292,6 +2703,59 @@ def main() -> int:
             )
             competitor_bundle.append((label, comp_report))
 
+        extra_markets = parse_extra_markets_json(str(getattr(args, "extra_markets_json", "") or ""))
+        regional_bundle: list[dict[str, Any]] = []
+        if extra_markets:
+            for row in extra_markets:
+                rc = row["country"]
+                rid = row["country_code"]
+                if rc.strip().lower() == str(getattr(args, "market_country", "") or "").strip().lower() and rid.upper() == str(getattr(args, "market_country_code", "") or "").strip().upper():
+                    continue
+                regional_args = argparse.Namespace(**vars(args))
+                regional_args.market_country = rc
+                regional_args.market_country_code = rid
+                regional_out = os.path.join(out_dir, "regional_crawls", safe_region_name(rc, rid))
+                print(f"Regional crawl ({rid} - {rc}) …", file=sys.stderr)
+                reg_report = run_site_audit(
+                    regional_args,
+                    primary_base,
+                    regional_out,
+                    audit_label=f"regional_{rid.lower()}",
+                    tls_info=tls_info,
+                )
+                reg_pages = reg_report.get("pages") or []
+                reg_ok = sum(1 for p in reg_pages if p.get("http_status") == 200)
+                reg_n = len(reg_pages)
+                reg_http_ratio = (reg_ok / reg_n) if reg_n else 0.0
+                mimic_rows = ((reg_report.get("ai_bot_mimic") or {}).get("bots") or [])
+                mimic_summary: dict[str, dict[str, Any]] = {}
+                for b in mimic_rows:
+                    if not isinstance(b, dict):
+                        continue
+                    token = str(b.get("robots_token") or "").strip()
+                    sm = b.get("summary")
+                    if token and isinstance(sm, dict):
+                        mimic_summary[token] = sm
+                regional_bundle.append(
+                    {
+                        "country": rc,
+                        "country_code": rid,
+                        "output_dir": reg_report.get("output_dir"),
+                        "pages_scanned": reg_report.get("sitemap_pages_scanned"),
+                        "pages_http_200": reg_ok,
+                        "pages_http_200_ratio": round(reg_http_ratio, 3),
+                        "robots_exists": ((reg_report.get("robots_txt") or {}).get("exists", False)),
+                        "llms_live": (reg_report.get("llms_txt") or {}).get("exists", False),
+                        "any_json_ld": (reg_report.get("summary") or {}).get("any_json_ld", False),
+                        "mimic_fetch": {
+                            "chatgpt": mimic_summary.get("ChatGPT-User"),
+                            "gemini": mimic_summary.get("GoogleOther"),
+                        },
+                    }
+                )
+            if regional_bundle:
+                primary_report["regional_crawls"] = regional_bundle
+
         if competitor_bundle:
             _cj, cmp_md = write_comparison_files(out_dir, primary_report, competitor_bundle)
             primary_report["comparison"] = {
@@ -2299,6 +2763,7 @@ def main() -> int:
                 "json_path": _cj,
                 "competitors": [rep.get("base_url") for _, rep in competitor_bundle],
             }
+        if competitor_bundle or regional_bundle:
             write_text(out_dir, "audit_summary.json", json.dumps(primary_report, indent=2, ensure_ascii=False))
 
         report = primary_report

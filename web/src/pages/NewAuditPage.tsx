@@ -45,6 +45,7 @@ import type {
   AuditRunProgressPayload,
   AuditRunStatusResponse,
   CompetitorDetail,
+  CrawlMarket,
   ProductServiceRow,
   VerifiedSite,
 } from "../types";
@@ -106,6 +107,9 @@ export function NewAuditPage() {
   const [promptLocales, setPromptLocales] = useState<
     import("../lib/promptLocales").PromptLocale[]
   >([]);
+  const [additionalCrawlMarkets, setAdditionalCrawlMarkets] = useState<CrawlMarket[]>([]);
+  const [additionalMarketInput, setAdditionalMarketInput] = useState("");
+  const [additionalMarketInputCode, setAdditionalMarketInputCode] = useState("");
   const [productRows, setProductRows] = useState<ProductServiceRow[]>([]);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [competitorDetails, setCompetitorDetails] = useState<CompetitorDetail[]>([]);
@@ -131,6 +135,13 @@ export function NewAuditPage() {
     if (draft.marketCountry) setMarketCountry(draft.marketCountry);
     if (draft.marketCountryCode) setMarketCountryCode(draft.marketCountryCode);
     if (draft.promptLocales?.length) setPromptLocales(draft.promptLocales);
+    if (draft.additionalCrawlMarkets?.length) {
+      setAdditionalCrawlMarkets(
+        draft.additionalCrawlMarkets
+          .filter((row) => row.country && row.country_code)
+          .map((row) => ({ country: row.country, country_code: row.country_code })),
+      );
+    }
     if (draft.productRows?.length) setProductRows(draft.productRows);
     if (draft.selectedProducts?.length) setSelectedProducts(draft.selectedProducts);
     if (draft.competitorDetails?.length) setCompetitorDetails(draft.competitorDetails);
@@ -160,6 +171,9 @@ export function NewAuditPage() {
     setIndustry(INDUSTRY_PLACEHOLDER);
     setMarketCountry("");
     setMarketCountryCode("");
+    setAdditionalCrawlMarkets([]);
+    setAdditionalMarketInput("");
+    setAdditionalMarketInputCode("");
     setProductRows([]);
     setSelectedProducts([]);
     setCompetitorDetails([]);
@@ -335,6 +349,7 @@ export function NewAuditPage() {
       marketCountry,
       marketCountryCode,
       promptLocales,
+      additionalCrawlMarkets,
       previewUnlocked,
       sitePreviewPhase,
       verifiedSite,
@@ -355,6 +370,7 @@ export function NewAuditPage() {
     marketCountry,
     marketCountryCode,
     promptLocales,
+    additionalCrawlMarkets,
     previewUnlocked,
     sitePreviewPhase,
     verifiedSite,
@@ -483,6 +499,37 @@ export function NewAuditPage() {
     setMarketCountryCode(code);
   }
 
+  function handleAdditionalMarketInput(name: string, code: string) {
+    setAdditionalMarketInput(name);
+    setAdditionalMarketInputCode(code);
+  }
+
+  function addAdditionalMarket() {
+    const country = additionalMarketInput.trim();
+    const code = additionalMarketInputCode.trim().toUpperCase();
+    if (!country || !code) return;
+    if (marketCountryCode.trim().toUpperCase() === code) {
+      setAdditionalMarketInput("");
+      setAdditionalMarketInputCode("");
+      return;
+    }
+    if (additionalCrawlMarkets.some((row) => row.country_code.toUpperCase() === code)) {
+      setAdditionalMarketInput("");
+      setAdditionalMarketInputCode("");
+      return;
+    }
+    setAdditionalCrawlMarkets((prev) => [...prev, { country, country_code: code }]);
+    setAdditionalMarketInput("");
+    setAdditionalMarketInputCode("");
+  }
+
+  function removeAdditionalMarket(code: string) {
+    const want = code.trim().toUpperCase();
+    setAdditionalCrawlMarkets((prev) =>
+      prev.filter((row) => row.country_code.trim().toUpperCase() !== want),
+    );
+  }
+
   async function runAudit() {
     setRunning(true);
     setAuditProgress(null);
@@ -519,6 +566,7 @@ export function NewAuditPage() {
         wizard_market_country: marketCountry,
         wizard_market_country_code: marketCountryCode,
         wizard_prompt_locales: promptLocales,
+        wizard_additional_markets: additionalCrawlMarkets,
         wizard_products: productRows.map((r) => ({
           product_or_service: r.product_or_service.trim(),
           prompts: r.prompts.map((p) => String(p).trim()).filter(Boolean),
@@ -650,6 +698,47 @@ export function NewAuditPage() {
                 onChange={handleMarketChange}
                 help="Used for AI prompt wording and competitor suggestions. ISO code is set from your selection."
               />
+              <CountryCombobox
+                id="additionalMarketCountry"
+                label="Additional crawl regions (optional)"
+                value={additionalMarketInput}
+                countryCode={additionalMarketInputCode}
+                onChange={handleAdditionalMarketInput}
+                help="Add extra countries to run additional regional crawls of the same site."
+              />
+              <div className="flex items-center gap-2 mb-3">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={addAdditionalMarket}
+                  disabled={!additionalMarketInput.trim() || !additionalMarketInputCode.trim()}
+                >
+                  + Add region crawl
+                </button>
+              </div>
+              {additionalCrawlMarkets.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-sm font-medium text-brand-dark mb-2">Extra regional crawls</p>
+                  <div className="flex flex-wrap gap-2">
+                    {additionalCrawlMarkets.map((row) => (
+                      <span
+                        key={row.country_code}
+                        className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-sm text-blue-800"
+                      >
+                        {row.country} ({row.country_code})
+                        <button
+                          type="button"
+                          className="text-blue-700 hover:text-blue-900"
+                          onClick={() => removeAdditionalMarket(row.country_code)}
+                          aria-label={`Remove ${row.country}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -803,6 +892,12 @@ export function NewAuditPage() {
             <p className="text-sm text-gray-600 mt-2">
               Primary market: {marketCountry}
               {marketCountryCode ? ` (${marketCountryCode})` : ""}
+            </p>
+          )}
+          {additionalCrawlMarkets.length > 0 && (
+            <p className="text-sm text-gray-600 mt-1">
+              Additional regional crawls:{" "}
+              {additionalCrawlMarkets.map((row) => `${row.country} (${row.country_code})`).join(", ")}
             </p>
           )}
           <p className="text-sm text-gray-600 mt-2">

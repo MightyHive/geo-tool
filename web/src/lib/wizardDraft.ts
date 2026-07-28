@@ -13,6 +13,7 @@ export interface WizardDraft {
   marketCountry: string;
   marketCountryCode: string;
   promptLocales?: import("../lib/promptLocales").PromptLocale[];
+  additionalCrawlMarkets?: { country: string; country_code: string }[];
   previewUnlocked: boolean;
   sitePreviewPhase: SitePreviewPhase;
   verifiedSite: VerifiedSite | null;

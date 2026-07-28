@@ -214,6 +214,7 @@ export interface OnboardingContext {
   accepted_competitors?: string[];
   ga4_property_id?: string;
   crawl_urls?: string[];
+  additional_crawl_markets?: { country: string; country_code: string }[];
 }
 
 export interface AuditDetail {
@@ -291,6 +292,11 @@ export interface ProductServiceRow {
   prompt_tags?: Record<string, string[]>;
   custom_prompts?: string[];
   is_custom_topic?: boolean;
+}
+
+export interface CrawlMarket {
+  country: string;
+  country_code: string;
 }
 
 export interface VerifiedSite {

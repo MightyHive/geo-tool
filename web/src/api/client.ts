@@ -24,6 +24,7 @@ import type {
   VerifiedSite,
   ProbeSiteProtection,
   YouTubeVideo,
+  CrawlMarket,
 } from "../types";
 
 const API = "/api";
@@ -907,6 +908,7 @@ export interface RunAuditPayload {
     custom_prompts?: string[];
     is_custom_topic?: boolean;
   }[];
+  wizard_additional_markets?: CrawlMarket[];
   wizard_competitors?: {
     competitor_brand: string;
     competitor_website: string;

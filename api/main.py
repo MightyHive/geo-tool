@@ -95,6 +95,11 @@ class WizardCompetitorRow(BaseModel):
     included: bool = True
 
 
+class WizardAdditionalMarketRow(BaseModel):
+    country: str = ""
+    country_code: str = ""
+
+
 class RunAuditRequest(BaseModel):
     brand_name: str
     brand_website: str
@@ -113,6 +118,7 @@ class RunAuditRequest(BaseModel):
     wizard_market_country: str = ""
     wizard_market_country_code: str = ""
     wizard_prompt_locales: list[dict[str, Any]] = Field(default_factory=list)
+    wizard_additional_markets: list[WizardAdditionalMarketRow] = Field(default_factory=list)
     wizard_products: list[WizardProductRow] = Field(default_factory=list)
     wizard_competitors: list[WizardCompetitorRow] = Field(default_factory=list, max_length=10)
     crawl_urls: list[str] | None = None
@@ -592,6 +598,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 industry=body.industry.strip(),
                 market_country=body.wizard_market_country.strip(),
                 market_country_code=body.wizard_market_country_code.strip(),
+                additional_markets=[m.model_dump() for m in body.wizard_additional_markets],
                 competitor_urls=competitors,
                 products_rows=[p.model_dump() for p in body.wizard_products],
                 competitors_detail=[c.model_dump() for c in body.wizard_competitors],
@@ -623,6 +630,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 industry=body.industry,
                 market_country=body.wizard_market_country.strip(),
                 market_country_code=body.wizard_market_country_code.strip(),
+                additional_markets=[m.model_dump() for m in body.wizard_additional_markets],
                 ga4_property_id=ga4_prop,
                 ga4_ai_channels=ga4_ch,
                 ga4_oauth_credentials_path=ga4_cred_path,

@@ -132,11 +132,47 @@ def save_score_snapshot(audit_dir: Path, *, source: str = "manual") -> str:
     return today
 
 
-def get_score_history_entries(audit_dir: Path) -> list[dict[str, Any]]:
+def _load_history_entries(audit_dir: Path, *, persist_repairs: bool = True) -> list[dict[str, Any]]:
     index = _load_index(audit_dir)
     entries = [e for e in (index.get("entries") or []) if isinstance(e, dict)]
     if entries:
         return sorted(entries, key=lambda e: str(e.get("date") or ""))
+
+    hist_dir = audit_dir / _HISTORY_DIR
+    if not hist_dir.is_dir():
+        return []
+
+    repaired_entries: list[dict[str, Any]] = []
+    for path in sorted(hist_dir.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        date = str(entry.get("date") or path.stem).strip()
+        if not date:
+            continue
+        entry = {**entry, "date": date}
+        if "created_at" not in entry:
+            entry["created_at"] = _utc_now()
+        repaired_entries.append(entry)
+
+    if not repaired_entries:
+        return []
+
+    repaired_entries.sort(key=lambda e: str(e.get("date") or ""))
+    if persist_repairs:
+        index["schema_version"] = 1
+        index["entries"] = repaired_entries
+        _save_index(audit_dir, index)
+    return repaired_entries
+
+
+def get_score_history_entries(audit_dir: Path) -> list[dict[str, Any]]:
+    entries = _load_history_entries(audit_dir)
+    if entries:
+        return entries
 
     # Synthesize a single point from current scores so charts aren't empty.
     try:

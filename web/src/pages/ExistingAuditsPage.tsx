@@ -117,7 +117,8 @@ export function ExistingAuditsPage() {
                 audit={a}
                 index={index}
                 onOpen={() => {
-                  if (a.still_running) return;
+                  const isFirstTimeRun = a.still_running && a.overall_score == null;
+                  if (isFirstTimeRun) return;
                   navigate(`/report/${a.id}/summary`);
                 }}
               />

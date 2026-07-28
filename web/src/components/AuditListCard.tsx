@@ -29,6 +29,7 @@ export function AuditListCard({
   const label = auditDisplayName(audit);
   const favicon = audit.favicon_url?.trim();
   const stillRunning = Boolean(audit.still_running);
+  const isFirstTimeRun = stillRunning && audit.overall_score == null;
 
   const body = (
     <>
@@ -62,7 +63,7 @@ export function AuditListCard({
         <Calendar className="w-4 h-4 mr-2" />
         {audit.modified_at.slice(0, 10)}
       </div>
-      {stillRunning ? (
+      {isFirstTimeRun ? (
         <span className="mt-4 inline-flex items-center text-sm font-medium text-gray-500">
           <Loader2 className="w-4 h-4 mr-1 animate-spin" aria-hidden />
           Still running
@@ -76,7 +77,7 @@ export function AuditListCard({
     </>
   );
 
-  if (stillRunning) {
+  if (isFirstTimeRun) {
     return (
       <div
         className="card-surface relative p-5 text-left w-full opacity-55 grayscale pointer-events-none select-none animate-slide-up"

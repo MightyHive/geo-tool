@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 from api import geo_services as geo
@@ -27,7 +28,13 @@ from api.iap_middleware import IAPMiddleware
 from api.executive_summary import router as executive_summary_router
 from api.prompt_performance import router as prompt_performance_router
 from api.recommendations import router as recommendations_router
+from api.probe_history import router as probe_history_router, scheduled_router as probe_scheduled_router
+from api.score_history import router as score_history_router
+from api.reddit_insights import router as reddit_insights_router
 from api.wizard import router as wizard_router
+from api.youtube_insights import router as youtube_insights_router
+from api.ai_impact import router as ai_impact_router
+from api.gsc import router as gsc_router
 from geo_app_env import current_app_env, load_app_environment
 
 load_app_environment()
@@ -61,15 +68,25 @@ app.add_middleware(
 app.add_middleware(IAPMiddleware)
 app.include_router(create_auth_router())
 app.include_router(create_ga4_router())
+app.include_router(gsc_router)
+app.include_router(ai_impact_router)
 app.include_router(wizard_router)
 app.include_router(prompt_performance_router)
 app.include_router(executive_summary_router)
 app.include_router(recommendations_router)
+app.include_router(probe_history_router)
+app.include_router(probe_scheduled_router)
+app.include_router(score_history_router)
+app.include_router(reddit_insights_router)
+app.include_router(youtube_insights_router)
 
 
 class WizardProductRow(BaseModel):
     product_or_service: str = ""
     prompts: list[str] = Field(default_factory=list)
+    prompt_tags: dict[str, list[str]] = Field(default_factory=dict)
+    custom_prompts: list[str] = Field(default_factory=list)
+    is_custom_topic: bool = False
 
 
 class WizardCompetitorRow(BaseModel):
@@ -87,19 +104,41 @@ class RunAuditRequest(BaseModel):
     brand_name: str
     brand_website: str
     industry: str = ""
-    competitors: list[str] = Field(default_factory=list)
+    competitors: list[str] = Field(default_factory=list, max_length=10)
     max_urls: int = 40
     delay: float = 0.2
     out_base: str = "audit_output"
     ga4_property_id: str | None = None
     ga4_ai_channels: str | None = None
+    ga4_conversion_event_name: str = Field(
+        default="purchase",
+        min_length=1,
+        max_length=500,
+    )
     wizard_market_country: str = ""
     wizard_market_country_code: str = ""
+    wizard_prompt_locales: list[dict[str, Any]] = Field(default_factory=list)
     wizard_additional_markets: list[WizardAdditionalMarketRow] = Field(default_factory=list)
     wizard_products: list[WizardProductRow] = Field(default_factory=list)
-    wizard_competitors: list[WizardCompetitorRow] = Field(default_factory=list)
+    wizard_competitors: list[WizardCompetitorRow] = Field(default_factory=list, max_length=10)
     crawl_urls: list[str] | None = None
     notification_email: str | None = None
+    skip_prompt_probes: bool = False
+    # Always-on when competitors are configured; client values are overridden in the runner.
+    follow_on_competitor_crawl: bool = True
+
+    @field_validator("ga4_conversion_event_name")
+    @classmethod
+    def _validate_ga4_conversion_event_name(cls, value: str) -> str:
+        from api.conversion_events import (
+            ConversionEventParseError,
+            normalize_conversion_event_spec,
+        )
+
+        try:
+            return normalize_conversion_event_spec(value)
+        except ConversionEventParseError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 @app.get("/api/health")
@@ -138,8 +177,12 @@ def domain_suggest(q: str = "", limit: int = Query(12, ge=1, le=24)) -> list[dic
 
 
 @app.get("/api/audits/local")
-def audits_local() -> list[dict[str, Any]]:
-    return geo.list_primary_audits()
+def audits_local(
+    limit: int | None = Query(None, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict[str, Any]]:
+    """Metadata-only primary audit list. Use limit/offset for server-side paging."""
+    return geo.list_primary_audits(limit=limit, offset=offset)
 
 
 @app.get("/api/audits/latest")
@@ -181,31 +224,101 @@ def audit_report_html(audit_id: str, embed: bool = False) -> Response:
     if not embed:
         return FileResponse(report_path, media_type="text/html")
     html = report_path.read_text(encoding="utf-8", errors="replace")
+    html = geo.enrich_report_brand_visibility_from_citations(html, audit_dir)
+    html = geo.refresh_competitor_comparison_for_embed(html, audit_dir)
     html = geo.prepare_report_html_for_embed(html)
     return HTMLResponse(html, media_type="text/html")
 
 
 @app.get("/api/audits/{audit_id}/report.pdf")
-def audit_report_pdf(audit_id: str) -> Response:
+def audit_report_pdf(audit_id: str, section: str | None = None, sync: int = 0) -> Response:
+    """
+    Legacy sync PDF download. Prefer POST/GET ``/exports/pdf`` (async job).
+    Pass ``sync=1`` to force on-request generation (slow; for debugging).
+    """
     audit_dir = geo.resolve_audit_dir(audit_id)
-    report_path = audit_dir / "report.html"
-    if not report_path.is_file():
-        cr = geo.load_create_report()
-        try:
-            cr.generate_reports(audit_dir, None)
-        except Exception as exc:
-            raise HTTPException(404, f"report.html not found: {exc}") from exc
-    if not report_path.is_file():
-        raise HTTPException(404, "report.html not found")
-    from api.pdf_service import generate_report_pdf, pdf_filename_for_audit
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+
+    from api.export_jobs import artifact_path, get_pdf_export_status
+    from api.pdf_service import generate_audit_pdf, generate_section_pdf, pdf_filename_for_audit
+
+    if not sync:
+        status = get_pdf_export_status(audit_dir, section=section)
+        artifact = artifact_path(audit_dir, section)
+        if status.get("ready") and artifact.is_file():
+            filename = pdf_filename_for_audit(
+                audit_dir,
+                section=section.strip() if section and section.strip() else None,
+            )
+            return Response(
+                content=artifact.read_bytes(),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
 
     try:
-        pdf_bytes = generate_report_pdf(report_path)
+        if section and section.strip():
+            pdf_bytes = generate_section_pdf(audit_dir, section.strip())
+            filename = pdf_filename_for_audit(audit_dir, section=section.strip())
+        else:
+            pdf_bytes = generate_audit_pdf(audit_dir)
+            filename = pdf_filename_for_audit(audit_dir)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"PDF generation failed: {exc}") from exc
-    filename = pdf_filename_for_audit(audit_dir)
     return Response(
         content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/audits/{audit_id}/exports/pdf")
+def start_pdf_export(audit_id: str, section: str | None = None) -> dict:
+    """Enqueue PDF generation (Cloud Run Job or local thread)."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    from api.export_jobs import enqueue_pdf_export
+
+    try:
+        return enqueue_pdf_export(audit_dir, section=section)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not start PDF export: {exc}") from exc
+
+
+@app.get("/api/audits/{audit_id}/exports/pdf")
+def pdf_export_status(audit_id: str, section: str | None = None) -> dict:
+    """Poll PDF export status."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    from api.export_jobs import get_pdf_export_status
+
+    return get_pdf_export_status(audit_dir, section=section)
+
+
+@app.get("/api/audits/{audit_id}/exports/pdf/file")
+def pdf_export_file(audit_id: str, section: str | None = None) -> Response:
+    """Download a completed PDF export artifact."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    from api.export_jobs import artifact_path, get_pdf_export_status
+    from api.pdf_service import pdf_filename_for_audit
+
+    status = get_pdf_export_status(audit_dir, section=section)
+    artifact = artifact_path(audit_dir, section)
+    if not status.get("ready") or not artifact.is_file():
+        raise HTTPException(409, "PDF export is not ready yet")
+    filename = pdf_filename_for_audit(
+        audit_dir,
+        section=section.strip() if section and section.strip() else None,
+    )
+    return Response(
+        content=artifact.read_bytes(),
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -214,25 +327,56 @@ def audit_report_pdf(audit_id: str) -> Response:
 @app.get("/api/audits/{audit_id}/report-all-pages.html", response_model=None)
 def audit_report_all_pages_html(audit_id: str) -> Response:
     audit_dir = geo.resolve_audit_dir(audit_id)
-    report_path = audit_dir / "report.html"
-    if not report_path.is_file():
-        cr = geo.load_create_report()
-        try:
-            cr.generate_reports(audit_dir, None)
-        except Exception as exc:
-            raise HTTPException(404, f"report.html not found: {exc}") from exc
-    if not report_path.is_file():
-        raise HTTPException(404, "report.html not found")
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
 
+    from api.export_precompute import read_precomputed_full_html
     from api.html_service import generate_all_pages_html
 
     try:
-        html = generate_all_pages_html(audit_dir)
+        html = read_precomputed_full_html(audit_dir)
+        if html is None:
+            html = generate_all_pages_html(audit_dir)
     except Exception as exc:
         raise HTTPException(500, f"HTML generation failed: {exc}") from exc
 
     slug = audit_dir.name.replace("/", "-")
     filename = f"geo-report-{slug}-all-pages.html"
+    return Response(
+        content=html.encode("utf-8"),
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/audits/{audit_id}/report-section.html", response_model=None)
+def audit_report_section_html(audit_id: str, section: str) -> Response:
+    """Download a single report section as standalone HTML (current React layout)."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    from api.export_precompute import read_precomputed_section_html
+    from api.html_service import generate_section_html, resolve_export_section
+
+    target = resolve_export_section(section)
+    if not target:
+        raise HTTPException(400, f"Section is not available for download: {section}")
+
+    try:
+        html = read_precomputed_section_html(audit_dir, target)
+        if html is None:
+            slug, html = generate_section_html(audit_dir, target)
+        else:
+            slug = re.sub(r"[^\w\-]+", "-", target).strip("-") or "section"
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"HTML generation failed: {exc}") from exc
+
+    safe_audit = audit_dir.name.replace("/", "-")
+    filename = f"geo-report-{safe_audit}-{slug}.html"
     return Response(
         content=html.encode("utf-8"),
         media_type="text/html",
@@ -250,6 +394,114 @@ def audit_run_status(audit_id: str) -> dict[str, Any]:
         raise HTTPException(404, "No audit run in progress for this folder.")
     return status
 
+
+@app.get("/api/audits/{audit_id}/score-breakdown")
+def audit_score_breakdown(audit_id: str) -> dict[str, Any]:
+    """Return individual pillar scores parsed from report.html."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    return geo.load_integrated_scores(audit_dir)
+
+
+class AiImpactEstimateBody(BaseModel):
+    estimate: dict[str, Any]
+    run_id: str | None = None
+
+
+@app.put("/api/audits/{audit_id}/ai-impact-estimate")
+def save_ai_impact_estimate(audit_id: str, body: AiImpactEstimateBody) -> dict[str, Any]:
+    """Persist the latest Estimated AI impact payload for PDF/HTML exports."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    payload = dict(body.estimate)
+    if body.run_id:
+        payload["_run_id"] = body.run_id
+    path = audit_dir / "ai_impact_estimate.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"ok": True, "path": str(path.name)}
+
+
+class TrackCompetitorBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    website: str = Field(default="", max_length=500)
+
+
+@app.get("/api/audits/{audit_id}/competitors/comparison")
+def competitor_comparison(audit_id: str) -> dict[str, Any]:
+    """Return pillar scores for brand + competitors from comparison.json."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    try:
+        return geo.load_competitive_comparison(audit_dir)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not load competitor comparison: {exc}") from exc
+
+
+@app.post("/api/audits/{audit_id}/competitors/track")
+def track_audit_competitor(audit_id: str, body: TrackCompetitorBody) -> dict[str, Any]:
+    """Add a detected visibility competitor to this audit's saved config."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    try:
+        return geo.track_competitor_config(
+            audit_dir,
+            name=body.name,
+            website=body.website,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, f"Could not read audit configuration: {exc}") from exc
+    except ValueError as exc:
+        status_code = 409 if "maximum" in str(exc).lower() else 400
+        raise HTTPException(status_code, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Could not save audit configuration: {exc}") from exc
+
+
+@app.post("/api/audits/{audit_id}/competitors/crawl")
+def crawl_audit_competitors(audit_id: str) -> dict[str, Any]:
+    """Crawl configured competitor sites into this audit folder (no primary re-crawl)."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    from api.audit_runner import start_competitor_crawl
+
+    try:
+        return start_competitor_crawl(audit_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/audits/{audit_id}/competitors/crawl-status")
+def competitor_crawl_status(audit_id: str) -> dict[str, Any]:
+    """Return the latest competitor-crawl job status for this audit."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    status = geo.reconcile_competitor_crawl_status(audit_dir)
+    if status is None:
+        has_comparison = (audit_dir / "comparison.json").is_file()
+        return {
+            "status": "idle",
+            "audit_dir": geo.audit_dir_api_rel(audit_dir),
+            "job_type": "competitor_crawl",
+            "seen": True,
+            "has_comparison": has_comparison,
+            "archives": geo.list_competitor_crawl_archives(audit_dir),
+        }
+    return {
+        **status,
+        "has_comparison": (audit_dir / "comparison.json").is_file(),
+        "archives": geo.list_competitor_crawl_archives(audit_dir),
+    }
+
+
+@app.post("/api/audits/{audit_id}/competitors/crawl-status/seen")
+def competitor_crawl_mark_seen(audit_id: str) -> dict[str, Any]:
+    """Mark the latest completed competitor crawl as viewed in the report UI."""
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    return geo.mark_competitor_crawl_seen(audit_dir)
 
 @app.get("/api/audits/{audit_id:path}")
 def audit_detail(audit_id: str) -> dict[str, Any]:
@@ -321,7 +573,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
     if not primary:
         raise HTTPException(400, "Invalid brand website URL")
 
-    competitors = [c.strip() for c in body.competitors if c.strip()][:12]
+    competitors = [c.strip() for c in body.competitors if c.strip()][:10]
     user = current_user(request)
     owner_email = user["email"] if user else None
 
@@ -338,6 +590,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
             ga4_cred_path = str(ga4_cred_temp) if ga4_cred_temp is not None else None
 
             adir = geo.audit_dir_for_run(body.out_base, primary)
+            notify = (body.notification_email or "").strip() or None
             geo.seed_audit_dir_from_wizard(
                 adir,
                 primary_url=primary,
@@ -351,7 +604,11 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 competitors_detail=[c.model_dump() for c in body.wizard_competitors],
                 ga4_property_id=ga4_prop or "",
                 ga4_ai_channel_names=ga4_ch or "",
+                ga4_conversion_event_name=body.ga4_conversion_event_name,
                 crawl_urls=body.crawl_urls or None,
+                preserve_prompt_data=body.skip_prompt_probes,
+                prompt_locales=list(body.wizard_prompt_locales or []),
+                notification_email=notify,
             )
             rel = geo.audit_dir_api_rel(adir)
             yield f"data: {json.dumps({'type': 'started', 'audit_dir': rel})}\n\n"
@@ -389,32 +646,40 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 elif not stream_progress:
                     yield f"data: {json.dumps({'type': 'log', 'line': line})}\n\n"
             adir = geo.audit_dir_for_run(body.out_base, primary)
-            if stream_progress and progress_state is not None:
-                from api.audit_progress import advance_to_step, complete_all_steps
-                from api.prompt_performance import run_post_audit_prompt_insights
+            prompt_job_queued = False
+            if not body.skip_prompt_probes:
+                from api.prompt_jobs import enqueue_prompt_job
 
-                progress_state = advance_to_step(
+                queued = enqueue_prompt_job(
+                    adir,
+                    mode="post_audit",
+                    report_mode=True,
+                    completion={
+                        "primary": primary,
+                        "competitors": competitors,
+                        "owner_email": owner_email,
+                        "notification_email": notify,
+                        "brand_name": body.brand_name,
+                    },
+                )
+                prompt_job_queued = True
+                if stream_progress and progress_state is not None:
+                    from api.audit_progress import advance_to_step
+
+                    progress_state = advance_to_step(
+                        progress_state,
+                        "prompt_probes",
+                        "AI prompt probe job queued…",
+                    )
+                    yield f"data: {json.dumps({'type': 'progress', **progress_state.to_payload()})}\n\n"
+            elif stream_progress and progress_state is not None:
+                from api.audit_progress import complete_all_steps
+
+                progress_state = complete_all_steps(
                     progress_state,
-                    "prompt_probes",
-                    "Running AI prompt probes for share of voice…",
+                    detail="Audit complete; prompt results preserved",
                 )
                 yield f"data: {json.dumps({'type': 'progress', **progress_state.to_payload()})}\n\n"
-
-                def _on_post_audit_step(step_id: str, detail: str) -> None:
-                    nonlocal progress_state
-                    progress_state = advance_to_step(progress_state, step_id, detail)
-
-                run_post_audit_prompt_insights(
-                    adir, report_mode=True, on_step=_on_post_audit_step
-                )
-                yield f"data: {json.dumps({'type': 'progress', **progress_state.to_payload()})}\n\n"
-
-                progress_state = complete_all_steps(progress_state, detail="Audit complete")
-                yield f"data: {json.dumps({'type': 'progress', **progress_state.to_payload()})}\n\n"
-            else:
-                from api.prompt_performance import run_post_audit_prompt_insights
-
-                run_post_audit_prompt_insights(adir, report_mode=True)
 
             summary = geo.load_audit_summary(adir)
             overall = float(summary.get("overall_score") or 0)
@@ -422,18 +687,27 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 resolved = geo.resolve_overall_score_for_audit(adir)
                 if resolved is not None:
                     overall = resolved
-            geo.archive_add_run(
-                primary_url=primary,
-                audit_dir=adir,
-                overall=overall,
-                competitors=competitors,
-                owner_email=owner_email,
-                brand_name=body.brand_name or None,
-            )
+            if not prompt_job_queued:
+                from api.audit_runner import finalize_audit_run
+
+                finalize_audit_run(
+                    audit_dir=adir,
+                    primary=primary,
+                    competitors=competitors,
+                    owner_email=owner_email,
+                    notification_email=notify,
+                    brand_name=body.brand_name or "",
+                    progress_state=progress_state,
+                )
+            if competitors:
+                from api.audit_runner import _queue_follow_on_competitor_crawl
+
+                _queue_follow_on_competitor_crawl(adir, competitors)
             payload = {
                 "type": "done",
                 "audit_dir": geo.audit_dir_api_rel(adir),
                 "overall_score": overall if overall > 0 else summary.get("overall_score"),
+                "prompt_job_queued": prompt_job_queued,
             }
             yield f"data: {json.dumps(payload)}\n\n"
         except Exception as exc:
@@ -465,6 +739,21 @@ def run_audit_background(body: RunAuditRequest, request: Request) -> dict[str, A
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
+
+
+_CONNECTOR_LOGO_DIR = geo.REPO_ROOT / "assets" / "logos"
+
+
+@app.get("/assets/logos/{filename}")
+def connector_logo(filename: str) -> FileResponse:
+    candidate = (_CONNECTOR_LOGO_DIR / filename).resolve()
+    try:
+        candidate.relative_to(_CONNECTOR_LOGO_DIR.resolve())
+    except ValueError:
+        raise HTTPException(404) from None
+    if not candidate.is_file():
+        raise HTTPException(404)
+    return FileResponse(candidate)
 
 
 _STATIC_DIR = geo.REPO_ROOT / "web" / "dist"

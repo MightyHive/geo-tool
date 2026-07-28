@@ -31,11 +31,14 @@ RUN playwright install chromium --with-deps
 COPY backend ./backend
 COPY assets ./assets
 COPY api ./api
+COPY jobs ./jobs
 COPY skills ./skills
 COPY scripts/build_prompt_performance_section.py ./scripts/
+# AI-impact GA4 channel export (research sandbox otherwise excluded)
+COPY research/paths.py ./research/paths.py
+COPY research/ga4 ./research/ga4
 
 COPY --from=web-build /build/web/dist ./web/dist
-
 RUN mkdir -p /var/geo-data/audit_output /var/geo-data/audit_archive
 
 EXPOSE 8080

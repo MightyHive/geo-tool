@@ -19,6 +19,13 @@ export function countryCodeForName(name: string): string {
   return code ? code.toUpperCase() : "";
 }
 
+/** English display name for an ISO 3166-1 alpha-2 code (e.g. BE → Belgium). */
+export function countryNameForCode(code: string): string {
+  const cc = code.trim().toUpperCase();
+  if (!cc) return "";
+  return countries.getName(cc, "en", { select: "official" }) || cc;
+}
+
 export function filterCountries(query: string, limit = 12): string[] {
   const q = query.trim().toLowerCase();
   if (!q) return [...COUNTRY_NAMES].slice(0, limit);

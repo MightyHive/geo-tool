@@ -7,6 +7,7 @@ import {
   fetchLocalAudits,
 } from "../api/client";
 import { AuditListCard } from "../components/AuditListCard";
+import { PageLoading } from "../components/PageLoading";
 import { Card, CardDescription, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/PageHeader";
 import { auditSlug, BUNDLED_SAMPLE_AUDIT_SLUG } from "../lib/auditPath";
@@ -65,8 +66,8 @@ export function LandingPage() {
 
   if (authLoading) {
     return (
-      <div className="page-container flex justify-center py-24">
-        <Loader2 className="w-8 h-8 animate-spin text-brand-accent" />
+      <div className="page-container">
+        <PageLoading label="Loading…" />
       </div>
     );
   }
@@ -157,7 +158,10 @@ export function LandingPage() {
                   key={a.id}
                   audit={a}
                   index={index}
-                  onOpen={() => navigate(`/report/${a.id}/summary`)}
+                  onOpen={() => {
+                  if (a.still_running) return;
+                  navigate(`/report/${a.id}/summary`);
+                }}
                 />
               ))}
             </div>

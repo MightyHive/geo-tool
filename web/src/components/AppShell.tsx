@@ -4,7 +4,6 @@ import {
   Database,
   FileBarChart,
   LayoutDashboard,
-  Loader2,
   LogOut,
   Menu,
   Plus,
@@ -13,6 +12,7 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { fetchConfig } from "../api/client";
 import { loadAuditRunDraft } from "../lib/wizardDraft";
+import { PageLoading } from "./PageLoading";
 import { cn } from "../lib/utils";
 
 const navLinks = [
@@ -118,6 +118,9 @@ export function AppShell() {
   const { mode, user, loading, logoutAvailable, logout } = useAuth();
   const location = useLocation();
   const isReportView = location.pathname.startsWith("/report/");
+  const searchParams = new URLSearchParams(location.search);
+  const viewingAuditProgress =
+    location.pathname === "/audit/new" && searchParams.get("step") === "8";
   const [envLabel, setEnvLabel] = useState<string>();
   const [desktopExpanded, setDesktopExpanded] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -139,11 +142,8 @@ export function AppShell() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-brand-light flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-brand-accent mx-auto mb-4" />
-          <p className="text-gray-600">Loading…</p>
-        </div>
+      <div className="min-h-screen bg-brand-light">
+        <PageLoading label="Loading…" />
       </div>
     );
   }
@@ -232,12 +232,12 @@ export function AppShell() {
             isReportView ? "overflow-hidden flex flex-col" : "overflow-auto",
           )}
         >
-          {activeAuditRun && !isReportView && (
+          {activeAuditRun && !isReportView && !viewingAuditProgress && (
             <div className="mx-4 md:mx-6 mt-4 alert-info text-sm">
               Audit in progress for{" "}
               <strong>{activeAuditRun.brandName || activeAuditRun.brandWebsite || "your site"}</strong>
               . You can leave this page — it runs in the background.{" "}
-              <Link to={`/audit/new?step=7`} className="underline font-medium">
+              <Link to="/audit/new?step=8" className="underline font-medium">
                 View progress
               </Link>
             </div>

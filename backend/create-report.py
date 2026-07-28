@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full GEO audit pipeline: run crawl-site.py (primary + optional competitors), then
+Full GEO audit pipeline: run crawl-site.py (primary + competitors when configured), then
 synthesize report.html and report_slides.html.
 
   python3 create-report.py https://example.com --competitor https://peer.com
@@ -56,6 +56,7 @@ from report_copy import (
 from geo_market import resolve_primary_market
 
 from geo_app_env import ASSETS_ROOT, BACKEND_ROOT, REPO_ROOT
+from report_score import format_report_score, score_label as _score_label, score_tone as _tone_class
 
 CRAWL_SCRIPT = BACKEND_ROOT / "crawl-site.py"
 
@@ -644,7 +645,7 @@ def _cli_write_onboarding_context(audit_dir: Path, args: argparse.Namespace) -> 
     except Exception as e:
         print(f"Warning: --accept-ai-defaults could not generate Gemini prompts ({e})", file=sys.stderr)
         prompts = []
-    comp_urls = [str(c).strip() for c in (args.competitors or []) if str(c).strip()][:5]
+    comp_urls = [str(c).strip() for c in (args.competitors or []) if str(c).strip()][:10]
     comp_detail: list[dict[str, str]] = []
     for u in comp_urls:
         raw = u if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", u) else "https://" + u
@@ -1802,7 +1803,7 @@ def _score_band(score: float) -> str:
 
 def _td_score(score: float, *, strong: bool = False) -> str:
     b = _score_band(score)
-    inner = f"{score:.1f}"
+    inner = format_report_score(score)
     if strong:
         inner = f"<strong>{inner}</strong>"
     # Legacy helper (used by competitor table); redesigned markup uses score pills.
@@ -1812,7 +1813,7 @@ def _td_score(score: float, *, strong: bool = False) -> str:
 def _td_score_pill(score: float, *, strong: bool = False) -> str:
     """Table cell with score pill (matches Summary table styling)."""
     pill = _pill_class(score)
-    inner = f'<span class="score-pill {pill}">{score:.1f}</span>'
+    inner = f'<span class="score-pill {pill}">{format_report_score(score)}</span>'
     if strong:
         inner = f"<strong>{inner}</strong>"
     return f"<td>{inner}</td>"
@@ -1869,7 +1870,7 @@ def _peer_diff_bullets(
     *,
     delta: float = 4.0,
 ) -> tuple[list[tuple[str, str, str]], list[str]]:
-    """Green = peer ahead (dedupe_key, body_html, links_html); red = plain sentences (peer behind)."""
+    """Return peer-ahead detail rows followed by primary-brand-ahead summaries."""
     green: list[tuple[str, str, str]] = []
     red: list[str] = []
     pk = {c.key: c for c in primary_cats}
@@ -2285,17 +2286,6 @@ def _key_findings_section_html(
     </section>"""
 
 
-def _tone_class(score: float) -> str:
-    """Map score 0-100 to use_this_design colour classes."""
-    if score >= 75:
-        return "green"
-    if score >= 60:
-        return "blue"
-    if score >= 40:
-        return "yellow"
-    return "red"
-
-
 def _pill_class(score: float) -> str:
     t = _tone_class(score)
     return {"green": "pill-green", "blue": "pill-blue", "yellow": "pill-yellow", "red": "pill-red"}[t]
@@ -2307,7 +2297,7 @@ def _sov_head_score_html(score: float) -> str:
     band = _score_label(score)
     return (
         f'<span class="sov-head-metrics">'
-        f'<span class="sov-head-score score-tone-{tone}">{score:.1f}</span>'
+        f'<span class="sov-head-score score-tone-{tone}">{format_report_score(score)}</span>'
         f'<span class="sov-head-band score-tone-{tone}">{html.escape(band)}</span>'
         f"</span>"
     )
@@ -2319,7 +2309,7 @@ def _category_section_head_suffix(score: float, weight: float) -> str:
     band = _score_label(score)
     return (
         f'<span class="category-head-meta">'
-        f'<span class="category-head-score score-tone-{tone}">{score:.1f}</span>'
+        f'<span class="category-head-score score-tone-{tone}">{format_report_score(score)}</span>'
         f'<span class="category-head-band score-tone-{tone}">{html.escape(band)}</span>'
         f'<span class="category-head-weight">({weight:.0f}%)</span>'
         f"</span>"
@@ -2787,7 +2777,7 @@ def _ga4_sessions_trend_chart_html(
     dim_esc = html.escape(_ga4_channel_dim_label(g))
     safe_sessions_trend = json.dumps(sessions_trend, ensure_ascii=False)
     return f"""
-<p class="table-note"><strong>Monthly — sessions</strong> (calendar month × <code>{dim_esc}</code> vs configured AI channel names; x-axis labels like Jan 2025). <strong>Partial current month is excluded</strong> so trends are not distorted by incomplete data.</p>
+<p class="table-note"><strong>AI sessions over time</strong></p>
 <div class="chart-panel" style="min-height:280px"><canvas id="{html.escape(canvas_id, quote=True)}" aria-label="AI channel sessions and AI percent of all sessions"></canvas></div>
 <script type="application/json" id="{html.escape(data_el_id, quote=True)}">{safe_sessions_trend}</script>
 """
@@ -2891,38 +2881,19 @@ def _ga4_conversion_rate_cards_html(ga4: dict[str, Any]) -> str:
 
     all_c = cr.get("all_channels") if isinstance(cr.get("all_channels"), dict) else {}
     ai_c = cr.get("ai") if isinstance(cr.get("ai"), dict) else {}
-    ai_mode = str(ai_c.get("mode") or "")
-    if ai_mode == "known_ai_sources":
-        ai_title = "Conversion rate for AI traffic"
-        ai_note = (
-            "Purchases ÷ sessions for session sources matching known AI/LLM referrers "
-            "(no dedicated AI channel configured)."
-        )
-    elif ai_mode == "ai_channel":
-        ai_title = "Conversion rate for AI channel"
-        ai_note = "Purchases ÷ sessions where your configured AI channel bucket applies."
-    else:
-        ai_title = "Conversion rate for AI channel"
-        ai_note = ""
+    ai_title = "Conversion rate for AI traffic"
 
     all_rate = _fmt_rate(all_c)
     ai_rate = _fmt_rate(ai_c)
-    all_sess = all_c.get("sessions", "")
-    all_purch = all_c.get("purchases", "")
-    ai_sess = ai_c.get("sessions", "")
-    ai_purch = ai_c.get("purchases", "")
-
     return f"""
 <div class="ga4-conv-rate-row" style="display:flex;flex-wrap:wrap;gap:16px;margin:8px 0 20px">
   <div class="ga4-conv-card" style="flex:1 1 220px;padding:14px 16px;border:1px solid #e4e2de;border-radius:10px;background:#faf9f7">
     <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#666">Conversion rate (average)</div>
     <div style="font-size:28px;font-weight:700;color:#0d0d0d;margin:6px 0 4px">{html.escape(all_rate)}</div>
-    <p class="table-note" style="margin:0">All channels · {html.escape(str(all_purch))} purchases / {html.escape(str(all_sess))} sessions</p>
   </div>
   <div class="ga4-conv-card" style="flex:1 1 220px;padding:14px 16px;border:1px solid #e4e2de;border-radius:10px;background:#faf9f7">
     <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#666">{html.escape(ai_title)}</div>
     <div style="font-size:28px;font-weight:700;color:#0d0d0d;margin:6px 0 4px">{html.escape(ai_rate)}</div>
-    <p class="table-note" style="margin:0">{html.escape(ai_note)} {html.escape(str(ai_purch))} purchases / {html.escape(str(ai_sess))} sessions</p>
   </div>
 </div>
 """
@@ -2931,19 +2902,6 @@ def _ga4_conversion_rate_cards_html(ga4: dict[str, Any]) -> str:
 def _ga4_monthly_sessions_inline_chart_html(ga4: dict[str, Any] | None) -> str:
     """Deprecated: use _ga4_summary_sessions_preview_html."""
     return _ga4_summary_sessions_preview_html(ga4)
-
-
-def _score_label(score: float) -> str:
-    """Verbal rating band for the overall score."""
-    if score >= 90:
-        return "Excellent"
-    if score >= 75:
-        return "Good"
-    if score >= 60:
-        return "Moderate"
-    if score >= 40:
-        return "Weak"
-    return "Poor"
 
 
 def _geo_readiness_tier_display(score: float) -> str:
@@ -3079,13 +3037,7 @@ def _executive_summary_paragraph_html(
     n = len(pages)
     page_noun = "page" if n == 1 else "pages"
 
-    impactful_raw = client_friendly_text(
-        _most_impactful_finding_line(priorities, working, overall, categories)
-    )
-    impactful_plain = _executive_plain_finding(
-        _plain_detail_for_executive(impactful_raw) if ": " in impactful_raw else impactful_raw
-    ).strip().rstrip(".")
-    chain = _executive_plain_chain(priorities, impactful_plain)
+    del priorities, working, overall
 
     fe = ""
     if isinstance(pages, list):
@@ -3139,21 +3091,18 @@ def _executive_summary_paragraph_html(
             "then re-run if you expected more pages."
         )
 
-    if not impactful_plain:
+    if not categories:
         return opening + _cap_suffix()
 
-    parts: list[str] = [opening]
-    p0, b0 = chain[0]
-    parts.append(_executive_gap_sentence_html(p0, b0))
-
-    if len(chain) >= 2:
-        p1, b1 = chain[1]
-        parts.append(_executive_follow_sentence_html(p1, b1, position=2))
-    if len(chain) >= 3:
-        p2, b2 = chain[2]
-        parts.append(_executive_follow_sentence_html(p2, b2, position=3))
-
-    return " ".join(parts) + _cap_suffix()
+    ordered = sorted(categories, key=lambda category: category.score)
+    weakest = ordered[0]
+    strongest = ordered[-1]
+    finding = (
+        f"The strongest assessed area is <strong>{html.escape(strongest.title)}</strong> "
+        f"at {strongest.score:.0f}/100, while <strong>{html.escape(weakest.title)}</strong> "
+        f"at {weakest.score:.0f}/100 is the largest current readiness gap."
+    )
+    return f"{opening} {finding}" + _cap_suffix()
 
 
 def _brand_visibility_platform_hits(audit: dict[str, Any] | None) -> dict[str, bool]:
@@ -3438,7 +3387,7 @@ def _platform_readiness_scores(
         },
         {
             "key": "copilot",
-            "name": "Bing Copilot",
+            "name": "Microsoft Copilot",
             "icon": "🧭",
             "score": cop_score,
             "gap": _gap("copilot"),
@@ -3469,137 +3418,180 @@ def _eeat_breakdown(
     agents: list[AgentCategoryResult],
     ai_crawler_score: float,
 ) -> list[dict[str, Any]]:
-    """
-    Produce an E-E-A-T breakdown using only artifacts we actually crawl.
-    This is a heuristic proxy until we add full on-page extraction.
-    """
-    summ = audit.get("summary") or {}
-    any_json_ld = bool(summ.get("any_json_ld"))
-    any_same_as = bool(summ.get("any_same_as"))
-    any_og = bool(summ.get("any_og_image"))
-    tls_mode = ((audit.get("tls") or {}).get("mode") or "").lower()
-    https_ok = tls_mode in ("certifi", "stdlib_default")
-    llms_live = bool(((audit.get("llms_txt") or {}).get("exists")))
+    """Score each E-E-A-T criterion directly from sampled website content."""
+    del agents, ai_crawler_score  # E-E-A-T cards no longer blend unrelated category scores.
+    pages = [
+        page for page in (audit.get("pages") or [])
+        if isinstance(page, dict) and int(page.get("http_status") or 0) == 200
+    ]
+    page_count = len(pages)
 
-    by = {a.key: a for a in agents}
-    tech = by["technical_setup"].score
-    brand = _sub_score(agents, "ai_visibility", "brand_visibility")
-    content = by["content_structure"].score
+    legacy_patterns: dict[str, tuple[str, ...]] = {
+        "experience": (r"\b(?:we|our team|i)\b.{0,100}\b(?:tested|used|built|found|learned|implemented)\b", r"\bcase study\b"),
+        "expertise": (r"\b(?:expert|qualified|certified|research|study|methodology|according to)\b",),
+        "authoritativeness": (r"\b(?:award|recognised|recognized|featured in|trusted by|accredited by|member of)\b",),
+        "trust": (r"\b(?:privacy policy|terms and conditions|contact us|reviewed by|last updated|sources?|references?)\b",),
+    }
 
-    def clamp(x: float) -> float:
-        return max(0.0, min(100.0, x))
+    def page_evidence(page: dict[str, Any], criterion: str) -> list[str]:
+        signals = page.get("content_signals") if isinstance(page.get("content_signals"), dict) else {}
+        evidence = signals.get("eeat_evidence") if isinstance(signals.get("eeat_evidence"), dict) else {}
+        snippets = [
+            str(snippet).strip()
+            for snippet in (evidence.get(criterion) or [])
+            if str(snippet).strip()
+        ]
+        if snippets:
+            return snippets
+        # Compatibility for audits created before criterion-specific capture.
+        excerpt = str(signals.get("representative_excerpt") or "").strip()
+        if excerpt and any(re.search(pattern, excerpt, flags=re.IGNORECASE) for pattern in legacy_patterns[criterion]):
+            return [excerpt]
+        return []
 
-    # These map to signals we can defend with current crawl artifacts.
-    experience = clamp(0.55 * content + (10 if any_og else 0) + (10 if any_json_ld else 0))
-    expertise = clamp(0.45 * content + (15 if any_json_ld else 0) + (5 if llms_live else 0))
-    authoritativeness = clamp(0.60 * brand + (15 if any_same_as else 0))
-    trust = clamp(0.55 * tech + 0.25 * ai_crawler_score + (10 if https_ok else 0) + (5 if llms_live else 0))
+    def signal_ratio(key: str) -> float:
+        if not page_count:
+            return 0.0
+        matched = 0
+        for page in pages:
+            content = page.get("content_signals") if isinstance(page.get("content_signals"), dict) else {}
+            signals = content.get("eeat_signals") if isinstance(content.get("eeat_signals"), dict) else {}
+            if signals.get(key):
+                matched += 1
+        return matched / page_count
 
-    boost_experience: list[str] = []
-    if any_og:
-        boost_experience.append("share/preview images on sampled pages (+10)")
-    if any_json_ld:
-        boost_experience.append("structured data snippets (+10)")
-    exp_tail = (
-        "This crawl applied: " + "; ".join(boost_experience) + "."
-        if boost_experience
-        else "This crawl did not flag those image or structured-data bonuses on sampled URLs, so only the content blend counted."
+    def evidence_metrics(criterion: str) -> tuple[float, float, list[dict[str, str]]]:
+        if not page_count:
+            return 0.0, 0.0, []
+        evidence_pages = 0
+        total_snippets = 0
+        examples: list[dict[str, str]] = []
+        for page in pages:
+            snippets = page_evidence(page, criterion)
+            if not snippets:
+                continue
+            evidence_pages += 1
+            total_snippets += len(snippets)
+            for snippet in snippets:
+                examples.append({
+                    "url": str(page.get("final_url") or page.get("url") or "").strip(),
+                    "title": str(page.get("page_title") or page.get("final_url") or page.get("url") or "Sampled page").strip(),
+                    "snippet": snippet[:420],
+                })
+        coverage = evidence_pages / page_count
+        density = min(1.0, total_snippets / max(1.0, page_count * 1.5))
+        return coverage, density, examples[:3]
+
+    editorial_ratio = (
+        sum(
+            1 for page in pages
+            if isinstance(page.get("content_signals"), dict)
+            and page["content_signals"].get("has_editorial_content")
+        ) / page_count
+        if page_count else 0.0
     )
 
-    boost_expertise: list[str] = []
-    if any_json_ld:
-        boost_expertise.append("structured data present (+15)")
-    if llms_live:
-        boost_expertise.append("published llms.txt (+5)")
-    exp_tail2 = (
-        "This crawl applied: " + "; ".join(boost_expertise) + "."
-        if boost_expertise
-        else "This crawl did not add the structured-data or llms.txt bonuses, so only the content blend counted."
+    exp_cov, exp_density, exp_examples = evidence_metrics("experience")
+    expertise_cov, expertise_density, expertise_examples = evidence_metrics("expertise")
+    authority_cov, authority_density, authority_examples = evidence_metrics("authoritativeness")
+    trust_cov, trust_density, trust_examples = evidence_metrics("trust")
+
+    experience = _clamp100(
+        45.0 * exp_cov
+        + 25.0 * exp_density
+        + 20.0 * signal_ratio("process")
+        + 10.0 * (editorial_ratio if exp_examples else 0.0)
+    )
+    expertise = _clamp100(
+        35.0 * expertise_cov
+        + 20.0 * expertise_density
+        + 15.0 * signal_ratio("author")
+        + 15.0 * signal_ratio("credentials")
+        + 15.0 * signal_ratio("sources")
+    )
+    authoritativeness = _clamp100(
+        55.0 * authority_cov
+        + 25.0 * authority_density
+        + 15.0 * signal_ratio("recognition")
+        + 5.0 * (editorial_ratio if authority_examples else 0.0)
+    )
+    trust = _clamp100(
+        35.0 * trust_cov
+        + 15.0 * trust_density
+        + 15.0 * signal_ratio("policy")
+        + 10.0 * signal_ratio("contact")
+        + 10.0 * signal_ratio("sources")
+        + 10.0 * signal_ratio("review_date")
+        + 5.0 * signal_ratio("author")
     )
 
-    auth_tail = (
-        "This crawl found verified profile links (sameAs) in structured data (+15)."
-        if any_same_as
-        else "This crawl did not find sameAs profile links in structured data, so only the brand-visibility blend counted."
-    )
-
-    trust_bits: list[str] = []
-    if https_ok:
-        trust_bits.append("HTTPS/TLS looked healthy (+10)")
-    if llms_live:
-        trust_bits.append("llms.txt present (+5)")
-    trust_tail = (
-        "This crawl also applied: " + "; ".join(trust_bits) + "."
-        if trust_bits
-        else "No HTTPS or llms.txt bonuses were added beyond the technical and crawler blends."
-    )
+    def result(
+        *,
+        name: str,
+        criterion: str,
+        tagline: str,
+        meaning: str,
+        score: float,
+        examples: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        if examples:
+            evidence_note = (
+                f"{len(examples)} example snippet{'s' if len(examples) != 1 else ''} "
+                f"from {page_count} sampled page{'s' if page_count != 1 else ''} supported this score."
+            )
+        else:
+            evidence_note = (
+                f"No matching {criterion} content was found in the "
+                f"{page_count} sampled page{'s' if page_count != 1 else ''}."
+                if page_count
+                else "No successfully crawled pages were available for content evidence."
+            )
+        return {
+            "name": name,
+            "tagline": tagline,
+            "what_it_means": meaning,
+            "how_scored": (
+                f"A direct 0–100 assessment of how strongly and consistently the sampled website content "
+                f"demonstrates {criterion}. Unrelated technical or category scores are not included."
+            ),
+            "score": round(score, 1),
+            "evidence": examples,
+            "evidence_note": evidence_note,
+        }
 
     return [
-        {
-            "name": "Experience",
-            "tagline": "Does the content feel grounded in real use or practice?",
-            "what_it_means": (
-                "Experience is about whether pages read like they were written by people who have actually "
-                "done the job, used the product, or lived the situation—not just generic filler. Search and AI "
-                "systems reward depth, specificity, and helpful detail that sounds first-hand."
-            ),
-            "how_scored": (
-                "We take 55% of your overall content quality & structure score from this audit (that score "
-                "already mixes several automated content checks). We then add up to 10 points when sampled pages "
-                "had social preview images, and up to 10 more when structured data appeared—both tend to travel "
-                "with richer, more complete pages. "
-                + exp_tail
-            ),
-            "score": round(experience, 1),
-        },
-        {
-            "name": "Expertise",
-            "tagline": "Does the site show clear subject-matter depth?",
-            "what_it_means": (
-                "Expertise is how convincingly you demonstrate knowledge: clear explanations, useful structure, "
-                "and cues that a knowledgeable author or organization stands behind the content. AI cites sources "
-                "that look like they know the topic end-to-end."
-            ),
-            "how_scored": (
-                "We take 45% of your content quality & structure score, then add 15 points when structured "
-                "data was detected (it helps machines understand entities and facts) and 5 points when a live "
-                "llms.txt file exists (a small discoverability signal for AI tools). "
-                + exp_tail2
-            ),
-            "score": round(expertise, 1),
-        },
-        {
-            "name": "Authoritativeness",
-            "tagline": "Can others (and machines) verify who you are?",
-            "what_it_means": (
-                "Authoritativeness is recognition and corroboration: consistent branding, visible footprint, "
-                "and links that tie your site to trusted profiles elsewhere. When those line up, readers and "
-                "models treat you as a real entity worth citing."
-            ),
-            "how_scored": (
-                "We take 60% of your brand / entity visibility score from this audit, then add 15 points when "
-                "structured data includes sameAs links to official profiles (for example social or knowledge-base "
-                "URLs you control). "
-                + auth_tail
-            ),
-            "score": round(authoritativeness, 1),
-        },
-        {
-            "name": "Trust",
-            "tagline": "Do the basics feel safe, maintained, and accessible?",
-            "what_it_means": (
-                "Trust covers the hygiene people notice before they read a word: secure browsing, pages that load "
-                "without errors, and sensible rules for bots. It is not a legal or financial audit—just whether "
-                "automated checks saw a well-maintained, reachable site."
-            ),
-            "how_scored": (
-                "We blend 55% of your technical setup score with 25% of your AI crawler access score, "
-                "then add 10 points when HTTPS/TLS looked healthy in this crawl and 5 points when llms.txt "
-                "was present. "
-                + trust_tail
-            ),
-            "score": round(trust, 1),
-        },
+        result(
+            name="Experience",
+            criterion="first-hand experience",
+            tagline="Does the content show real use, testing or practice?",
+            meaning="Looks for first-hand observations, testing, case studies, methods, processes and specific outcomes.",
+            score=experience,
+            examples=exp_examples,
+        ),
+        result(
+            name="Expertise",
+            criterion="subject-matter expertise",
+            tagline="Does the content demonstrate credible subject knowledge?",
+            meaning="Looks for named authors or reviewers, relevant credentials, research, sources, methodology and detailed explanation.",
+            score=expertise,
+            examples=expertise_examples,
+        ),
+        result(
+            name="Authoritativeness",
+            criterion="authoritativeness",
+            tagline="Does the content establish recognised authority?",
+            meaning="Looks for awards, accreditation, trusted partnerships, external recognition and clear evidence of standing in the field.",
+            score=authoritativeness,
+            examples=authority_examples,
+        ),
+        result(
+            name="Trust",
+            criterion="trust and transparency",
+            tagline="Does the content make the publisher accountable and reliable?",
+            meaning="Looks for policies, contact details, sourcing, disclosures, named review and visible publication or update information.",
+            score=trust,
+            examples=trust_examples,
+        ),
     ]
 
 
@@ -5675,18 +5667,51 @@ def score_google_ai_search_success(
     page_exp_theme = _clamp100(0.52 * perf_score + 0.48 * ssr_score)
     entity_eco_theme = _clamp100(0.58 * ent + 0.42 * brand)
 
-    score = (
-        22.0 * content_theme
-        + 18.0 * crawl_theme
-        + 14.0 * structured
-        + 10.0 * snip
-        + 10.0 * page_exp_theme
-        + 7.0 * og
-        + 7.0 * entity_eco_theme
-        + 7.0 * vis
-        + 7.0 * fr
-    ) / 100.0
+    themes = [
+        ("content_quality", "Content quality", 22.0, content_theme,
+         "Titles, structured signals and server-rendered content give AI systems usable page context.",
+         "Improve page titles, explanatory content and server-rendered page context."),
+        ("crawl_index", "Crawl and index eligibility", 18.0, crawl_theme,
+         "The sampled site is accessible to search crawlers and key pages return successfully.",
+         "Resolve crawler access, indexing or non-200 response gaps on important pages."),
+        ("structured_data", "Structured data", 14.0, structured,
+         "Structured data helps Google identify page types and entities.",
+         "Add or validate relevant Schema.org markup on key templates."),
+        ("snippet_eligibility", "Snippet eligibility", 10.0, snip,
+         "Pages retain the signals needed to be eligible for search snippets.",
+         "Remove snippet restrictions and strengthen concise extractable answers."),
+        ("page_experience", "Page experience", 10.0, page_exp_theme,
+         "HTTPS, successful responses and raw HTML provide a sound page-experience baseline.",
+         "Validate Core Web Vitals and improve slow, unstable or client-rendered templates."),
+        ("multimodal", "Multimodal readiness", 7.0, og,
+         "Social preview metadata supplies reusable image and page context.",
+         "Improve Open Graph image, title and description coverage for important pages."),
+        ("entity_ecosystem", "Entity ecosystem", 7.0, entity_eco_theme,
+         "Brand and entity signals connect the site with its wider web presence.",
+         "Strengthen organisation identity, sameAs links and consistent third-party brand references."),
+        ("visit_quality", "Visit quality", 6.0, vis,
+         "The crawl found signals that support useful post-click visits.",
+         "Improve answer depth, navigation and landing-page usefulness for AI-referred visitors."),
+        ("freshness", "Freshness", 6.0, fr,
+         "The site exposes useful freshness or update signals.",
+         "Add accurate publication and modification dates, and keep priority content current."),
+    ]
+    score = sum(weight * theme_score for _, _, weight, theme_score, _, _ in themes) / 100.0
     score = _clamp100(score)
+
+    criteria: list[dict[str, Any]] = []
+    for key, title, weight, theme_score, positive, improvement in themes:
+        criteria.append(
+            {
+                "key": key,
+                "title": title,
+                "weight_pct": weight,
+                "score": round(_clamp100(theme_score), 1),
+                "strengths": [positive] if theme_score >= 60 else [],
+                "improvements": [improvement] if theme_score < 80 else [],
+            }
+        )
+    audit["_ai_search_success_criteria"] = criteria
 
     st = _unique_preserve(sn_s + vis_s + fr_s)
     im = _unique_preserve(sn_i + vis_i + fr_i)
@@ -6294,22 +6319,671 @@ def _load_audit_for_comparison_row(row: dict[str, Any]) -> dict[str, Any]:
     return _audit_from_comparison_row(row)
 
 
+def _comparison_url_key(value: str) -> str:
+    try:
+        return normalize_base(value).rstrip("/").lower()
+    except ValueError:
+        return str(value or "").strip().rstrip("/").lower()
+
+
+def _comparison_brand_names(comp_path: Path) -> tuple[str, dict[str, str]]:
+    """Load user-confirmed primary and competitor labels keyed by website."""
+    config_path = comp_path.parent / "onboarding_context.json"
+    if not config_path.is_file():
+        return "", {}
+    try:
+        config = _read_json(config_path)
+    except (OSError, json.JSONDecodeError):
+        return "", {}
+    primary_name = str(
+        config.get("brand_name_used")
+        or config.get("brand_name")
+        or config.get("brand")
+        or ""
+    ).strip()
+    by_url: dict[str, str] = {}
+    for competitor in config.get("competitors_detail") or []:
+        if not isinstance(competitor, dict):
+            continue
+        name = str(competitor.get("competitor_brand") or "").strip()
+        website = str(competitor.get("competitor_website") or "").strip()
+        if name and website:
+            by_url[_comparison_url_key(website)] = name
+    return primary_name, by_url
+
+
+def _comparison_fallback_name(url: str) -> str:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    parts = [part for part in host.split(".") if part]
+    if (
+        len(parts) >= 3
+        and len(parts[-1]) == 2
+        and parts[-2] in {"co", "com", "net", "org"}
+    ):
+        label = parts[-3]
+    else:
+        label = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+    label = label.replace("-", " ").strip()
+    return label.title() if label else (host or url)
+
+
+def _comparison_display_name(url: str, configured_name: str) -> str:
+    """Prefer configured brand names, correcting labels copied from a subdomain."""
+    fallback = _comparison_fallback_name(url)
+    configured = configured_name.strip()
+    if not configured:
+        return fallback
+    parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    first_label = host.split(".")[0]
+    normalize = lambda value: re.sub(r"[^a-z0-9]", "", value.lower())
+    if normalize(configured) == normalize(first_label) and normalize(configured) != normalize(fallback):
+        return fallback
+    return configured
+
+
+def _comparison_favicon_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if not host:
+        return ""
+    return (
+        "https://www.google.com/s2/favicons?domain="
+        + urllib.parse.quote(host, safe="")
+        + "&sz=32"
+    )
+
+
+def _sub_strengths_improvements(sub: AgentSubResult) -> tuple[list[str], list[str]]:
+    strengths: list[str] = []
+    improvements: list[str] = []
+    for raw in list(sub.strengths or []):
+        line = client_friendly_finding(str(raw), "insight").strip()
+        if line:
+            strengths.append(line)
+    for raw in list(sub.improvements or []):
+        line = client_friendly_finding(str(raw), "insight").strip()
+        if line:
+            improvements.append(line)
+    return strengths, improvements
+
+
+def _sub_finding_summary(sub: AgentSubResult) -> str:
+    """Summary-style finding: prefer strength + improvement, else either side."""
+    strengths, improvements = _sub_strengths_improvements(sub)
+    strength = strengths[0] if strengths else ""
+    improvement = improvements[0] if improvements else ""
+    if strength and improvement:
+        return f"{strength} Needs work: {improvement}."
+    if strength:
+        return strength if strength.endswith(".") else f"{strength}."
+    if improvement:
+        return improvement if improvement.endswith(".") else f"{improvement}."
+    detail = client_friendly_text(str(sub.detail or "")).strip()
+    return detail or "No specific finding was recorded."
+
+
+def _concise_finding_text(text: str, max_length: int = 160) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).rstrip(".;:")
+    if len(cleaned) <= max_length:
+        return cleaned
+    return f"{cleaned[: max_length - 1].rstrip()}…"
+
+
+# Overview criteria — keep aligned with web/src/lib/technicalSetupAreas.ts
+# and web/src/lib/contentQualityAreas.ts (Summary / pillar Overview).
+TECHNICAL_SETUP_OVERVIEW_AREAS: list[dict[str, Any]] = [
+    {
+        "key": "crawler_access",
+        "label": "Crawler access",
+        "description": (
+            "Whether major AI crawlers are permitted to access the site through "
+            "robots.txt and related controls."
+        ),
+        "component_keys": ("ai_crawler_report",),
+    },
+    {
+        "key": "citability",
+        "label": "Citability",
+        "description": (
+            "How successfully the site supports AI extraction and citation across "
+            "tested queries and content."
+        ),
+        "component_keys": (
+            "ai_citability",
+            "ai_search_success",
+            "query_coverage_footprint",
+        ),
+    },
+    {
+        "key": "platform_readiness",
+        "label": "Platform readiness",
+        "description": (
+            "Technical and prompt-performance readiness for each supported AI platform."
+        ),
+        "component_keys": ("platform_readiness",),
+    },
+]
+
+CONTENT_QUALITY_OVERVIEW_AREAS: list[dict[str, Any]] = [
+    {
+        "key": "eeat",
+        "label": "E-E-A-T Signals",
+        "description": (
+            "Experience, Expertise, Authoritativeness, and Trustworthiness signals "
+            "across key pages."
+        ),
+        "component_keys": ("eeat",),
+    },
+    {
+        "key": "structure_answerability",
+        "label": "Content Structure & Answerability",
+        "description": (
+            "Whether content contributes genuinely original information and is "
+            "structured into clear, self-contained passages AI can extract."
+        ),
+        "component_keys": (
+            "original_information_gain",
+            "passage_answerability",
+            "content_formatting",
+        ),
+    },
+    {
+        "key": "schema_entity_markup",
+        "label": "Schema & Entity Markup",
+        "description": (
+            "JSON-LD structured data coverage and entity clarity."
+        ),
+        # Prefer schema_entity_markup; json_ld is a crawl fallback alias.
+        "component_keys": ("schema_entity_markup", "json_ld"),
+    },
+    {
+        "key": "brand_visibility_authority",
+        "label": "Brand Visibility & Authority",
+        "description": (
+            "How prominently the brand appears across third-party surfaces that AI "
+            "models use to verify entities."
+        ),
+        "component_keys": (
+            "brand_visibility_authority",
+            "brand_visibility",
+            "brand_entity_visibility",
+            "source_transparency_governance",
+        ),
+    },
+]
+
+
+def _area_finding_summary(parts: list[dict[str, Any]]) -> str:
+    """Mirror Summary / Overview areaFindingSummary for grouped criteria."""
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return str(parts[0].get("finding_summary") or "").strip()
+    ranked = sorted(parts, key=lambda item: float(item.get("score") or 0.0))
+    weakest = ranked[0]
+    strongest = ranked[-1]
+    strength = ""
+    strongest_strengths = strongest.get("strengths") or []
+    if strongest_strengths:
+        strength = str(strongest_strengths[0])
+    elif float(strongest.get("score") or 0.0) >= 60:
+        strength = str(strongest.get("finding_summary") or "")
+    improvement = ""
+    weakest_improvements = weakest.get("improvements") or []
+    if weakest_improvements:
+        improvement = str(weakest_improvements[0])
+    elif float(weakest.get("score") or 0.0) < 75:
+        improvement = str(weakest.get("finding_summary") or "")
+    chunks: list[str] = []
+    if strength:
+        chunks.append(
+            f"{strongest.get('title')}: {_concise_finding_text(strength)}"
+        )
+    if improvement and (weakest.get("key") != strongest.get("key") or not strength):
+        chunks.append(
+            f"{weakest.get('title')} needs work: {_concise_finding_text(improvement)}"
+        )
+    if chunks:
+        return f"{'. '.join(chunks)}."
+    return str(
+        weakest.get("finding_summary")
+        or strongest.get("finding_summary")
+        or ""
+    ).strip()
+
+
+def _group_overview_components(
+    components: list[dict[str, Any]] | None,
+    areas: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Collapse leaf score components into Summary / Overview criteria.
+
+    Idempotent when components are already overview-keyed.
+    """
+    raw = [item for item in (components or []) if isinstance(item, dict) and item.get("key")]
+    if not raw:
+        return []
+
+    by_key = {str(item.get("key") or ""): item for item in raw}
+    overview_keys = {str(area["key"]) for area in areas}
+    if by_key.keys() & overview_keys and not any(
+        key in by_key
+        for area in areas
+        for key in area["component_keys"]
+        if key not in overview_keys
+    ):
+        # Already overview-shaped: keep stable area order and titles.
+        ordered: list[dict[str, Any]] = []
+        for area in areas:
+            item = by_key.get(str(area["key"]))
+            if not item:
+                continue
+            next_item = dict(item)
+            next_item["title"] = str(area["label"])
+            if not str(next_item.get("detail") or "").strip():
+                next_item["detail"] = str(area.get("description") or "")
+            ordered.append(next_item)
+        return ordered
+
+    grouped: list[dict[str, Any]] = []
+    for area in areas:
+        parts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for leaf_key in area["component_keys"]:
+            item = by_key.get(leaf_key)
+            if not item or leaf_key in seen:
+                continue
+            # For schema/brand aliases, prefer the first matching key only.
+            if area["key"] in {"schema_entity_markup", "brand_visibility_authority"} and parts:
+                break
+            parts.append(item)
+            seen.add(leaf_key)
+        if not parts:
+            continue
+        total_weight = sum(float(part.get("weight_pct") or 0.0) for part in parts)
+        if total_weight > 0:
+            score = sum(
+                float(part.get("score") or 0.0) * float(part.get("weight_pct") or 0.0)
+                for part in parts
+            ) / total_weight
+        else:
+            score = sum(float(part.get("score") or 0.0) for part in parts) / len(parts)
+        strengths = [
+            line
+            for part in parts
+            for line in (part.get("strengths") or [])
+            if str(line).strip()
+        ]
+        improvements = [
+            line
+            for part in parts
+            for line in (part.get("improvements") or [])
+            if str(line).strip()
+        ]
+        evidence = next(
+            (
+                str(part.get("evidence_example") or "").strip()
+                for part in parts
+                if str(part.get("evidence_example") or "").strip()
+            ),
+            "",
+        )
+        grouped.append(
+            {
+                "key": str(area["key"]),
+                "title": str(area["label"]),
+                "score": round(score, 1),
+                "weight_pct": total_weight,
+                "detail": str(area.get("description") or ""),
+                "finding_summary": _area_finding_summary(parts),
+                "evidence_example": evidence,
+                "strengths": strengths or None,
+                "improvements": improvements or None,
+            }
+        )
+    return grouped
+
+
+def group_technical_setup_components(
+    components: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Collapse Technical Setup leafs into Overview criteria (Summary-aligned)."""
+    return _group_overview_components(components, TECHNICAL_SETUP_OVERVIEW_AREAS)
+
+
+def group_content_quality_components(
+    components: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Collapse Content Quality leafs into Overview criteria (Summary-aligned)."""
+    return _group_overview_components(components, CONTENT_QUALITY_OVERVIEW_AREAS)
+
+
+def _component_from_sub(
+    sub: AgentSubResult,
+    *,
+    weight_pct: float,
+    title: str | None = None,
+    key: str | None = None,
+) -> dict[str, Any]:
+    strengths, improvements = _sub_strengths_improvements(sub)
+    detail = client_friendly_text(str(sub.detail or "")).strip()
+    return {
+        "key": key or sub.key,
+        "title": title or sub.title,
+        "score": round(float(sub.score), 1),
+        "weight_pct": float(weight_pct),
+        "detail": detail,
+        "finding_summary": _sub_finding_summary(sub),
+        "evidence_example": detail,
+        "strengths": strengths or None,
+        "improvements": improvements or None,
+    }
+
+
+def _pillar_components_from_subs(
+    cat: AgentCategoryResult,
+    *,
+    weight_keys: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """Summary-style criterion rows (key/title/score/weight/finding_summary)."""
+    weights = weight_keys if weight_keys is not None else _INSIGHT_DEDUP_WEIGHTS.get(cat.key, {})
+    components: list[dict[str, Any]] = []
+    for sub in list(cat.subs or []):
+        if weights and sub.key not in weights:
+            continue
+        components.append(
+            _component_from_sub(sub, weight_pct=float(weights.get(sub.key, 0.0)))
+        )
+    return components
+
+
+def _integrated_technical_leaf_components(
+    by_key: dict[str, AgentCategoryResult],
+) -> list[dict[str, Any]]:
+    """Technical leaf criteria matching Summary integrated scoring."""
+    weights = {
+        "ai_crawler_report": 25.0,
+        "ai_citability": 25.0,
+        "ai_search_success": 12.5,
+        "query_coverage_footprint": 12.5,
+        "platform_readiness": 25.0,
+    }
+    titles = {
+        "ai_crawler_report": "AI crawler access",
+        "ai_citability": "AI citability",
+        "ai_search_success": "AI search success",
+        "query_coverage_footprint": "Query coverage & citation footprint",
+        "platform_readiness": "Platform readiness",
+    }
+    ai = by_key.get("ai_visibility")
+    tech = by_key.get("technical_setup")
+    sub_by_key: dict[str, AgentSubResult] = {}
+    if ai:
+        for sub in ai.subs:
+            sub_by_key[sub.key] = sub
+    if tech:
+        for sub in tech.subs:
+            sub_by_key[sub.key] = sub
+    components: list[dict[str, Any]] = []
+    for key, weight in weights.items():
+        sub = sub_by_key.get(key)
+        if not sub:
+            continue
+        components.append(
+            _component_from_sub(
+                sub,
+                weight_pct=weight,
+                title=titles.get(key, sub.title),
+            )
+        )
+    return components
+
+
+def _integrated_technical_components(
+    by_key: dict[str, AgentCategoryResult],
+) -> list[dict[str, Any]]:
+    """Technical Overview criteria matching Summary (grouped)."""
+    return group_technical_setup_components(_integrated_technical_leaf_components(by_key))
+
+
+def _content_quality_components_for_comparison(
+    by_key: dict[str, AgentCategoryResult],
+) -> list[dict[str, Any]]:
+    """Content Overview criteria for competitor comparison (Summary-aligned)."""
+    content = by_key.get("content_structure")
+    if not content:
+        return []
+    # Leaf weights mirror Summary content_structure components where present.
+    weight_keys = {
+        "eeat": 35.0,
+        "original_information_gain": 15.0,
+        "passage_answerability": 15.0,
+        "content_formatting": 10.0,
+        "schema_entity_markup": 15.0,
+    }
+    leafs = _pillar_components_from_subs(content, weight_keys=weight_keys)
+    by_leaf = {str(item.get("key") or ""): item for item in leafs}
+    # Crawl may expose schema under json_ld only.
+    if "schema_entity_markup" not in by_leaf:
+        for sub in list(content.subs or []):
+            if sub.key == "json_ld":
+                leafs.append(
+                    _component_from_sub(
+                        sub,
+                        weight_pct=15.0,
+                        key="schema_entity_markup",
+                        title="Schema & entity markup",
+                    )
+                )
+                break
+    # Brand Visibility & Authority comes from integrated content scores; crawl
+    # comparisons map AI brand-visibility signals into that Overview criterion.
+    if "brand_visibility_authority" not in by_leaf:
+        ai = by_key.get("ai_visibility")
+        brand_sub = None
+        if ai:
+            sub_map = {sub.key: sub for sub in ai.subs}
+            brand_sub = sub_map.get("brand_visibility") or sub_map.get("brand_entity_visibility")
+        if brand_sub:
+            leafs.append(
+                _component_from_sub(
+                    brand_sub,
+                    weight_pct=10.0,
+                    key="brand_visibility_authority",
+                    title="Brand Visibility & Authority",
+                )
+            )
+        else:
+            for sub in list(content.subs or []):
+                if sub.key == "source_transparency_governance":
+                    leafs.append(
+                        _component_from_sub(
+                            sub,
+                            weight_pct=10.0,
+                            key="brand_visibility_authority",
+                            title="Brand Visibility & Authority",
+                        )
+                    )
+                    break
+    return group_content_quality_components(leafs)
+
+
+def _integrated_technical_score(components: list[dict[str, Any]]) -> float | None:
+    available = sum(float(c.get("weight_pct") or 0.0) for c in components)
+    if available <= 0:
+        return None
+    return round(
+        sum(
+            float(c.get("score") or 0.0) * float(c.get("weight_pct") or 0.0)
+            for c in components
+        )
+        / available,
+        1,
+    )
+
+
+def _pillar_score_rationale(
+    cat: AgentCategoryResult,
+    *,
+    components: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Criterion breakdown for competitor comparison expand rows."""
+    resolved = components if components is not None else _pillar_components_from_subs(cat)
+    strengths: list[str] = []
+    improvements: list[str] = []
+    for raw in list(cat.strengths or []):
+        line = client_friendly_finding(str(raw), "insight").strip()
+        if line:
+            strengths.append(line)
+    for raw in list(cat.improvements or []):
+        line = client_friendly_finding(str(raw), "insight").strip()
+        if line:
+            improvements.append(line)
+    if not strengths and not improvements:
+        for sub in list(cat.subs or []):
+            for raw in list(sub.strengths or [])[:1]:
+                line = client_friendly_finding(str(raw), "insight").strip()
+                if line:
+                    strengths.append(line)
+            for raw in list(sub.improvements or [])[:1]:
+                line = client_friendly_finding(str(raw), "insight").strip()
+                if line:
+                    improvements.append(line)
+            if strengths or improvements:
+                break
+    strengths = _unique_preserve(strengths)[:2]
+    improvements = _unique_preserve(improvements)[:2]
+    summary = category_card_description(cat.key, float(cat.score)).strip()
+    if not summary:
+        summary = client_friendly_text(str(cat.detail or "")).strip()
+    return {
+        "summary": summary,
+        "strengths": strengths,
+        "improvements": improvements,
+        "components": resolved,
+    }
+
+
+def competitive_comparison_rows(
+    comp_path: Path | None,
+    primary_url: str,
+    weights: dict[str, float],
+) -> list[dict[str, Any]]:
+    """Score each comparison.json site for the dashboard table.
+
+    All rows are scored from crawl audits (no live brand probes on this path).
+    The React API overlays the primary brand's pillars with Summary-integrated
+    scores (probe AI Visibility + integrated Technical/Content) so the brand
+    row matches the rest of the product; competitor AI Visibility remains
+    crawl-relative and is not directly comparable to probe-based AI Visibility.
+    """
+    if not comp_path or not comp_path.is_file():
+        return []
+    data = _read_json(comp_path)
+    rows = data.get("rows") or []
+    if len(rows) < 2:
+        return []
+
+    primary_brand_name, competitor_brand_names = _comparison_brand_names(comp_path)
+    try:
+        primary_norm = normalize_base(primary_url)
+    except ValueError:
+        primary_norm = primary_url
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        audit = _load_audit_for_comparison_row(r)
+        # Avoid live Playwright/brand probes on the API request thread.
+        raw_bv = audit.get("brand_visibility")
+        if not (isinstance(raw_bv, dict) and (raw_bv.get("platforms") or raw_bv.get("skipped"))):
+            audit["brand_visibility"] = {
+                "skipped": True,
+                "brand_query": "",
+                "brand_source": "comparison_no_live_probe",
+                "base_url": audit.get("base_url") or "",
+                "platforms": [],
+                "method_note": "Live brand visibility scan skipped during competitor comparison render.",
+            }
+        _overall, cats = score_audit(audit, weights)
+        by_key = {c.key: c for c in cats}
+        bu = str(r.get("base_url") or audit.get("base_url") or "").strip()
+        try:
+            bu_norm = normalize_base(bu)
+        except ValueError:
+            bu_norm = bu
+        is_primary = r.get("audit_label") == "primary" or bu_norm == primary_norm
+        configured_name = (
+            primary_brand_name
+            if is_primary and primary_brand_name
+            else competitor_brand_names.get(_comparison_url_key(bu)) or ""
+        )
+        ai_visibility = round(float(by_key["ai_visibility"].score), 1)
+        tech_leafs = _integrated_technical_leaf_components(by_key)
+        tech_components = group_technical_setup_components(tech_leafs)
+        integrated_tech = _integrated_technical_score(tech_leafs or tech_components)
+        # Prefer Summary-integrated Technical criteria when available; else crawl foundation.
+        technical_setup = (
+            float(integrated_tech)
+            if integrated_tech is not None
+            else round(float(by_key["technical_setup"].score), 1)
+        )
+        content_components = _content_quality_components_for_comparison(by_key)
+        content_quality = round(float(by_key["content_structure"].score), 1)
+        # Match Summary pillar blend: 40% AI Visibility + 30% Technical + 30% Content.
+        overall = round(
+            0.40 * ai_visibility + 0.30 * technical_setup + 0.30 * content_quality,
+            1,
+        )
+        out.append(
+            {
+                "name": _comparison_display_name(bu, configured_name),
+                "url": bu,
+                "is_primary": bool(is_primary),
+                "overall": overall,
+                "ai_visibility": ai_visibility,
+                "technical_setup": technical_setup,
+                "content_quality": content_quality,
+                "favicon_url": _comparison_favicon_url(bu),
+                "ai_visibility_rationale": _pillar_score_rationale(by_key["ai_visibility"]),
+                "technical_setup_rationale": _pillar_score_rationale(
+                    by_key["technical_setup"],
+                    components=tech_components
+                    or group_technical_setup_components(
+                        _pillar_components_from_subs(by_key["technical_setup"])
+                    ),
+                ),
+                "content_quality_rationale": _pillar_score_rationale(
+                    by_key["content_structure"],
+                    components=content_components
+                    or group_content_quality_components(
+                        _pillar_components_from_subs(by_key["content_structure"])
+                    ),
+                ),
+            }
+        )
+
+    out.sort(key=lambda row: float(row["overall"]), reverse=True)
+    return out
+
+
 def build_competitive_section(
     comp_path: Path | None,
     primary_url: str,
     weights: dict[str, float],
 ) -> tuple[list[str], list[str], str, str]:
-    """Peer notes, scores table HTML, competitor detail HTML."""
-    if not comp_path or not comp_path.is_file():
-        return (
-            [],
-            ["No comparison.json—run crawl with --competitor for peer scores."],
-            "<p><em>No competitor crawl data.</em></p>",
-            "",
-        )
-    data = _read_json(comp_path)
-    rows = data.get("rows") or []
-    if len(rows) < 2:
+    """Peer notes and scores-only comparison table HTML."""
+    scored = competitive_comparison_rows(comp_path, primary_url, weights)
+    if not scored:
+        if not comp_path or not comp_path.is_file():
+            return (
+                [],
+                ["No comparison.json—run crawl with --competitor for peer scores."],
+                "<p><em>No competitor crawl data.</em></p>",
+                "",
+            )
         return (
             [],
             ["Only one site in comparison—add competitors."],
@@ -6317,104 +6991,78 @@ def build_competitive_section(
             "",
         )
 
-    cards: list[tuple[str, float, list[AgentCategoryResult], bool, dict[str, Any]]] = []
-    try:
-        primary_norm = normalize_base(primary_url)
-    except ValueError:
-        primary_norm = primary_url
-    for r in rows:
-        audit = _load_audit_for_comparison_row(r)
-        ensure_brand_visibility_on_audit(audit)
-        ov, cats = score_audit(audit, weights)
-        bu = str(r.get("base_url") or audit.get("base_url") or "").strip()
-        try:
-            bu_norm = normalize_base(bu)
-        except ValueError:
-            bu_norm = bu
-        is_p = r.get("audit_label") == "primary" or bu_norm == primary_norm
-        cards.append((bu, ov, cats, is_p, audit))
-
-    primary_score = next((c[1] for c in cards if c[3]), cards[0][1])
-    others = [c[1] for c in cards if not c[3]]
-    avg_peer = sum(others) / len(others) if others else primary_score
+    primary = next((row for row in scored if row["is_primary"]), scored[0])
+    primary_score = float(primary["overall"])
+    others = [row for row in scored if not row["is_primary"]]
+    peer_avgs = [float(row["overall"]) for row in others]
+    avg_peer = sum(peer_avgs) / len(peer_avgs) if peer_avgs else primary_score
 
     strengths: list[str] = []
     improve: list[str] = []
     if primary_score >= avg_peer + 5:
-        strengths.append(f"Overall score ahead of peer average ({primary_score:.1f} vs ~{avg_peer:.1f}).")
+        strengths.append(
+            f"Overall score ahead of peer average ({format_report_score(primary_score)} vs ~{format_report_score(avg_peer)})."
+        )
     elif primary_score <= avg_peer - 5:
-        improve.append(f"Overall score trails peer average ({primary_score:.1f} vs ~{avg_peer:.1f}).")
+        improve.append(
+            f"Overall score trails peer average ({format_report_score(primary_score)} vs ~{format_report_score(avg_peer)})."
+        )
     else:
         strengths.append("Roughly in line with peers on composite score—see agent category gaps.")
-    rank = 1 + sum(1 for c in cards if c[1] > primary_score + 0.001)
-    strengths.append(f"Peer rank by overall score: #{rank} of {len(cards)}.")
+    rank = 1 + sum(1 for avg in peer_avgs if avg > primary_score + 0.001)
+    strengths.append(f"Peer rank by overall score: #{rank} of {len(scored)}.")
 
-    colspan = 5
     lines = [
-        '<table class="data-table cmp-table" aria-label="Competitor comparison">',
+        '<div class="cmp-card">',
+        '<div class="cmp-card-head">',
+        "<h3>Site crawl comparison</h3>",
+        "<p>Pillar scores from competitor site crawls.</p>",
+        "</div>",
+        '<div class="cmp-card-body">',
+        '<table class="cmp-table" aria-label="Competitor comparison">',
         "<thead><tr>",
-        "<th>Site</th><th>Overall</th><th>AI visibility</th><th>Technical</th><th>Content</th>",
+        '<th scope="col" class="cmp-col-brand">Brand</th>',
+        '<th scope="col" class="cmp-col-score">Overall</th>',
+        '<th scope="col" class="cmp-col-score">AI visibility</th>',
+        '<th scope="col" class="cmp-col-score">Technical setup</th>',
+        '<th scope="col" class="cmp-col-score">Content quality</th>',
         "</tr></thead><tbody>",
     ]
-    primary_audit = next(c[4] for c in cards if c[3])
-    primary_cats = next(c[2] for c in cards if c[3])
-
-    for bu, ov, cats, is_p, site_audit in cards:
-        by_key = {c.key: c for c in cats}
-        pr = " primary-row" if is_p else ""
-        lines.append(
-            f"<tr class='cmp-site-row{pr}'>"
-            f"<td><span class='cmp-site-title'>{html.escape(bu)}</span></td>"
-            + _td_score_pill(ov, strong=True)
-            + _td_score_pill(by_key["ai_visibility"].score)
-            + _td_score_pill(by_key["technical_setup"].score)
-            + _td_score_pill(by_key["content_structure"].score)
-            + "</tr>"
-        )
-        if is_p:
-            continue
-        greens, reds = _peer_diff_bullets(
-            primary_audit, site_audit, primary_cats, cats
-        )
-        green_html = (
-            "<ul class='cmp-diff-list cmp-diff-list--positive'>"
-            + "".join(
-                f"<li class='cmp-peer-li'>{g_body}{('<br>' + g_links) if g_links else ''}</li>"
-                for _gk, g_body, g_links in greens
+    for row in scored:
+        name = html.escape(str(row["name"]))
+        url = str(row["url"] or "")
+        fav = ""
+        if row.get("favicon_url"):
+            fav = (
+                f"<img class='cmp-favicon' src='{html.escape(str(row['favicon_url']), quote=True)}' "
+                f"alt='' width='17' height='17' loading='lazy'>"
             )
-            + "</ul>"
-            if greens
-            else "<p class='cmp-diff-empty'>No clear advantages vs your site on these metrics.</p>"
-        )
-        red_html = (
-            "<ul class='cmp-diff-list cmp-diff-list--negative'>"
-            + "".join(f"<li>{html.escape(rx)}</li>" for rx in reds)
-            + "</ul>"
-            if reds
-            else "<p class='cmp-diff-empty'>No clear gaps vs your site on these metrics.</p>"
-        )
-        diff_inner = (
-            "<div class='cmp-diff-grid'>"
-            "<div class='cmp-diff-col cmp-diff-col--positive'>"
-            "<div class='cmp-diff-heading cmp-diff-heading--long'>Where this competitor appears stronger</div>"
-            f"{green_html}</div>"
-            "<div class='cmp-diff-col cmp-diff-col--negative'>"
-            "<div class='cmp-diff-heading cmp-diff-heading--long'>Where your site appears ahead</div>"
-            f"{red_html}</div></div>"
-        )
-        sum_label = f"What {bu} is doing differently..."
+        if row["is_primary"]:
+            brand = (
+                f"<div class='cmp-brand-cell'>{fav}"
+                f"<a class='cmp-brand-link cmp-brand-link--own' href='{html.escape(url, quote=True)}' "
+                f"target='_blank' rel='noopener noreferrer'>{name}</a></div>"
+            )
+            row_class = "cmp-row cmp-row--brand"
+        else:
+            brand = (
+                f"<div class='cmp-brand-cell'>{fav}"
+                f"<a class='cmp-brand-link' href='{html.escape(url, quote=True)}' "
+                f"target='_blank' rel='noopener noreferrer'>"
+                f"<span class='cmp-brand-name'>{name}</span></a></div>"
+            )
+            row_class = "cmp-row cmp-row--peer"
         lines.append(
-            f"<tr class='cmp-expand-row'><td colspan='{colspan}'>"
-            f"<details class='cmp-row-details'>"
-            f"<summary>{html.escape(sum_label)}</summary>"
-            f"<div class='cmp-observations-inner'>{diff_inner}</div>"
-            f"</details></td></tr>"
+            f"<tr class='{row_class}'>"
+            f"<th scope='row'>{brand}</th>"
+            f"<td class='cmp-score-cell'><span class='cmp-score-value score-tone-{_tone_class(float(row['overall']))}'>{format_report_score(float(row['overall']))}</span></td>"
+            f"<td class='cmp-score-cell'><span class='cmp-score-value score-tone-{_tone_class(float(row['ai_visibility']))}'>{format_report_score(float(row['ai_visibility']))}</span></td>"
+            f"<td class='cmp-score-cell'><span class='cmp-score-value score-tone-{_tone_class(float(row['technical_setup']))}'>{format_report_score(float(row['technical_setup']))}</span></td>"
+            f"<td class='cmp-score-cell'><span class='cmp-score-value score-tone-{_tone_class(float(row['content_quality']))}'>{format_report_score(float(row['content_quality']))}</span></td>"
+            "</tr>"
         )
-    lines.append("</tbody></table>")
-
-    full_html = "\n".join(lines)
-
-    return strengths, improve, full_html, ""
+    lines.extend(["</tbody></table>", "</div>", "</div>"])
+    return strengths, improve, "\n".join(lines), ""
 
 
 def load_ga4_traffic(
@@ -6631,19 +7279,9 @@ def _ga4_section_html(ga4: dict[str, Any] | None) -> str:
         safe_by_src = json.dumps(by_src_pack, ensure_ascii=False)
         by_mode = by_src_pack.get("mode")
         if by_mode == "ai_channel":
-            by_caption_html = (
-                '<p class="table-note"><strong>Monthly — AI traffic by session source</strong> '
-                f"(stacked sessions per month; only sessions where <code>{weekly_ch_dim_esc}</code> matches your "
-                "configured AI channel name(s). Top sources in the export window; smaller sources combined into "
-                "<strong>Other sources</strong>.)</p>"
-            )
+            by_caption_html = '<p class="table-note"><strong>Sessions by AI platform over time</strong></p>'
         else:
-            by_caption_html = (
-                '<p class="table-note"><strong>Monthly — AI-like traffic by session source</strong> '
-                "(stacked sessions per month; no AI channel configured — only <code>sessionSource</code> values that "
-                "match <code>ga4_data_api.AI_TRAFFIC_SOURCE_SUBSTRINGS</code> via <code>source_looks_ai_related()</code>. "
-                "Top sources in the window; remainder as <strong>Other sources</strong>.)</p>"
-            )
+            by_caption_html = '<p class="table-note"><strong>Sessions by AI platform over time</strong></p>'
         ai_by_source_block = (
             by_caption_html
             + '<div class="chart-panel" style="min-height:320px">'
@@ -6799,17 +7437,11 @@ def _ga4_section_html(ga4: dict[str, Any] | None) -> str:
     note_p = f"<p class='table-note'>{html.escape(str(notes))}</p>" if notes else ""
 
     return (
-        intro
-        + err_block
-        + dim_note
-        + conv_cards
-        + monthly_block
+        conv_cards
         + sessions_trend_block
         + ai_by_source_block
         + chart_script
         + (_ga4_sessions_trend_chart_script() if sessions_trend_block else "")
-        + gaps_table
-        + note_p
     )
 
 
@@ -6974,7 +7606,7 @@ def render_html(
             "<tr>"
             f"<td>{html.escape(c.title)}</td>"
             f"<td>{c.weight:.0f}%</td>"
-            f"<td><span class='score-pill {pill}'>{c.score:.1f}</span></td>"
+            f"<td><span class='score-pill {pill}'>{format_report_score(c.score)}</span></td>"
             f"<td>{contrib:.1f}</td>"
             "</tr>"
         )
@@ -6993,8 +7625,8 @@ def render_html(
         "<tr>"
         "<td><strong>Overall (weighted)</strong></td>"
         "<td>100%</td>"
-        f"<td><span class='score-pill {overall_pill}'>{overall:.1f}</span></td>"
-        f"<td>{overall:.1f}</td>"
+        f"<td><span class='score-pill {overall_pill}'>{format_report_score(overall)}</span></td>"
+        f"<td>{format_report_score(overall)}</td>"
         "</tr>"
     )
     sample_blocks = []
@@ -7096,6 +7728,29 @@ def render_html(
             "pill-yellow": "var(--score-yellow)",
             "pill-red": "var(--score-red)",
         }[pill]
+        evidence_rows: list[str] = []
+        for item in e.get("evidence") or []:
+            url = html.escape(str(item.get("url") or ""), quote=True)
+            title = html.escape(str(item.get("title") or "Sampled page"))
+            snippet = html.escape(str(item.get("snippet") or ""))
+            source = (
+                f'<a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                if url else title
+            )
+            evidence_rows.append(
+                f'<li><div class="eeat-evidence-source">{source}</div>'
+                f'<blockquote>{snippet}</blockquote></li>'
+            )
+        evidence_note = html.escape(str(e.get("evidence_note") or ""))
+        evidence_html = (
+            f'<div class="eeat-evidence"><div class="eeat-evidence-title">Example content behind this score</div>'
+            f'<p class="eeat-evidence-note">{evidence_note}</p>'
+            f'<ul>{"".join(evidence_rows)}</ul></div>'
+            if evidence_rows
+            else f'<div class="eeat-evidence eeat-evidence-empty">'
+            f'<div class="eeat-evidence-title">Example content behind this score</div>'
+            f'<p class="eeat-evidence-note">{evidence_note}</p></div>'
+        )
         eeat_cards.append(
             f"""<div class="eeat-item">
   <div class="eeat-label">
@@ -7108,6 +7763,7 @@ def render_html(
   <p class="eeat-meaning">{html.escape(str(e["what_it_means"]))}</p>
   <div class="progress-bar-container"><div class="progress-bar-fill" style="width:{es:.1f}%; background:{fill_color}"></div></div>
   <p class="eeat-how-scored"><span class="eeat-how-label">How we calculate this number:</span> {html.escape(str(e["how_scored"]))}</p>
+  {evidence_html}
 </div>"""
         )
 
@@ -7228,7 +7884,7 @@ def render_html(
 
     eeat_block_for_content = f"""<div class="score-breakdown-sub score-breakdown-nested" aria-labelledby="eeat-heading">
   {_report_subhead("Trust signals from your crawl (E-E-A-T view)", "eeat-heading")}
-  <p class="score-breakdown-subdesc">Four cards translate Experience, Expertise, Authoritativeness, and Trust into plain language. Each score is an automated blend of crawl checks—not a substitute for editorial, legal, or reputation review.</p>
+  <p class="score-breakdown-subdesc">Four cards score how strongly sampled website content demonstrates Experience, Expertise, Authoritativeness, and Trust. Each score is supported by content examples where matching evidence was found.</p>
   {eeat_explainer}
   <div class="eeat-grid">
     {"".join(eeat_cards)}
@@ -7266,7 +7922,7 @@ def render_html(
     weights_hist = _weights_from_categories(categories)
     score_history = _collect_primary_score_history(audit_dir, audit, weights_hist)
     vertical_score_overview = _vertical_score_overview_html(overall, categories, score_history)
-    ga4_insights_lead = _ga4_insights_lead_html(ga4_data, audit_dir, audit)
+    ga4_insights_lead = ""
     ga4_summary_block = (
         ga4_html
         if (ga4_data and _ga4_has_displayable_data(_ga4_apply_display_policy(dict(ga4_data))))
@@ -7326,7 +7982,7 @@ def render_html(
         <div class="score-gauge" aria-label="Overall score gauge">
           <div class="gauge-ring" style="background: conic-gradient({gauge_color} 0deg, {gauge_color} {overall_deg:.1f}deg, rgba(255,255,255,0.12) {overall_deg:.1f}deg, rgba(255,255,255,0.12) 360deg);">
             <div class="gauge-inner">
-              <div class="score-number">{overall:.1f}</div>
+              <div class="score-number">{format_report_score(overall)}</div>
               <div class="score-label" style="color:{gauge_color}">{overall_label}</div>
               <div class="score-max">/ 100</div>
             </div>
@@ -7358,7 +8014,7 @@ def render_html(
 
     <div class="report-tab-panel" role="tabpanel" id="tab-panel-ga4-traffic" data-tab-panel="ga4-traffic" aria-labelledby="tab-btn-ga4-traffic" hidden>
     <section class="report-block report-block--first" aria-labelledby="ga4-traffic-heading">
-      {_report_section_head("GA4 — AI traffic", "ga4-traffic-heading")}
+      {_report_section_head("Direct AI Traffic", "ga4-traffic-heading")}
       {ga4_insights_lead}
       {ga4_summary_block}
     </section>
@@ -7382,7 +8038,7 @@ def render_html(
     <div class="report-tab-panel" role="tabpanel" id="tab-panel-competitors" data-tab-panel="competitors" aria-labelledby="tab-btn-competitors" hidden>
     <section class="report-block report-block--first" aria-labelledby="comp-heading">
       {_report_section_head("Competitor comparison", "comp-heading")}
-      <p class="section-lead">Compare overall AI visibility, technical setup, and content quality side by side. Expand a peer row for structured notes: <strong>where the competitor appears stronger</strong> in the automated sample (with confidence and actions), and <strong>where your site appears ahead</strong>. Green items use validated crawl URLs only (HTTP 200, not soft-404 or noindex). Your row has no expandable notes.</p>
+      <p class="section-lead">Compare AI visibility, technical setup, and content quality scores from competitor site crawls.</p>
       {comp_table}
     </section>
     {_report_footer_strip}
@@ -7406,7 +8062,7 @@ def render_html(
     <div class="report-tab-panel" role="tabpanel" id="tab-panel-samples" data-tab-panel="samples" aria-labelledby="tab-btn-samples" hidden>
     <section class="report-block report-block--first" aria-labelledby="samples-heading">
       {_report_section_head("Sample scripts", "samples-heading")}
-      <p class="section-lead">Suggested <code>robots.txt</code> merge, <code>json-ld</code> sample, and <code>llms.txt</code> skeleton from this run. Expand to scroll and copy.</p>
+      <p class="section-lead">These are example versions of key files you can implement on the site to improve AI crawler access and citability: a merged <code>robots.txt</code>, a WebSite <code>json-ld</code> sample, and a generated <code>llms.txt</code> skeleton. Expand each block to scroll and copy, then adapt hosts and policy before publishing.</p>
       {"".join(sample_blocks)}
     </section>
     {_report_footer_strip}
@@ -7470,14 +8126,14 @@ def render_slides(
 
     slides.append(
         f'<section class="slide active"><h1>GEO audit</h1><p class="big">{base}</p>'
-        f'<p class="score">{overall:.1f} / 100</p><p class="hint">← → or swipe</p></section>'
+        f'<p class="score">{format_report_score(overall)} / 100</p><p class="hint">← → or swipe</p></section>'
     )
 
     slides.append(
         '<section class="slide"><h2>Agent category scores</h2><ul>'
         + "".join(
             f"<li><strong>{html.escape(c.title)}</strong> ({c.weight:.0f}%): "
-            f"{c.score:.1f}/100</li>"
+            f"{format_report_score(c.score)}/100</li>"
             for c in categories
         )
         + "</ul></section>"
@@ -7820,7 +8476,7 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
         default=[],
         dest="competitors",
         metavar="URL",
-        help="Competitor URL (max 5). Repeat flag. Passed to crawl-site.py.",
+        help="Competitor URL (max 10). Repeat flag. Passed to crawl-site.py.",
     )
     p.add_argument(
         "--brand",
@@ -7931,8 +8587,8 @@ def main() -> int:
 
     _cli_apply_accept_ai_defaults(args)
 
-    if len(args.competitors) > 5:
-        print("Error: at most 5 --competitor URLs allowed.", file=sys.stderr)
+    if len(args.competitors) > 10:
+        print("Error: at most 10 --competitor URLs allowed.", file=sys.stderr)
         return 2
 
     if not CRAWL_SCRIPT.is_file():

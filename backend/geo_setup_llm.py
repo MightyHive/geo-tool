@@ -312,11 +312,17 @@ def _bundle_probe_rows_for_brand_detection(rows: list[dict[str, Any]], *, max_ch
         if not isinstance(row, dict):
             continue
         pq = str(row.get("prompt") or "").strip()[:800]
-        g = str(row.get("gemini_response") or "").strip()
-        o = str(row.get("openai_response") or "").strip()
-        chunks.append(
-            f"---\nUSER_PROMPT:\n{pq}\n--- GEMINI_REPLY (excerpt):\n{g[:6000]}\n--- OPENAI_REPLY (excerpt):\n{o[:6000]}\n"
-        )
+        replies = []
+        for platform, label in (
+            ("gemini", "GEMINI"),
+            ("openai", "OPENAI"),
+            ("google_aio", "GOOGLE_AI_SUMMARIES"),
+            ("claude", "CLAUDE"),
+        ):
+            reply = str(row.get(f"{platform}_response") or "").strip()
+            if reply:
+                replies.append(f"--- {label}_REPLY (excerpt):\n{reply[:4500]}")
+        chunks.append(f"---\nUSER_PROMPT:\n{pq}\n" + "\n".join(replies) + "\n")
     blob = "\n".join(chunks)
     return blob[:max_chars] if len(blob) > max_chars else blob
 
@@ -338,12 +344,16 @@ Primary site: **{primary_site_url}**
 
 {mkt}
 
-Below are excerpts from **Gemini** and **OpenAI** style assistant answers to shopper prompts about overlapping topics.
-Identify **other commercial companies or product brands** clearly mentioned as options, alternatives, retailers, airlines, banks, OTAs, or competitors — names a consumer would recognise.
+Below are excerpts from AI assistant answers to shopper prompts about overlapping topics.
+Identify **other commercial companies or product brands** clearly mentioned as options or alternatives — names a consumer would recognise.
 
 Rules:
 - Exclude **{primary_brand}** and trivial substring overlaps of it.
-- Exclude generic words ("the airline", "your bank") unless tied to a named brand you output.
+- A result must be a named commercial entity, never a pronoun, preposition, adjective, generic noun, heading word, or sentence-opening word.
+- Use hyperlinks as strong entity evidence: markdown link labels and their destination domains often identify the canonical brand. Merge the written name and linked domain into one result.
+- Prefer entities supported by a hyperlink/domain, a recommendation heading, or repeated proper-name usage. Do not infer an entity from an isolated lowercase word.
+- Exclude retailers and marketplaces used only in "where to buy" links; those are vendors, not competitors.
+- Exclude generic words (for example "for", "this", "where", "known", "the airline", "your bank").
 - Prefer brands that plausibly compete for the same customers in the stated market.
 - Return **distinct** brands; merge duplicates.
 - If website unknown, use an empty string for website_url.

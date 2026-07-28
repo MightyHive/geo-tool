@@ -1,15 +1,24 @@
-import { useState, useRef, useEffect } from "react";
-import { Download, FileText, Code, ChevronDown } from "lucide-react";
 import type { ReportMeta } from "../types";
-import { scoreColor, scoreLabel } from "../lib/reportScore";
+import { formatReportScore, scoreColor, scoreLabel } from "../lib/reportScore";
+import { ReportDownloadMenu } from "./ReportDownloadMenu";
 
 interface ReportHeaderProps {
   meta: ReportMeta;
+  auditDirOrSlug?: string;
   downloadUrl?: string;
   allPagesHtmlUrl?: string;
+  pdfFilename?: string;
+  htmlFilename?: string;
 }
 
-export function ReportHeader({ meta, downloadUrl, allPagesHtmlUrl }: ReportHeaderProps) {
+export function ReportHeader({
+  meta,
+  auditDirOrSlug,
+  downloadUrl,
+  allPagesHtmlUrl,
+  pdfFilename,
+  htmlFilename,
+}: ReportHeaderProps) {
   const score = meta.overall_score;
   const tone = meta.score_tone ?? "yellow";
   const gaugeColor = scoreColor(tone);
@@ -18,24 +27,9 @@ export function ReportHeader({ meta, downloadUrl, allPagesHtmlUrl }: ReportHeade
 
   const faviconUrl = meta.favicon_url?.trim() || "";
 
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
-    }
-    if (dropdownOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [dropdownOpen]);
-
   const ring = 128;
   const inner = 96;
-  const hasDownload = downloadUrl || allPagesHtmlUrl;
+  const hasDownload = Boolean(auditDirOrSlug || downloadUrl || allPagesHtmlUrl);
 
   return (
     <header className="report-site-header shrink-0 bg-[#0d0d0d] text-white border-b border-white/10">
@@ -63,7 +57,7 @@ export function ReportHeader({ meta, downloadUrl, allPagesHtmlUrl }: ReportHeade
             {meta.industry ? (
               <p className="text-xs text-white/88 mb-2 leading-snug">Industry: {meta.industry}</p>
             ) : null}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-start gap-2">
               <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-white/15 text-white">
                 Full audit
               </span>
@@ -74,47 +68,15 @@ export function ReportHeader({ meta, downloadUrl, allPagesHtmlUrl }: ReportHeade
               ) : null}
 
               {hasDownload ? (
-                <div className="relative" ref={dropdownRef}>
-                  <button
-                    onClick={() => setDropdownOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-white/10 text-white/80 hover:bg-white/20 hover:text-white transition-colors select-none"
-                  >
-                    <Download className="w-3 h-3" strokeWidth={2.5} />
-                    Download
-                    <ChevronDown
-                      className="w-3 h-3 transition-transform duration-150"
-                      style={{ transform: dropdownOpen ? "rotate(180deg)" : "rotate(0deg)" }}
-                      strokeWidth={2.5}
-                    />
-                  </button>
-
-                  {dropdownOpen && (
-                    <div className="absolute top-full left-0 mt-1.5 bg-white rounded-xl shadow-xl border border-gray-200/80 py-1 z-50 min-w-[160px] overflow-hidden">
-                      {downloadUrl && (
-                        <a
-                          href={downloadUrl}
-                          download
-                          onClick={() => setDropdownOpen(false)}
-                          className="flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-700 hover:bg-gray-50 no-underline transition-colors"
-                        >
-                          <FileText className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          <span className="font-medium">Download PDF</span>
-                        </a>
-                      )}
-                      {allPagesHtmlUrl && (
-                        <a
-                          href={allPagesHtmlUrl}
-                          download
-                          onClick={() => setDropdownOpen(false)}
-                          className="flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-gray-700 hover:bg-gray-50 no-underline transition-colors"
-                        >
-                          <Code className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          <span className="font-medium">Download HTML</span>
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <ReportDownloadMenu
+                  variant="header"
+                  label="Download"
+                  auditDirOrSlug={auditDirOrSlug}
+                  pdfUrl={downloadUrl}
+                  htmlUrl={allPagesHtmlUrl}
+                  pdfFilename={pdfFilename}
+                  htmlFilename={htmlFilename}
+                />
               ) : null}
             </div>
           </div>
@@ -136,7 +98,7 @@ export function ReportHeader({ meta, downloadUrl, allPagesHtmlUrl }: ReportHeade
                   className="rounded-full bg-[#0d0d0d] flex flex-col items-center justify-center"
                   style={{ width: inner, height: inner }}
                 >
-                  <span className="text-2xl font-bold leading-none">{score.toFixed(1)}</span>
+                  <span className="text-2xl font-bold leading-none">{formatReportScore(score)}</span>
                   <span className="text-xs font-semibold mt-0.5" style={{ color: gaugeColor }}>
                     {label}
                   </span>

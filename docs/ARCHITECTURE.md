@@ -20,6 +20,11 @@ flowchart TB
     Wizard[wizard.py]
     GA4[ga4.py]
     Probes[prompt_performance.py]
+    PromptJobs[prompt_jobs.py]
+  end
+
+  subgraph jobs [Cloud Run Jobs]
+    ProbeWorker[jobs/prompt_probe/run_job.py]
   end
 
   subgraph core [Python pipeline / backend/]
@@ -40,8 +45,10 @@ flowchart TB
   CR --> GA4F
   Crawl --> Brand
   Main --> Probes
-  Probes --> Prompt
-  Probes --> Insights
+  Probes --> PromptJobs
+  PromptJobs --> ProbeWorker
+  ProbeWorker --> Prompt
+  ProbeWorker --> Insights
   CR -->|score + HTML| Report[report.html]
 ```
 
@@ -67,8 +74,9 @@ flowchart TB
 3. `geo_services.seed_audit_dir_from_wizard()` writes stub JSON into `audit_output/<host>_<hash>/`.
 4. `geo_services.iter_pipeline_logs()` spawns `backend/create-report.py` with argv built from wizard + GA4 session creds.
 5. Progress UI maps subprocess log lines → steps via `api/audit_progress.py`.
-6. Post-audit: `api/prompt_performance.run_post_audit_prompt_insights()` (live probes + sentiment).
-7. `geo_services.archive_add_run()` appends to `audit_archive/index.json`.
+6. `api/prompt_jobs.enqueue_prompt_job()` launches the prompt-probe Cloud Run Job.
+7. The Job runs live probes, sentiment, and summary generation against the shared GCS-mounted audit directory.
+8. The Job appends the completed run to `audit_archive/index.json` and publishes terminal progress.
 
 ### CLI audit flow
 
@@ -92,12 +100,14 @@ Order matches `api/audit_progress.py` (`PIPELINE_STEPS`):
 | Step | What happens | Primary modules |
 |------|----------------|-----------------|
 | **crawl** | Primary site HTTP crawl | `backend/create-report.py` → `backend/crawl-site.py` |
-| **competitors** | Up to 5 competitor crawls + comparison | `backend/crawl-site.py`, `backend/create-report.py` |
+| **competitors** | Up to 10 competitor crawls + comparison | `backend/crawl-site.py`, `backend/create-report.py` |
 | **ga4** | GA4 Data API pull (if property + creds) | `backend/ga4_fetch.py`, `backend/ga4_data_api.py` |
 | **report** | `score_audit()` + render HTML | `backend/create-report.py` |
-| **prompt_probes** | Live Gemini/OpenAI/Claude answers | `backend/prompt_suggest.py` |
-| **sentiment** | Gemini sentiment on probe replies | `backend/insights_llm.py` |
-| **finish** | Archive + status file | `geo_services.py` |
+| **prompt_probes** | Durable Cloud Run Job; live Gemini/OpenAI/Claude answers | `api/prompt_jobs.py`, `jobs/prompt_probe/run_job.py`, `backend/prompt_suggest.py` |
+| **prompt_sentiment** | Durable Cloud Run Job; Gemini qualitative sentiment (overall + by_category + by_prompt) | `api/sentiment_jobs.py`, `jobs/prompt_sentiment/run_job.py`, `backend/insights_llm.py` |
+| **content_quality_gemini** | Durable Cloud Run Job; Gemini E-E-A-T / answerability overlay on sampled pages (brand + each competitor) | `api/content_quality_jobs.py`, `jobs/content_quality_gemini/run_job.py`, `backend/content_quality_llm.py` |
+| **sentiment** | Gemini sentiment inside the prompt Job | `backend/insights_llm.py` |
+| **finish** | Job publishes archive + status file | `api/audit_runner.py` |
 
 ---
 
@@ -109,14 +119,17 @@ Order matches `api/audit_progress.py` (`PIPELINE_STEPS`):
 |--------|------|
 | `main.py` | FastAPI app, routers, static `web/dist` |
 | `geo_services.py` | Audit paths, subprocess runner, archive |
-| `audit_runner.py` | Background audit thread + `audit_run_status.json` |
+| `audit_runner.py` | Crawl thread, prompt Job handoff, and `audit_run_status.json` |
 | `audit_progress.py` | Log line → progress step mapping |
 | `wizard.py` | Setup wizard endpoints |
 | `ga4.py` | GA4 OAuth (`/api/ga4/login`, `/callback`, property list) |
 | `ga4_config.py` | OAuth client resolution |
 | `auth.py` / `auth_config.py` | Google sign-in for web UI |
 | `iap.py` / `iap_middleware.py` | Cloud IAP JWT (staging/production) |
-| `prompt_performance.py` | Probe orchestration and SOV APIs |
+| `prompt_performance.py` | Probe result APIs and Cloud Run Job request routing |
+| `prompt_performance_metrics.py` | Persisted slim metrics + Redis/GCS response cache |
+| `cache.py` | Optional Redis/Memorystore get/set (no-op without `REDIS_URL`) |
+| `prompt_jobs.py` | Prompt Job manifests and Cloud Run execution launcher |
 | `sov_metrics.py` | Share-of-voice calculations |
 | `executive_summary.py` | On-demand Gemini summary |
 | `recommendations.py` | On-demand Gemini action plan |
@@ -134,6 +147,7 @@ Order matches `api/audit_progress.py` (`PIPELINE_STEPS`):
 | `ga4_oauth.py` | User OAuth (web + CLI) |
 | `prompt_suggest.py` | Multi-platform live probes |
 | `insights_llm.py` | GA4 narrative + probe reply sentiment |
+| `content_quality_llm.py` | Gemini E-E-A-T / answerability overlay (sampled pages) |
 | `geo_setup_llm.py` | Wizard Gemini helpers |
 | `competitor_suggest.py` | Gemini transport (API key / Vertex) |
 | `executive_summary_llm.py` / `recommendations_llm.py` | Cached LLM report sections |
@@ -213,6 +227,20 @@ See [deploy/README.md](../deploy/README.md).
 - **Deploy:** `scripts/deploy_cloud_run_staging.sh`, `scripts/cloud_run_configure_ga4_oauth.sh`
 
 The container runs uvicorn on port 8080 and spawns `backend/create-report.py` inside the same pod (up to 3600s timeout).
+
+---
+
+## Slim metrics cache (Redis / GCS)
+
+Prompt-performance GET paths prefer persisted `prompt_performance_metrics.json`, then optionally:
+
+| Layer | Env | Notes |
+|-------|-----|--------|
+| **Redis / Memorystore** | `REDIS_URL`, `REDIS_TTL_SEC`, `SLIM_METRICS_REDIS` | Cross-instance cache keyed by `audit_id + locale + metrics version + probe mtime`. No-op when unset or unreachable. **Provision Memorystore for DEV/staging** and inject `REDIS_URL` into Cloud Run. |
+| **GCS slim blobs** | `SLIM_METRICS_GCS_CACHE=1` | Writes `prompt_performance_slim_<locale>.json` beside the audit on the GCS FUSE mount. |
+| **CDN URL hint** | `SLIM_METRICS_CDN_BASE_URL` | When GCS cache is on, responses may include `metrics_cdn_url` for a public/CDN path. |
+
+Caches invalidate when slim metrics are rewritten (probe finalize / persist).
 
 ---
 

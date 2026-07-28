@@ -11,13 +11,17 @@ OpenAI live answers use ``OPENAI_API_KEY`` (environment or ``secrets.toml`` via 
 
 from __future__ import annotations
 
+import concurrent.futures
 import html
 import json
 import logging
+import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 from typing import Any
 from urllib.parse import quote as _url_quote
 from urllib.parse import urlparse
@@ -46,6 +50,15 @@ log = logging.getLogger(__name__)
 
 # All platforms handled by live probes (order determines display order in UI).
 _LIVE_PLATFORMS: tuple[str, ...] = ("gemini", "openai", "claude", "google_aio")
+
+# Gemini chat + Google AIO share GEMINI_API_KEY — serialize those two under one lock.
+_GEMINI_FAMILY = frozenset({"gemini", "google_aio"})
+
+
+def _parallel_platform_probes_enabled() -> bool:
+    raw = (os.getenv("PROMPT_PROBE_PARALLEL") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
 
 # GA4 country → phrase shoppers literally type (reduces US-default bias in live probes).
 _GEO_ISO2_LOCATOR_PHRASE: dict[str, str] = {
@@ -508,11 +521,28 @@ def live_assistant_system_instruction(
     *,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> str:
-    """System prompt for live Gemini/OpenAI probes, with optional primary-market context (wizard / GA4 / env)."""
+    """System prompt for live Gemini/OpenAI probes, with optional primary-market + language context."""
     base = LIVE_ASSISTANT_SYSTEM
     mc, mid = resolve_primary_market(market_country, market_country_code)
     phrase = geo_locator_phrase_for_market(mc, mid)
+    lang = (language or "").strip().lower()
+    lang_label = (language_name or "").strip()
+    if lang and lang != "en":
+        if not lang_label:
+            try:
+                from prompt_locales import language_name as _lang_name
+
+                lang_label = _lang_name(lang)
+            except Exception:
+                lang_label = lang
+        base = (
+            base
+            + f" Answer entirely in {lang_label} ({lang}). "
+            "Use natural wording for that language; keep brand and product names as commonly written locally."
+        )
     if phrase:
         pj = json.dumps(phrase)
         return (
@@ -574,6 +604,8 @@ def claude_answer_user_prompt(
     api_key: str | None = None,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> str:
     key = (api_key or _anthropic_api_key()).strip()
     if not key:
@@ -584,6 +616,8 @@ def claude_answer_user_prompt(
     sys_instr = live_assistant_system_instruction(
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
     )
     body = json.dumps(
         {
@@ -629,6 +663,8 @@ def openai_chat_answer(
     api_key: str | None = None,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> str:
     key = (api_key or _openai_api_key()).strip()
     if not key:
@@ -639,6 +675,8 @@ def openai_chat_answer(
     sys_instr = live_assistant_system_instruction(
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
     )
     body = json.dumps(
         {
@@ -677,6 +715,8 @@ def openai_answer_with_citations(
     api_key: str | None = None,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Call the OpenAI Responses API with the ``web_search_preview`` tool enabled.
@@ -698,6 +738,8 @@ def openai_answer_with_citations(
     sys_instr = live_assistant_system_instruction(
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
     )
     body = json.dumps(
         {
@@ -728,6 +770,8 @@ def openai_answer_with_citations(
                 api_key=api_key,
                 market_country=market_country,
                 market_country_code=market_country_code,
+                language=language,
+                language_name=language_name,
             )
             return text, []
         raise ValueError(f"OpenAI HTTP {e.code}: {detail}") from e
@@ -797,6 +841,8 @@ def gemini_answer_with_citations(
     *,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Call Gemini with ``google_search`` grounding enabled so we get real web citations
@@ -813,6 +859,8 @@ def gemini_answer_with_citations(
             user_prompt,
             market_country=market_country,
             market_country_code=market_country_code,
+            language=language,
+            language_name=language_name,
         )
         return text, []
 
@@ -820,6 +868,8 @@ def gemini_answer_with_citations(
     sys_instr = live_assistant_system_instruction(
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
     )
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -912,24 +962,35 @@ def _merge_citations(
     competitor_tokens: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Merge structured API citations (from grounding/annotations) with any additional
-    URLs found by regex in the response text.
+    Keep only legitimate platform source citations.
 
-    API citations take priority — they already have titles and are deduplicated.
-    Regex citations are appended only for URLs not already covered by the API list.
+    Structured API citations (grounding chunks / url_citation annotations) are the
+    source of truth — these are what the platform referenced to answer.
 
-    If brand_tokens / competitor_tokens are provided, each citation is enriched with
-    brand_cited / competitor_cited fields via section-level context analysis.
+    Do **not** append URLs/domains merely mentioned in the answer text. Those are
+    typically recommendations ("try rival.com"), not cited sources, and would
+    flood Citations with every recommended competitor.
+
+    Fallback: when the platform returns no structured citations (e.g. Claude),
+    extract full ``https?://`` URLs only — never bare domains.
     """
-    merged = list(api_citations)
-    seen_keys = {c["url"].lower().rstrip("/") for c in merged}
-    seen_domains = {c["domain"] for c in merged}
-    for c in extract_citations_from_reply(response_text, brand_site_url):
-        key = c["url"].lower().rstrip("/")
-        if key not in seen_keys and c["domain"] not in seen_domains:
-            merged.append(c)
-            seen_keys.add(key)
-            seen_domains.add(c["domain"])
+    merged: list[dict[str, Any]] = []
+    for c in api_citations:
+        if not isinstance(c, dict):
+            continue
+        item = dict(c)
+        item.setdefault("origin", "api")
+        merged.append(item)
+
+    if not merged and response_text:
+        for c in extract_citations_from_reply(
+            response_text,
+            brand_site_url,
+            include_bare_domains=False,
+        ):
+            item = dict(c)
+            item["origin"] = "text"
+            merged.append(item)
 
     if brand_tokens is not None and competitor_tokens is not None and response_text:
         from citation_context import enrich_citations_with_context
@@ -943,6 +1004,8 @@ def gemini_answer_user_prompt(
     *,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "",
+    language_name: str = "",
 ) -> str:
     """Assistant-style completion (plain text, not JSON)."""
     up = (user_prompt or "").strip()[:12000]
@@ -951,6 +1014,8 @@ def gemini_answer_user_prompt(
     sys_instr = live_assistant_system_instruction(
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
     )
     return _strip_gemini_artifacts(_gemini_generate(system_instruction=sys_instr, user_text=up))
 
@@ -1557,12 +1622,20 @@ def _classify_citation(domain: str) -> tuple[str, str]:
     return ("Web page", "Website")
 
 
-def extract_citations_from_reply(text: str, brand_site_url: str = "") -> list[dict[str, str]]:
+def extract_citations_from_reply(
+    text: str,
+    brand_site_url: str = "",
+    *,
+    include_bare_domains: bool = False,
+) -> list[dict[str, str]]:
     """
-    Extract URLs and bare domain names mentioned in an LLM reply.
+    Extract URLs (and optionally bare domain names) mentioned in an LLM reply.
 
     Returns a list of ``{"url": ..., "domain": ..., "content_type": ..., "channel_type": ...}``
     dicts, deduplicated by URL, with the brand's own domain excluded.
+
+    Bare domains (``rival.com``) are off by default — they are usually brand
+    recommendations in the answer, not platform-referenced sources.
     """
     if not text:
         return []
@@ -1575,6 +1648,9 @@ def extract_citations_from_reply(text: str, brand_site_url: str = "") -> list[di
     out: list[dict[str, str]] = []
     for match in _CITATION_URL_RE.finditer(text):
         raw = match.group(0)
+        is_full_url = bool(re.match(r"^https?://", raw, flags=re.IGNORECASE))
+        if not include_bare_domains and not is_full_url:
+            continue
         base = raw.split(".")[0].lower()
         if base in _BARE_DOMAIN_BLOCKLIST:
             continue
@@ -1981,7 +2057,11 @@ def recompute_live_probe_mention_scores(
         target["mention_scores"] = scores
         citations = target.get(citations_key)
         if not citations:
-            citations = extract_citations_from_reply(response, brand_site_url)
+            citations = extract_citations_from_reply(
+                response,
+                brand_site_url,
+                include_bare_domains=False,
+            )
             target[citations_key] = citations
         if isinstance(citations, list):
             from citation_context import (
@@ -2140,6 +2220,8 @@ def run_live_prompt_probes(
     max_prompts: int = 10,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
     progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """
@@ -2175,6 +2257,8 @@ def run_live_prompt_probes(
     cbr = cbr[: len(comp_urls)]
     mc_res, mid_res = resolve_primary_market(market_country, market_country_code)
     phrase = geo_locator_phrase_for_market(mc_res, mid_res)
+    lang = (language or "en").strip().lower() or "en"
+    lang_label = (language_name or "").strip() or ("English" if lang == "en" else lang)
 
     from citation_context import build_brand_tokens, build_competitor_tokens
     _brand_tokens = build_brand_tokens(brand, brand_site_url)
@@ -2233,6 +2317,8 @@ def run_live_prompt_probes(
             "elapsed_seconds": round(elapsed_seconds, 2) if elapsed_seconds is not None else None,
             "total_elapsed_seconds": round(time.monotonic() - probe_started, 2),
             "error": error[:300],
+            "locale_language": lang,
+            "locale_market": mid_res or mc_res,
         }
         log.info("AI prompt probe progress: %s", json.dumps(payload, ensure_ascii=False))
         if progress_callback:
@@ -2242,6 +2328,13 @@ def run_live_prompt_probes(
                 log.exception("AI prompt probe progress callback failed")
 
     _emit_progress(status="started")
+
+    _locale_kwargs = {
+        "market_country": mc_res,
+        "market_country_code": mid_res,
+        "language": lang,
+        "language_name": lang_label,
+    }
 
     rows: list[dict[str, Any]] = []
     for i, user_q in enumerate(used, start=1):
@@ -2257,141 +2350,129 @@ def run_live_prompt_probes(
                 "claude_response": "",
                 "google_aio_response": "",
             }
-            if _platform_live("gemini"):
-                call_started = time.monotonic()
-                _emit_progress(status="running", prompt_index=i, run_index=run_idx + 1, platform="gemini")
-                try:
-                    g_text, g_api_cits = gemini_answer_with_citations(
-                        user_q,
-                        market_country=mc_res,
-                        market_country_code=mid_res,
-                    )
-                    row["gemini_response"] = g_text
-                    row["citations_gemini"] = _merge_citations(
-                        g_api_cits, g_text, brand_site_url, _brand_tokens, _comp_tokens
-                    )
-                except Exception as e:
-                    err = str(e)
-                    row["error_gemini"] = err
-                    if is_fatal_platform_error("gemini", err):
-                        exclude_platform("gemini", err)
-                        disabled_run.add("gemini")
-                finally:
-                    error = str(row.get("error_gemini") or "")
-                    _emit_progress(
-                        status="error" if error else "complete",
-                        prompt_index=i,
-                        run_index=run_idx + 1,
-                        platform="gemini",
-                        elapsed_seconds=time.monotonic() - call_started,
-                        error=error,
-                    )
-            if _platform_live("openai"):
-                call_started = time.monotonic()
-                _emit_progress(status="running", prompt_index=i, run_index=run_idx + 1, platform="openai")
-                try:
-                    o_text, o_api_cits = openai_answer_with_citations(
-                        user_q,
-                        api_key=okey,
-                        market_country=mc_res,
-                        market_country_code=mid_res,
-                    )
-                    row["openai_response"] = o_text
-                    row["citations_openai"] = _merge_citations(
-                        o_api_cits, o_text, brand_site_url, _brand_tokens, _comp_tokens
-                    )
-                except Exception as e:
-                    err = str(e)
-                    row["error_openai"] = err
-                    if is_fatal_platform_error("openai", err):
-                        exclude_platform("openai", err)
-                        disabled_run.add("openai")
-                finally:
-                    error = str(row.get("error_openai") or "")
-                    _emit_progress(
-                        status="error" if error else "complete",
-                        prompt_index=i,
-                        run_index=run_idx + 1,
-                        platform="openai",
-                        elapsed_seconds=time.monotonic() - call_started,
-                        error=error,
-                    )
-            if ckey and _platform_live("claude"):
-                call_started = time.monotonic()
-                _emit_progress(status="running", prompt_index=i, run_index=run_idx + 1, platform="claude")
-                try:
-                    row["claude_response"] = claude_answer_user_prompt(
-                        user_q,
-                        api_key=ckey,
-                        market_country=mc_res,
-                        market_country_code=mid_res,
-                    )
-                    row["citations_claude"] = _merge_citations(
-                        [], row["claude_response"], brand_site_url, _brand_tokens, _comp_tokens
-                    )
-                except Exception as e:
-                    err = str(e)
-                    row["error_claude"] = err
-                    if is_fatal_platform_error("claude", err):
-                        exclude_platform("claude", err)
-                        disabled_run.add("claude")
-                finally:
-                    error = str(row.get("error_claude") or "")
-                    _emit_progress(
-                        status="error" if error else "complete",
-                        prompt_index=i,
-                        run_index=run_idx + 1,
-                        platform="claude",
-                        elapsed_seconds=time.monotonic() - call_started,
-                        error=error,
-                    )
+            progress_lock = threading.Lock()
+            gemini_family_lock = threading.Lock()
+            disable_lock = threading.Lock()
 
-            # Google AI Summaries — grounded Gemini (same API key as regular Gemini)
-            if _platform_live("google_aio"):
-                call_started = time.monotonic()
-                _emit_progress(status="running", prompt_index=i, run_index=run_idx + 1, platform="google_aio")
-                try:
-                    aio_result = _aio_grounded_answer(
-                        user_q,
-                        market_country=mc_res,
-                        market_country_code=mid_res,
-                    )
-                    if aio_result.get("error"):
-                        row["error_google_aio"] = aio_result["error"]
-                        if is_fatal_platform_error("google_aio", aio_result["error"]):
-                            exclude_platform("google_aio", aio_result["error"])
-                            disabled_run.add("google_aio")
-                    else:
-                        row["google_aio_response"] = aio_result.get("response") or ""
-                        raw_cits = [
-                            c for c in (aio_result.get("citations") or [])
-                            if c.get("domain") and c.get("domain") != brand_domain
-                        ]
-                        # Enrich with content_type / channel_type if missing
-                        for c in raw_cits:
-                            if not c.get("content_type"):
-                                ct, cht = _classify_citation(c.get("domain", ""))
-                                c["content_type"] = ct
-                                c["channel_type"] = cht
-                        row["citations_google_aio"] = _merge_citations(
-                            raw_cits, row["google_aio_response"], brand_site_url, _brand_tokens, _comp_tokens
-                        )
-                except Exception as e:
-                    err = str(e)
-                    row["error_google_aio"] = err
-                    if is_fatal_platform_error("google_aio", err):
-                        exclude_platform("google_aio", err)
-                        disabled_run.add("google_aio")
-                finally:
-                    error = str(row.get("error_google_aio") or "")
-                    _emit_progress(
-                        status="error" if error else "complete",
+            def _mark_disabled(pk: str) -> None:
+                with disable_lock:
+                    disabled_run.add(pk)
+
+            def _safe_emit(**kwargs: Any) -> None:
+                with progress_lock:
+                    _emit_progress(**kwargs)
+
+            def _probe_platform(platform: str) -> None:
+                if not _platform_live(platform):
+                    return
+                family_ctx = (
+                    gemini_family_lock
+                    if platform in _GEMINI_FAMILY
+                    else nullcontext()
+                )
+                with family_ctx:
+                    if not _platform_live(platform):
+                        return
+                    call_started = time.monotonic()
+                    _safe_emit(
+                        status="running",
                         prompt_index=i,
                         run_index=run_idx + 1,
-                        platform="google_aio",
-                        elapsed_seconds=time.monotonic() - call_started,
-                        error=error,
+                        platform=platform,
                     )
+                    try:
+                        if platform == "gemini":
+                            g_text, g_api_cits = gemini_answer_with_citations(
+                                user_q,
+                                **_locale_kwargs,
+                            )
+                            row["gemini_response"] = g_text
+                            row["citations_gemini"] = _merge_citations(
+                                g_api_cits, g_text, brand_site_url, _brand_tokens, _comp_tokens
+                            )
+                        elif platform == "openai":
+                            o_text, o_api_cits = openai_answer_with_citations(
+                                user_q,
+                                api_key=okey,
+                                **_locale_kwargs,
+                            )
+                            row["openai_response"] = o_text
+                            row["citations_openai"] = _merge_citations(
+                                o_api_cits, o_text, brand_site_url, _brand_tokens, _comp_tokens
+                            )
+                        elif platform == "claude":
+                            row["claude_response"] = claude_answer_user_prompt(
+                                user_q,
+                                api_key=ckey,
+                                **_locale_kwargs,
+                            )
+                            row["citations_claude"] = _merge_citations(
+                                [],
+                                row["claude_response"],
+                                brand_site_url,
+                                _brand_tokens,
+                                _comp_tokens,
+                            )
+                        elif platform == "google_aio":
+                            aio_result = _aio_grounded_answer(
+                                user_q,
+                                market_country=mc_res,
+                                market_country_code=mid_res,
+                            )
+                            if aio_result.get("error"):
+                                row["error_google_aio"] = aio_result["error"]
+                                if is_fatal_platform_error("google_aio", aio_result["error"]):
+                                    exclude_platform("google_aio", aio_result["error"])
+                                    _mark_disabled("google_aio")
+                            else:
+                                row["google_aio_response"] = aio_result.get("response") or ""
+                                raw_cits = [
+                                    c for c in (aio_result.get("citations") or [])
+                                    if c.get("domain") and c.get("domain") != brand_domain
+                                ]
+                                for c in raw_cits:
+                                    if not c.get("content_type"):
+                                        ct, cht = _classify_citation(c.get("domain", ""))
+                                        c["content_type"] = ct
+                                        c["channel_type"] = cht
+                                row["citations_google_aio"] = _merge_citations(
+                                    raw_cits,
+                                    row["google_aio_response"],
+                                    brand_site_url,
+                                    _brand_tokens,
+                                    _comp_tokens,
+                                )
+                    except Exception as e:
+                        err = str(e)
+                        row[f"error_{platform}"] = err
+                        if is_fatal_platform_error(platform, err):
+                            exclude_platform(platform, err)
+                            _mark_disabled(platform)
+                    finally:
+                        error = str(row.get(f"error_{platform}") or "")
+                        _safe_emit(
+                            status="error" if error else "complete",
+                            prompt_index=i,
+                            run_index=run_idx + 1,
+                            platform=platform,
+                            elapsed_seconds=time.monotonic() - call_started,
+                            error=error,
+                        )
+
+            platforms_this_run = [
+                pk
+                for pk in _LIVE_PLATFORMS
+                if (pk != "claude" or ckey) and _platform_live(pk)
+            ]
+            if _parallel_platform_probes_enabled() and len(platforms_this_run) > 1:
+                workers = min(3, len(platforms_this_run))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = [pool.submit(_probe_platform, pk) for pk in platforms_this_run]
+                    for fut in concurrent.futures.as_completed(futs):
+                        fut.result()
+            else:
+                for pk in platforms_this_run:
+                    _probe_platform(pk)
 
             prompt_run_results.append(row)
             # end run_idx loop
@@ -2494,8 +2575,10 @@ def run_live_prompt_probes(
                 "country": mc_res,
                 "country_id": mid_res,
                 "geo_locator_phrase": phrase or None,
+                "language": lang,
+                "language_name": lang_label,
             }
-            if (mc_res or mid_res)
+            if (mc_res or mid_res or lang)
             else None
         ),
     }

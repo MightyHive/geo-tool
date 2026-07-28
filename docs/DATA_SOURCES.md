@@ -60,7 +60,7 @@ CLI flags on `backend/create-report.py` / `backend/crawl-site.py`: `--max-urls`,
 ## 2. Competitor crawl
 
 **Module:** `backend/crawl-site.py` (competitor mode)  
-**Limit:** Up to 5 competitors per audit (web wizard allows more URLs for suggestions; audit caps at 5)
+**Limit:** Up to 10 competitors per audit
 
 Each competitor gets a subdirectory:
 

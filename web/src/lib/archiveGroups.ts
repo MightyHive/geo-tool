@@ -1,4 +1,5 @@
 import type { ArchiveRun } from "../types";
+import { formatReportScore, roundReportScore } from "./reportScore";
 
 export interface SiteAuditGroup {
   siteKey: string;
@@ -12,15 +13,16 @@ export function displayArchiveScore(score: number | null | undefined): string {
   if (score == null || Number.isNaN(Number(score))) return "—";
   const n = Number(score);
   if (n <= 0) return "—";
-  return n.toFixed(1);
+  return formatReportScore(n);
 }
 
 export function scoreTone(score: number | null | undefined): string {
   const n = Number(score);
   if (!Number.isFinite(n) || n <= 0) return "text-gray-500";
-  if (n >= 75) return "text-emerald-600";
-  if (n >= 60) return "text-blue-600";
-  if (n >= 40) return "text-amber-600";
+  const s = roundReportScore(n);
+  if (s >= 75) return "text-emerald-600";
+  if (s >= 60) return "text-blue-600";
+  if (s >= 40) return "text-amber-600";
   return "text-orange-600";
 }
 

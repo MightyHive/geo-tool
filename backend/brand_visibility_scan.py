@@ -160,24 +160,73 @@ def _fetch_html(url: str) -> tuple[int | None, str]:
         return None, ""
 
 
+_ENTITY_TITLE_QUALIFIERS = frozenset(
+    {
+        "brand", "company", "official", "channel", "youtube",
+        "cosmetics", "skincare", "beauty", "group", "overview",
+        "ltd", "limited", "inc", "plc", "corporation", "corp",
+    }
+)
+
+
 def _title_matches_brand_variants(title: str, variants: list[str]) -> bool:
-    tn = _normalize(title)
-    tn_compact = _alnum_compact(title)
-    for v in variants:
-        vn = _normalize(v)
-        if not vn:
+    """Require an exact entity name or a narrowly qualified brand variant."""
+    title_norm = _normalize(html_mod.unescape(title))
+    if not title_norm:
+        return False
+    title_tokens = title_norm.split()
+    title_compact = _alnum_compact(title_norm)
+    for variant in variants:
+        variant_norm = _normalize(variant)
+        if not variant_norm:
             continue
-        if vn in tn:
+        variant_tokens = variant_norm.split()
+        if title_norm == variant_norm or title_compact == _alnum_compact(variant_norm):
             return True
-        vtok = [t for t in vn.split() if len(t) > 1]
-        if len(vtok) >= 2 and all(t in tn for t in vtok):
-            return True
-        vc = _alnum_compact(v)
-        if len(vc) >= 5 and vc == tn_compact:
-            return True
-        if len(vc) >= 6 and vc in tn_compact:
+        if title_tokens[: len(variant_tokens)] == variant_tokens:
+            suffix = title_tokens[len(variant_tokens):]
+            if suffix and all(token in _ENTITY_TITLE_QUALIFIERS for token in suffix):
+                return True
+        if title_tokens[-len(variant_tokens):] == variant_tokens:
+            prefix = title_tokens[:-len(variant_tokens)]
+            if prefix and all(token in {"official"} for token in prefix):
+                return True
+    return False
+
+
+def _content_mentions_brand_variants(text: str, variants: list[str]) -> bool:
+    """Match a complete contiguous brand phrase inside broader discussion text."""
+    normalized = _normalize(text)
+    for variant in variants:
+        variant_norm = _normalize(variant)
+        if variant_norm and re.search(
+            rf"(?:^|\s){re.escape(variant_norm)}(?:$|\s)",
+            normalized,
+        ):
             return True
     return False
+
+
+def _entity_titles_from_html(body: str) -> list[str]:
+    titles: list[str] = []
+    patterns = (
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']',
+        r"<title[^>]*>(.*?)</title>",
+        r'"ownerChannelName"\s*:\s*"([^"]+)"',
+        r'"channelName"\s*:\s*"([^"]+)"',
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, body, re.IGNORECASE | re.DOTALL):
+            value = html_mod.unescape(re.sub(r"\s+", " ", match.group(1))).strip()
+            value = re.split(
+                r"\s*(?:\||-|–|—)\s*(?:LinkedIn|YouTube)\s*$",
+                value,
+                flags=re.IGNORECASE,
+            )[0]
+            if value and value not in titles:
+                titles.append(value)
+    return titles
 
 
 def _wikipedia_probe(
@@ -277,16 +326,15 @@ def _youtube_channel_looks_real(body: str, brand_variants: list[str]) -> bool:
         )
     ):
         return False
-    if "subscriber" in low or "subscribers" in low:
-        return True
-    if '"channelId"' in body or '"externalId"' in body:
-        return True
-    bv = [_alnum_compact(v) for v in brand_variants if _alnum_compact(v)]
-    compact_body = _alnum_compact(body[:50_000])
-    for b in bv:
-        if len(b) >= 5 and b in compact_body:
-            return True
-    return False
+    titles = _entity_titles_from_html(body)
+    if not any(_title_matches_brand_variants(title, brand_variants) for title in titles):
+        return False
+    return (
+        "subscriber" in low
+        or "subscribers" in low
+        or '"channelId"' in body
+        or '"externalId"' in body
+    )
 
 
 def _youtube_probe(
@@ -438,7 +486,7 @@ def _reddit_search_top_threads(
             full = f"https://www.reddit.com{permalink}"
             stext = _normalize(d.get("selftext", "") or "")
             combined = f"{title} {stext}"
-            if _title_matches_brand_variants(combined, variants):
+            if _content_mentions_brand_variants(combined, variants):
                 seen_perm.add(perm_key)
                 found.append(
                     {
@@ -660,6 +708,10 @@ def _linkedin_probe(
         if "page not found" in low or "couldn’t find" in low or "couldn't find" in low:
             continue
         if "this page doesn't exist" in low:
+            continue
+        titles = _entity_titles_from_html(body)
+        variants = _search_variants_for_brand(brand, base_url)
+        if not any(_title_matches_brand_variants(title, variants) for title in titles):
             continue
         if status == 200 and (
             ('property="og:url"' in low and "/company/" in low)

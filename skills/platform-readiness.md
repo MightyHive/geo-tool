@@ -123,7 +123,7 @@ Produce:
 |---:|---|---|
 | 90–100 | Excellent | Strong readiness; only minor platform-specific improvements |
 | 75–89 | Good | Solid foundation with meaningful optimisation opportunities |
-| 60–74 | Moderate | Some strengths, but important gaps reduce citation likelihood |
+| 60–74 | OK | Some strengths, but important gaps reduce citation likelihood |
 | 40–59 | Weak | Significant platform-specific blockers or missing signals |
 | 0–39 | Poor | Low readiness; major technical/content/entity issues |
 
@@ -658,6 +658,49 @@ Use this as context, not as the sole score.
 | GBP / Merchant Center | Verified / Assumption / N/A | |
 | Live AI citation tests | Completed / Not completed | |
 ```
+
+---
+
+# Prompt performance integration (NEW)
+
+## Why probe data matters for readiness scoring
+
+Technical readiness signals (schema, robots, SSR) are necessary but not sufficient. A brand can have perfect technical setup and still not appear in AI-generated responses. **Live probe data** from the Prompt Performance module provides the strongest signal of actual platform readiness.
+
+## Composite score formula
+
+When probe data is available, the per-platform readiness score should be calculated as:
+
+```
+Platform Readiness Score = 0.55 × probe_visibility_pct
+                         + 0.25 × probe_sov_pct
+                         + 0.20 × technical_geo_score
+```
+
+Where:
+- `probe_visibility_pct` = % of probed prompts where the brand was mentioned in responses from this platform
+- `probe_sov_pct` = brand mention hits / (brand + competitor hits) on this platform × 100
+- `technical_geo_score` = the Technical GEO Setup score (citability, crawler access, schema, etc.)
+
+When probe data is **not** available, fall back to the technical-only signals described in this skill.
+
+## Platform-specific probe weighting rationale
+
+| Platform | Probe weight | Reasoning |
+|----------|-------------|-----------|
+| Gemini / Google AIO | 80% of composite | Google probes directly test what Google's AI will say; this is the most direct signal available |
+| ChatGPT / OpenAI | 80% of composite | OpenAI probes directly test real retrieval behaviour |
+| Claude | 70% of composite | Claude probes are representative but Claude's market share is smaller; technical signals carry more relative weight |
+
+## Interpreting low probe visibility on a specific platform
+
+| Probe visibility | Interpretation | Primary actions |
+|-----------------|----------------|----------------|
+| 0% | Brand not surfaced at all | Check crawler access; rebuild entity signals for this platform |
+| 1–25% | Rarely surfaced | Review page structure and answer-optimisation for this platform's scoring patterns |
+| 26–60% | Inconsistently surfaced | Deepen topical coverage; build third-party citations on platform-appropriate channels |
+| 61–90% | Regularly surfaced | Fine-tune SOV; monitor and respond to competitor gains |
+| 91–100% | Dominant | Defend position; expand into new topic clusters |
 
 ---
 

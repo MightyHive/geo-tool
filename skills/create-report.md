@@ -10,7 +10,7 @@ This skill synthesises findings from all other GEO audit skills into a professio
 - `report.html`
 - `report_slides.html`
 - Optional Streamlit dashboard view
-- Optional competitor comparison
+- Competitor comparison (when competitors are configured)
 - Optional GA4 AI traffic appendix
 
 ---
@@ -194,19 +194,29 @@ Use this map before rendering the action plan or category recommendations.
 
 # Skill map
 
-## Category 1: AI Visibility
+## Category 1: AI Visibility (Probe-driven — see `ai-visibility-prompt-performance.md`)
+
+> **Revised definition:** AI Visibility is now measured entirely from **live prompt probe data**, not from technical signals. It answers the question "Is the brand being mentioned by AI tools right now?".
+>
+> The technical signals previously in this category (citability, platform readiness, ai_search_success, brand entity) have moved to **Technical Setup**.
+
+| Input | Role |
+|---|---|
+| `prompt_performance_live_probe.json` | Per-prompt brand visibility % and SOV % across platforms |
+| `ai-visibility-prompt-performance.md` | Score formula and band interpretations |
+
+**Score formula:** `AI Visibility = 0.60 × Visibility% + 0.40 × SOV%`
+
+## Category 2: Technical GEO Setup (expanded)
+
+> **Revised:** Technical Setup now incorporates all citability and platform readiness signals previously in AI Visibility, plus the original technical infrastructure signals.
 
 | Skill | Role |
 |---|---|
 | `ai-citability.md` | Page-level passage extractability and citation worthiness |
 | `brand-visibility.md` | Brand/entity visibility and third-party corroboration |
-| `platform-readiness.md` | Platform-specific readiness for AI/search surfaces |
+| `platform-readiness.md` | Platform-specific readiness for AI/search surfaces (incl. probe integration) |
 | `ai-search-success.md` | Google AI Search / AI Overviews readiness |
-
-## Category 2: Technical Setup
-
-| Skill | Role |
-|---|---|
 | `ai-crawler-report.md` | AI and search crawler access |
 | `llms-txt.md` | `llms.txt` discovery, validation, and sample generation |
 | `technical-audit.md` | Indexability, rendering, canonicals, speed, mobile, discovery |
@@ -284,8 +294,8 @@ Maximum length: **two short sentences**.
 
 | Category | Definition sentence |
 |---|---|
-| AI Visibility | Measures whether AI search tools can recognise the brand and use the site’s pages as clear, cite-worthy answers. |
-| Technical Setup | Measures whether search engines and AI tools can access the site, find the right pages, and read the important content reliably. |
+| AI Visibility | Measures how visible the brand actually is in AI-generated responses, based on live prompt probe data (visibility rate and share of voice across platforms). |
+| Technical Setup | Measures whether AI tools can access, crawl, and extract content — covering citability, platform readiness, crawler access, indexability, structured data, and discovery signals. |
 | Content Quality & Structure | Measures whether the site’s content is helpful, trustworthy, well organised, and easy for AI systems to understand. |
 
 ---
@@ -532,7 +542,7 @@ Use these labels in the report header and score cards.
 |---:|---|---|
 | 90–100 | Excellent | Strong GEO readiness; likely crawlable, understandable, and citation-worthy |
 | 75–89 | Good | Solid foundation with meaningful optimisation opportunities |
-| 60–74 | Moderate | Some GEO strengths, but important gaps reduce AI visibility |
+| 60–74 | OK | Some GEO strengths, but important gaps reduce AI visibility |
 | 40–59 | Weak | Significant technical, content, or authority issues limit AI visibility |
 | 0–39 | Poor | Major remediation needed before the site is likely to perform well in AI answer systems |
 
@@ -574,7 +584,7 @@ Header example:
 
 ```markdown
 GEO Readiness Audit — example.com  
-Score: 72/100 — Moderate  
+Score: 72/100 — OK
 Pages sampled: 50  
 Audit date: 2026-05-08
 ```
@@ -585,7 +595,7 @@ Audit date: 2026-05-08
 
 Write exactly **one paragraph**.
 
-Target length: **4–6 sentences**.
+Target length: **2–3 sentences**.
 
 Tone:
 
@@ -596,23 +606,60 @@ Tone:
 - No tool narration
 - No unnecessary jargon
 
-Use `<strong>...</strong>` in HTML for key priorities.
+Use `<strong>...</strong>` sparingly for the most decision-relevant evidence.
+
+## Score labels (mandatory)
+
+When stating the overall GEO score, use the **`overall_rating` supplied in the audit data**. Do not invent a different band.
+
+Canonical bands (same as the product UI):
+
+| Score range | Rating |
+|---:|---|
+| 90–100 | Excellent |
+| 75–89 | Good |
+| 60–74 | OK |
+| 40–59 | Weak |
+| 0–39 | Poor |
+
+Example: **60.0/100 is OK**, not Weak.
+
+Pillar names when referenced: **AI Visibility**, **Technical Setup**, **Content Quality & Structure**.
+
+## Share of voice framing (mandatory)
+
+When live probe SOV data is available:
+
+- Always state **rank** and **SOV %** accurately when both are supplied.
+- If the brand ranks **#1** (or `sov_framing.tone` is `strength` / leads tracked competitors), treat SOV as a **strength**, even when the absolute percentage is modest (e.g. 29.9%).
+- Do **not** claim that competitors “capture the majority” or otherwise frame SOV negatively solely because the absolute % is below 50% while the brand leads.
+- If the brand is not #1, frame SOV as a competitive gap using the supplied rank.
 
 ## Required content
 
 The paragraph should include:
 
-1. Scope: number of pages sampled.
-2. Score: short mention if useful; do not repeat too much header metadata.
-3. Single most important finding.
-4. Top three priorities, bolded.
-5. Business impact in plain language.
+1. Overall GEO position and the single most important audit finding.
+2. Prompt-performance evidence, when live probes are available: cross-platform brand visibility, share of voice, or a material platform difference.
+3. Business meaning in plain language.
+
+When stating the overall score, always use the canonical score supplied in the audit data and display it to one decimal place (for example, `72.0/100`).
+
+Do not include recommendations, priorities, action lists, or next steps. Those belong in the recommendations section.
 
 ## Example
 
 ```html
 <p>
-We reviewed <strong>50 pages</strong> from example.com across AI visibility, technical setup, and content quality. The site has a <strong>Moderate GEO readiness score of 72/100</strong>, with a solid technical base but weaker citation signals on priority content. The most important gap is that key service pages explain the offer but do not yet provide clear, source-backed answer blocks that AI systems can quote. The top priorities are to <strong>add direct answer summaries to priority pages</strong>, <strong>roll out verified structured data</strong>, and <strong>strengthen brand/entity signals across official profiles</strong>. These changes will make the site easier for search engines and AI assistants to understand, trust, and cite.
+The site has an <strong>OK GEO readiness score of 72.0/100</strong>, with a solid technical base but weaker citation signals on priority content. Live probes show the brand appearing in <strong>58% of tested prompts</strong>, indicating that current visibility is meaningful but inconsistent across AI platforms.
+</p>
+```
+
+## Example (OK score + leading SOV)
+
+```html
+<p>
+The brand has an <strong>OK GEO readiness score of 60.0/100</strong>, held back mainly by technical and content gaps. In live AI probes it leads tracked competitors at <strong>rank #1 with 29.9% share of voice</strong>, so relative visibility is a clear strength even while absolute SOV remains modest.
 </p>
 ```
 

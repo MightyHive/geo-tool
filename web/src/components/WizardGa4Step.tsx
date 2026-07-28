@@ -6,6 +6,16 @@ import {
   ga4LoginUrl,
   saveGa4Selection,
 } from "../api/client";
+import {
+  buildConversionEventSpec,
+  canContinueGa4Connect,
+  eventNamesInput,
+  isOnlyDefaultPurchase,
+  requiresSeriesLabel,
+  seriesLabelFromEvents,
+  tryParseConversionEvents,
+  validateConversionSpec,
+} from "../lib/conversionEvents";
 import { SearchableSelect } from "./SearchableSelect";
 import type { Ga4Status } from "../types";
 
@@ -13,7 +23,11 @@ interface WizardGa4StepProps {
   onBack: () => void;
   onContinue: () => void;
   onSkip: () => void;
-  onSelectionSaved?: (propertyId: string, aiChannelNames: string) => void;
+  onSelectionSaved?: (
+    propertyId: string,
+    aiChannelNames: string,
+    conversionEventName: string,
+  ) => void;
 }
 
 function applyStatusSelection(
@@ -39,8 +53,25 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
   const [accountId, setAccountId] = useState("");
   const [propertyId, setPropertyId] = useState("");
   const [aiChannels, setAiChannels] = useState("");
+  const [conversionEventsInput, setConversionEventsInput] = useState("purchase");
+  const [conversionLabel, setConversionLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const conversionValidation = validateConversionSpec(
+    conversionEventsInput,
+    conversionLabel,
+  );
+  const conversionEvents = conversionValidation.events;
+  const labelRequired = requiresSeriesLabel(conversionEvents);
+  const continueGate = canContinueGa4Connect({
+    connected: Boolean(status?.connected),
+    saving,
+    accountId,
+    propertyId,
+    eventsInput: conversionEventsInput,
+    seriesLabel: conversionLabel,
+  });
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -49,6 +80,15 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
         setStatus(s);
         applyStatusSelection(s, setAccountId, setPropertyId);
         if (s.ai_channel_names) setAiChannels(s.ai_channel_names);
+        const stored = s.conversion_event_name?.trim() || "purchase";
+        const parsed = tryParseConversionEvents(stored);
+        if (parsed.ok) {
+          setConversionEventsInput(eventNamesInput(parsed.events));
+          setConversionLabel(seriesLabelFromEvents(parsed.events) || "");
+        } else {
+          setConversionEventsInput(stored);
+          setConversionLabel("");
+        }
         if (s.error) setError(s.error);
         if (s.connected) setPhase("connect");
       })
@@ -134,16 +174,25 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
   }
 
   async function handleContinueFromConnect() {
-    if (!status?.connected) {
-      setError("Sign in with Google for Analytics first.");
+    const gate = canContinueGa4Connect({
+      connected: Boolean(status?.connected),
+      accountId,
+      propertyId,
+      eventsInput: conversionEventsInput,
+      seriesLabel: conversionLabel,
+    });
+    if (!gate.ok) {
+      setError(gate.error);
       return;
     }
-    if (!accountId.trim()) {
-      setError("Select a GA4 account.");
-      return;
-    }
-    if (!propertyId.trim()) {
-      setError("Select a GA4 property.");
+    let eventName: string;
+    try {
+      eventName = buildConversionEventSpec(
+        conversionEventsInput.trim() || "purchase",
+        conversionLabel,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Invalid conversion events");
       return;
     }
     setSaving(true);
@@ -152,13 +201,25 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
       const pid = propertyId.trim();
       const aid = accountId.trim();
       const ch = aiChannels.trim();
-      await saveGa4Selection(pid, ch, aid);
-      onSelectionSaved?.(pid, ch);
+      await saveGa4Selection(pid, ch, aid, eventName);
+      onSelectionSaved?.(pid, ch, eventName);
       onContinue();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save GA4 selection");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleConversionEventsChange(value: string) {
+    setConversionEventsInput(value);
+    const parsed = tryParseConversionEvents(value.trim() || "purchase");
+    if (!parsed.ok) return;
+    const migrated = seriesLabelFromEvents(parsed.events);
+    // Migrate legacy event:Label paste from Field 1 into Field 2.
+    if (migrated && !conversionLabel.trim()) {
+      setConversionLabel(migrated);
+      setConversionEventsInput(eventNamesInput(parsed.events));
     }
   }
 
@@ -229,7 +290,7 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
           </label>
         </fieldset>
         {wantGa4 === false && (
-          <p className="alert-info">Next you will define products or services for AI prompts.</p>
+          <p className="alert-info">Next you will choose which pages to crawl.</p>
         )}
         {error && <div className="alert-error">{error}</div>}
         <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200">
@@ -302,6 +363,53 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
             }
           />
           <div className="mb-4">
+            <label htmlFor="ga4-conversion-event">Conversion events</label>
+            <p className="text-sm text-gray-600 mb-2">
+              GA4 <code>eventName</code> values used as conversions. Purchase is the default.
+              Multiple events are summed into one conversions metric for reporting.
+            </p>
+            <input
+              id="ga4-conversion-event"
+              className="input-field"
+              value={conversionEventsInput}
+              onChange={(event) => handleConversionEventsChange(event.target.value)}
+              placeholder="purchase"
+              aria-describedby="ga4-conversion-event-help"
+            />
+            <p id="ga4-conversion-event-help" className="text-xs text-gray-500 mt-1">
+              Comma-separated event names (e.g. <code>purchase, generate_lead</code>).
+            </p>
+            <div className="mt-3">
+              <label htmlFor="ga4-conversion-label">
+                Conversion label{labelRequired ? "" : " (optional)"}
+              </label>
+              <input
+                id="ga4-conversion-label"
+                className="input-field mt-1"
+                value={conversionLabel}
+                onChange={(event) => setConversionLabel(event.target.value)}
+                placeholder={
+                  labelRequired
+                    ? "Name for the summed conversions metric"
+                    : "Override display name in charts/reports"
+                }
+                aria-describedby="ga4-conversion-label-help"
+              />
+              <p id="ga4-conversion-label-help" className="text-xs text-gray-500 mt-1">
+                {labelRequired
+                  ? "Required when multiple events are summed — used as the chart/report heading."
+                  : isOnlyDefaultPurchase(conversionEvents)
+                    ? 'Optional. Leave blank to use "Purchases" in charts/reports.'
+                    : "Optional display name for this conversion series (defaults to the event name)."}
+              </p>
+            </div>
+            {!conversionValidation.ok ? (
+              <p className="text-sm text-red-700 mt-2" role="alert">
+                {conversionValidation.error}
+              </p>
+            ) : null}
+          </div>
+          <div className="mb-4">
             <label htmlFor="ga4-channels">
               AI channel — only enter a value if you have set up a custom channel for AI sources in
               GA4
@@ -349,13 +457,19 @@ export function WizardGa4Step({ onBack, onContinue, onSkip, onSelectionSaved }: 
           <button
             type="button"
             className="btn-primary"
-            disabled={!status.connected || saving}
+            disabled={!continueGate.ok}
             onClick={handleContinueFromConnect}
+            title={!continueGate.ok ? continueGate.error : undefined}
           >
             {saving ? "Saving…" : "Continue →"}
           </button>
         </div>
       </div>
+      {!continueGate.ok && status.connected && !saving ? (
+        <p className="text-sm text-amber-800 mt-3" role="status">
+          {continueGate.error}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -1,49 +1,51 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { ChevronRight, Loader2 } from "lucide-react";
-import { fetchAudit, fetchConfig, reportHtmlUrl, reportAllPagesHtmlUrl, reportPdfUrl } from "../api/client";
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useParams } from "react-router-dom";
+import { CheckCircle2, ChevronRight, Loader2 } from "lucide-react";
+import { fetchAudit, fetchConfig, reportHtmlUrl, reportAllPagesHtmlUrl } from "../api/client";
+import { PageLoading, usePageLoadingSignal } from "../components/PageLoading";
 import { AiVisibilityOverview } from "../components/AiVisibilityOverview";
+import { AiImpactDashboard } from "../components/AiImpactDashboard";
 import { CitationsPage } from "../components/CitationsPage";
-import { CompetitorComparisonSection } from "../components/CompetitorComparisonSection";
+import { CompetitorComparisonDashboard } from "../components/BrandCompetitorVisibility";
+import { SiteCrawlComparisonTable } from "../components/SiteCrawlComparisonTable";
 import { ConfigSection } from "../components/ConfigSection";
+import { ContentOverview } from "../components/ContentOverview";
+import { PlatformReadinessSection } from "../components/PlatformReadinessSection";
 import { PromptPerformanceSection } from "../components/PromptPerformanceSection";
+import { RedditInsightsSection } from "../components/RedditInsightsSection";
+import { RecommendationsSection } from "../components/RecommendationsSection";
 import { ReportHeader } from "../components/ReportHeader";
+import { ReportSectionErrorBoundary } from "../components/ReportSectionErrorBoundary";
+import { SampleScriptsIntro } from "../components/SampleScriptsIntro";
+import { SectionDownloadMenu, sectionHasPageDownload } from "../components/SectionDownloadMenu";
+import ScoreOverTime from "../components/ScoreOverTime";
+import { SummarySection } from "../components/SummarySection";
+import { TechnicalOverview } from "../components/TechnicalOverview";
+import { CrawlerAccessSection } from "../components/CrawlerAccessSection";
+import { CitabilitySection } from "../components/CitabilitySection";
+import {
+  BrandVisibilityAuthoritySection,
+  ContentStructureAnswerabilitySection,
+  EeatSignalsSection,
+  SchemaEntityMarkupSection,
+} from "../components/ContentQualitySections";
 import { WipSection } from "../components/WipSection";
+import { YouTubeInsightsSection } from "../components/YouTubeInsightsSection";
 import { Card, CardDescription } from "../components/ui/Card";
+import { useCompetitorCrawl } from "../hooks/useCompetitorCrawl";
+import {
+  DEFAULT_REPORT_SECTIONS,
+  normalizeReportSection,
+  resolveReportSectionId,
+  type ReportSectionDef,
+} from "../lib/reportSections";
 import { cn } from "../lib/utils";
 import type { AppConfig, AuditDetail } from "../types";
 
-interface SectionDef {
-  id: string;
-  label: string;
-  group?: string;
-}
-
 interface SectionGroup {
   header: string;
-  sections: SectionDef[];
+  sections: ReportSectionDef[];
 }
-
-const DEFAULT_SECTIONS: SectionDef[] = [
-  { id: "summary", label: "Summary", group: "Overview" },
-  { id: "config", label: "Config", group: "Overview" },
-  { id: "ga4-traffic", label: "AI Traffic Dashboard", group: "Overview" },
-  { id: "ai-visibility-overview", label: "Overview", group: "AI visibility" },
-  { id: "prompt_performance", label: "Prompts", group: "AI visibility" },
-  { id: "competitor-performance", label: "Competitor comparison", group: "AI visibility" },
-  { id: "citations", label: "Citations", group: "AI visibility" },
-  { id: "technical-overview", label: "Overview", group: "Technical setup" },
-  { id: "technical", label: "Crawler access", group: "Technical setup" },
-  { id: "ai-visibility", label: "Citability", group: "Technical setup" },
-  { id: "competitors", label: "Competitor sites", group: "Technical setup" },
-  { id: "platform-readiness", label: "Platform readiness", group: "Technical setup" },
-  { id: "content-overview", label: "Overview", group: "Content quality" },
-  { id: "content", label: "EEAT & Brand visibility", group: "Content quality" },
-  { id: "reddit-insights", label: "Reddit insights", group: "Content quality" },
-  { id: "youtube-insights", label: "YouTube insights", group: "Content quality" },
-  { id: "samples", label: "Sample scripts", group: "Workshop" },
-  { id: "content-outline", label: "Content outline generator", group: "Workshop" },
-];
 
 const GROUP_ORDER = [
   "Overview",
@@ -55,58 +57,44 @@ const GROUP_ORDER = [
 
 // Sections that are rendered as React components (not iframe)
 const REACT_SECTIONS = new Set([
-  "prompt_performance",
+  "summary",
+  "recommendations",
+  "prompts",
   "citations",
   "config",
   "ai-visibility-overview",
-  "competitor-performance",
+  "ai-traffic-dashboard",
+  "competitor-visibility",
+  "competitor-comparison",
   "technical-overview",
   "content-overview",
-  "reddit-insights",
-  "youtube-insights",
-  "content-outline",
+  "reddit-citations",
+  "youtube-citations",
+  "content-outline-generator",
   "platform-readiness",
+  "eeat-signals",
+  "content-structure-answerability",
+  "schema-entity-markup",
+  "brand-visibility-authority",
+  "crawler-access",
+  "citability",
+  "sample-scripts",
 ]);
 
-// WIP sections
+// WIP sections (show placeholder)
 const WIP_SECTIONS = new Set([
-  "technical-overview",
-  "content-overview",
-  "platform-readiness",
-  "reddit-insights",
-  "youtube-insights",
-  "content-outline",
+  "content-outline-generator",
 ]);
 
 const WIP_LABELS: Record<string, { title: string; description?: string }> = {
-  "technical-overview": {
-    title: "Technical setup overview",
-    description: "A highlights summary of crawler access, citability and platform readiness. Coming soon.",
-  },
-  "content-overview": {
-    title: "Content quality overview",
-    description: "A highlights summary of EEAT, brand visibility and content insights. Coming soon.",
-  },
-  "platform-readiness": {
-    title: "Platform readiness",
-    description: "Detailed AI platform readiness checks across ChatGPT, Gemini, Claude and more. Coming soon.",
-  },
-  "reddit-insights": {
-    title: "Reddit insights",
-    description: "Brand and competitor mention analysis across Reddit communities. Coming soon.",
-  },
-  "youtube-insights": {
-    title: "YouTube insights",
-    description: "Brand and competitor visibility in YouTube search results and content. Coming soon.",
-  },
-  "content-outline": {
+  "content-outline-generator": {
     title: "Content outline generator",
     description: "AI-powered content outline generation based on your brand and target prompts. Coming soon.",
   },
 };
 
-function buildGroups(sections: SectionDef[]): SectionGroup[] {
-  const map = new Map<string, SectionDef[]>();
+function buildGroups(sections: ReportSectionDef[]): SectionGroup[] {
+  const map = new Map<string, ReportSectionDef[]>();
   for (const s of sections) {
     const g = s.group ?? "Other";
     if (!map.has(g)) map.set(g, []);
@@ -126,26 +114,87 @@ function buildGroups(sections: SectionDef[]): SectionGroup[] {
   return ordered;
 }
 
+/** Same-origin report section path — full document loads discard prior React state. */
+function reportSectionPath(slug: string, sectionId: string): string {
+  return `/report/${slug}/${sectionId}`;
+}
+
+/**
+ * Full document navigation (like a hard refresh to the new path).
+ * Prefer this over SPA navigate so heavy section trees are torn down.
+ */
+function hardNavigateToSection(slug: string, sectionId: string, replace = false): void {
+  const href = reportSectionPath(slug, sectionId);
+  if (replace) {
+    window.location.replace(href);
+  } else {
+    window.location.assign(href);
+  }
+}
+
+/** Mount only the active section — no KeepAlive multi-mount. */
+function ReportSectionPane({
+  id,
+  activeId,
+  label,
+  children,
+}: {
+  id: string;
+  activeId: string;
+  label?: string;
+  children: ReactNode;
+}) {
+  if (activeId !== id) return null;
+  return (
+    <ReportSectionErrorBoundary sectionId={id} sectionLabel={label}>
+      {children}
+    </ReportSectionErrorBoundary>
+  );
+}
+
 export function ReportPage() {
   const { auditId: slug, section: sectionParam } = useParams<{
     auditId: string;
     section?: string;
   }>();
-  const navigate = useNavigate();
   const [audit, setAudit] = useState<AuditDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [competitorsIframeKey, setCompetitorsIframeKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Brief overlay while the document unloads to a new section path. */
+  const [navigatingAway, setNavigatingAway] = useState(false);
 
-  const rawSections = (config?.report_sections ?? DEFAULT_SECTIONS) as SectionDef[];
-  const sections = rawSections;
+  const rawSections = (config?.report_sections ?? DEFAULT_REPORT_SECTIONS) as ReportSectionDef[];
+  const sections = rawSections
+    .filter((item) => item.id !== "ai-impact")
+    .map(normalizeReportSection);
   const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
   const groups = useMemo(() => buildGroups(sections), [sections]);
 
   const section = useMemo(() => {
-    if (sectionParam && sectionIds.includes(sectionParam)) return sectionParam;
+    const resolved = resolveReportSectionId(sectionParam);
+    if (sectionIds.includes(resolved) || REACT_SECTIONS.has(resolved)) {
+      return resolved;
+    }
     return "summary";
   }, [sectionParam, sectionIds]);
+
+  const auditRefEarly = audit?.audit_dir ?? slug ?? "";
+  const competitorCrawl = useCompetitorCrawl(auditRefEarly);
+
+  useEffect(() => {
+    if (competitorCrawl.justCompleted) {
+      setCompetitorsIframeKey((key) => key + 1);
+      competitorCrawl.clearJustCompleted();
+    }
+  }, [competitorCrawl.justCompleted, competitorCrawl.clearJustCompleted]);
+
+  useEffect(() => {
+    if (section === "competitor-comparison") {
+      void competitorCrawl.markSeen();
+    }
+  }, [section, competitorCrawl.status.status, competitorCrawl.status.seen, competitorCrawl.markSeen]);
 
   useEffect(() => {
     fetchConfig().then(setConfig).catch(() => undefined);
@@ -153,73 +202,109 @@ export function ReportPage() {
 
   useEffect(() => {
     if (!slug) return;
+    const ac = new AbortController();
     setLoading(true);
     setError(null);
-    fetchAudit(slug)
+    fetchAudit(slug, { signal: ac.signal })
       .then(setAudit)
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "Could not load audit"),
-      )
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (ac.signal.aborted) return;
+        setError(e instanceof Error ? e.message : "Could not load audit");
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
+      });
+    return () => ac.abort();
   }, [slug]);
 
   useEffect(() => {
     if (!slug || !audit || audit.has_report_html) return;
+    const ac = new AbortController();
     const t = window.setInterval(() => {
-      fetchAudit(slug)
+      fetchAudit(slug, { signal: ac.signal })
         .then(setAudit)
         .catch(() => undefined);
     }, 4000);
-    return () => window.clearInterval(t);
+    return () => {
+      ac.abort();
+      window.clearInterval(t);
+    };
   }, [slug, audit?.has_report_html]);
 
+  // Legacy / missing section ids → canonical path via full document replace.
   useEffect(() => {
     if (!slug) return;
-    if (!sectionParam || !sectionIds.includes(sectionParam)) {
-      navigate(`/report/${slug}/${section}`, { replace: true });
+    const resolved = resolveReportSectionId(sectionParam);
+    if (sectionParam && resolved !== sectionParam) {
+      hardNavigateToSection(slug, resolved, true);
+      return;
     }
-  }, [slug, sectionParam, section, sectionIds, navigate]);
+    if (!sectionParam || (!sectionIds.includes(resolved) && !REACT_SECTIONS.has(resolved))) {
+      hardNavigateToSection(slug, section, true);
+    }
+  }, [slug, sectionParam, section, sectionIds]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.data?.type !== "geo-report-nav") return;
-      const next = String(event.data.section || "");
+      const next = resolveReportSectionId(String(event.data.section || ""));
       if (!slug || !sectionIds.includes(next)) return;
-      navigate(`/report/${slug}/${next}`);
+      setNavigatingAway(true);
+      hardNavigateToSection(slug, next);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [slug, sectionIds, navigate]);
+  }, [slug, sectionIds]);
 
   const auditRef = audit?.audit_dir ?? slug ?? "";
 
-  const iframeSrc = useMemo(() => {
-    if (REACT_SECTIONS.has(section)) return null;
-    return reportHtmlUrl(auditRef, section, true);
-  }, [auditRef, section]);
+  // Legacy report.html panel hashes (not renamed with sidebar paths).
+  const ga4TrafficSrc = useMemo(
+    () => reportHtmlUrl(auditRef, "ga4-traffic", true),
+    [auditRef],
+  );
+  const samplesIframeSrc = useMemo(
+    () => reportHtmlUrl(auditRef, "samples", true),
+    [auditRef],
+  );
 
   const goToSection = (id: string) => {
-    if (!slug) return;
-    navigate(`/report/${slug}/${id}`);
+    if (!slug || id === section) return;
+    setNavigatingAway(true);
+    hardNavigateToSection(slug, id);
   };
 
+  const onSectionLinkClick = (event: MouseEvent<HTMLAnchorElement>, id: string) => {
+    if (id === section) {
+      event.preventDefault();
+      return;
+    }
+    // Allow normal same-origin full navigation; show unload feedback.
+    setNavigatingAway(true);
+  };
+
+  usePageLoadingSignal(loading || navigatingAway, "report-audit");
+
   if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center min-h-[50vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-brand-accent" />
-      </div>
-    );
+    return <PageLoading label="Loading report…" />;
   }
 
   const meta = audit?.report_meta;
+  const isIframeFallback =
+    !REACT_SECTIONS.has(section) &&
+    !WIP_SECTIONS.has(section) &&
+    section !== "competitor-comparison" &&
+    section !== "crawler-access" &&
+    section !== "citability" &&
+    section !== "sample-scripts";
 
   return (
     <div className="report-page flex flex-col min-h-full bg-[#e8e5e0]">
       {meta ? (
         <ReportHeader
           meta={meta}
-          downloadUrl={audit?.has_report_html ? reportPdfUrl(auditRef) : undefined}
-          allPagesHtmlUrl={audit?.has_report_html ? reportAllPagesHtmlUrl(auditRef) : undefined}
+          auditDirOrSlug={auditRef}
+          allPagesHtmlUrl={audit?.has_report_html || audit ? reportAllPagesHtmlUrl(auditRef) : undefined}
         />
       ) : null}
 
@@ -230,7 +315,7 @@ export function ReportPage() {
       ) : null}
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-        {/* ── Sidebar ── */}
+        {/* ── Sidebar — real <a href> full page loads ── */}
         <nav
           className="report-section-nav lg:w-56 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white/80 backdrop-blur-sm px-3 py-4 lg:py-6 overflow-y-auto"
           aria-label="Report sections"
@@ -239,18 +324,28 @@ export function ReportPage() {
           <ul className="flex lg:hidden gap-1 overflow-x-auto pb-1">
             {sections.map((s) => (
               <li key={s.id} className="shrink-0">
-                <button
-                  type="button"
-                  onClick={() => goToSection(s.id)}
+                <a
+                  href={slug ? reportSectionPath(slug, s.id) : "#"}
+                  onClick={(e) => onSectionLinkClick(e, s.id)}
+                  aria-current={section === s.id ? "page" : undefined}
                   className={cn(
-                    "px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap",
+                    "inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap",
                     section === s.id
                       ? "bg-[#0d0d0d] text-white"
                       : "text-gray-600 hover:bg-gray-100",
                   )}
                 >
                   {s.label}
-                </button>
+                  {s.id === "competitor-comparison" && competitorCrawl.busy && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin opacity-80" aria-label="Competitor crawl running" />
+                  )}
+                  {s.id === "competitor-comparison" && competitorCrawl.showCompleteBadge && (
+                    <CheckCircle2
+                      className={cn("h-3.5 w-3.5", section === s.id ? "text-emerald-300" : "text-emerald-600")}
+                      aria-label="Competitor crawl complete"
+                    />
+                  )}
+                </a>
               </li>
             ))}
           </ul>
@@ -268,9 +363,10 @@ export function ReportPage() {
                     const isActive = section === s.id;
                     return (
                       <li key={s.id}>
-                        <button
-                          type="button"
-                          onClick={() => goToSection(s.id)}
+                        <a
+                          href={slug ? reportSectionPath(slug, s.id) : "#"}
+                          onClick={(e) => onSectionLinkClick(e, s.id)}
+                          aria-current={isActive ? "page" : undefined}
                           className={cn(
                             "w-full text-left px-2.5 py-2 rounded-md text-[13px] transition-colors flex items-center gap-1.5 group",
                             isActive
@@ -285,6 +381,24 @@ export function ReportPage() {
                             )}
                           />
                           <span className="flex-1">{s.label}</span>
+                          {s.id === "competitor-comparison" && competitorCrawl.busy && (
+                            <Loader2
+                              className={cn(
+                                "h-3.5 w-3.5 shrink-0 animate-spin",
+                                isActive ? "text-white/80" : "text-blue-600",
+                              )}
+                              aria-label="Competitor crawl running"
+                            />
+                          )}
+                          {s.id === "competitor-comparison" && competitorCrawl.showCompleteBadge && (
+                            <CheckCircle2
+                              className={cn(
+                                "h-3.5 w-3.5 shrink-0",
+                                isActive ? "text-emerald-300" : "text-emerald-600",
+                              )}
+                              aria-label="Competitor crawl complete"
+                            />
+                          )}
                           {isWip && (
                             <span
                               className={cn(
@@ -295,7 +409,7 @@ export function ReportPage() {
                               WIP
                             </span>
                           )}
-                        </button>
+                        </a>
                       </li>
                     );
                   })}
@@ -306,50 +420,266 @@ export function ReportPage() {
         </nav>
 
         {/* ── Main content ── */}
-        <div className="report-section-body flex-1 min-w-0 min-h-0 overflow-auto">
-          {section === "prompt_performance" ? (
+        <div className="report-section-body relative flex-1 min-w-0 min-h-0 overflow-auto">
+          {navigatingAway ? (
+            <div className="absolute inset-0 z-30 flex items-start justify-center bg-[#e8e5e0]/85 backdrop-blur-[1px]">
+              <PageLoading label="Loading section…" compact />
+            </div>
+          ) : null}
+          {sectionHasPageDownload(section) && auditRef ? (
+            <div className="sticky top-0 z-20 flex justify-end border-b border-gray-200/80 bg-[#e8e5e0]/90 px-6 py-2 backdrop-blur-sm">
+              <SectionDownloadMenu
+                auditDirOrSlug={auditRef}
+                sectionId={section}
+                enabled
+              />
+            </div>
+          ) : null}
+
+          <ReportSectionPane id="ai-traffic-dashboard" activeId={section}>
+            <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 px-6 py-6 pb-8">
+              {audit?.has_report_html ? (
+                <iframe
+                  title="Direct AI Traffic"
+                  className="report-embed-frame min-h-[900px] w-full border-0 bg-[#e8e5e0]"
+                  src={ga4TrafficSrc}
+                />
+              ) : null}
+              <div className="w-full min-w-0">
+                <AiImpactDashboard auditDirOrSlug={auditRef} />
+              </div>
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="summary" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <SummarySection
+                auditDirOrSlug={auditRef}
+                fallbackOverallScore={meta?.overall_score}
+                onNavigate={goToSection}
+              />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="recommendations" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <RecommendationsSection
+                auditDirOrSlug={auditRef}
+                onNavigate={goToSection}
+              />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="prompts" activeId={section} label="Prompts">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <PromptPerformanceSection auditDirOrSlug={auditRef} />
             </div>
-          ) : section === "citations" ? (
+          </ReportSectionPane>
+
+          <ReportSectionPane id="citations" activeId={section} label="Citations">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <CitationsPage auditDirOrSlug={auditRef} />
             </div>
-          ) : section === "config" ? (
+          </ReportSectionPane>
+
+          <ReportSectionPane id="config" activeId={section}>
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <ConfigSection config={audit?.onboarding_context} />
+              <ConfigSection
+                config={audit?.onboarding_context}
+                auditId={auditRef}
+                competitorCrawl={{
+                  status: competitorCrawl.status,
+                  busy: competitorCrawl.busy,
+                  error: competitorCrawl.error,
+                  onStart: () => {
+                    void competitorCrawl.start();
+                  },
+                }}
+              />
             </div>
-          ) : section === "ai-visibility-overview" ? (
+          </ReportSectionPane>
+
+          <ReportSectionPane id="ai-visibility-overview" activeId={section} label="AI visibility overview">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <AiVisibilityOverview auditDirOrSlug={auditRef} />
             </div>
-          ) : section === "competitor-performance" ? (
+          </ReportSectionPane>
+
+          <ReportSectionPane id="competitor-visibility" activeId={section} label="Competitor visibility">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <CompetitorComparisonSection auditDirOrSlug={auditRef} />
+              <CompetitorComparisonDashboard auditId={auditRef} />
             </div>
-          ) : WIP_SECTIONS.has(section) ? (
-            <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <WipSection
-                title={WIP_LABELS[section]?.title ?? section}
-                description={WIP_LABELS[section]?.description}
+          </ReportSectionPane>
+
+          <ReportSectionPane id="competitor-comparison" activeId={section}>
+            <div className="mx-auto w-full max-w-[1200px] space-y-6 px-6 py-8">
+              <ScoreOverTime
+                auditId={auditRef}
+                brandLabel={
+                  meta?.brand_name
+                  || audit?.onboarding_context?.brand_name_used
+                  || "Your brand"
+                }
+                metricToggle
+                defaultMetric="overall"
+                title="Scores over time"
+                description="Compare your brand with tracked competitors across Overall and pillar scores."
+              />
+              {(competitorCrawl.busy ||
+                competitorCrawl.status.status === "done" ||
+                competitorCrawl.error) && (
+                <div className="overflow-hidden rounded-xl border border-gray-200 bg-white px-6 py-4">
+                  {competitorCrawl.busy ? (
+                    <p className="text-xs text-blue-700">
+                      <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />
+                      {competitorCrawl.status.detail || "Crawling competitor sites…"} Progress
+                      continues in the background.
+                    </p>
+                  ) : competitorCrawl.error ? (
+                    <p className="text-xs text-red-700">{competitorCrawl.error}</p>
+                  ) : (
+                    <p className="text-xs text-emerald-700">
+                      <CheckCircle2 className="mr-1.5 inline h-3.5 w-3.5" />
+                      Competitor site crawl complete
+                      {competitorCrawl.status.finished_at
+                        ? ` · ${new Date(competitorCrawl.status.finished_at).toLocaleString(undefined, {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}`
+                        : ""}
+                      .
+                    </p>
+                  )}
+                </div>
+              )}
+              <SiteCrawlComparisonTable
+                auditDirOrSlug={auditRef}
+                refreshKey={competitorsIframeKey}
               />
             </div>
-          ) : audit?.has_report_html && iframeSrc ? (
-            <iframe
-              title="GEO audit report section"
-              className="report-embed-frame w-full border-0 bg-[#e8e5e0] min-h-[calc(100vh-12rem)]"
-              src={iframeSrc}
-              key={iframeSrc}
-            />
-          ) : (
-            <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <Card>
-                <CardDescription>
-                  Report HTML is not available for this audit.
-                </CardDescription>
-              </Card>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="sample-scripts" activeId={section}>
+            <div className="flex flex-col">
+              <div className="mx-auto w-full max-w-[1200px] px-6 pt-6">
+                <SampleScriptsIntro auditDirOrSlug={auditRef} />
+              </div>
+              {audit?.has_report_html ? (
+                <iframe
+                  title="Sample scripts"
+                  className="report-embed-frame mt-4 w-full border-0 bg-[#e8e5e0] min-h-[calc(100vh-12rem)]"
+                  src={samplesIframeSrc}
+                />
+              ) : (
+                <div className="max-w-[1200px] mx-auto px-6 py-8">
+                  <Card>
+                    <CardDescription>
+                      Sample script files are not available for this audit yet.
+                    </CardDescription>
+                  </Card>
+                </div>
+              )}
             </div>
-          )}
+          </ReportSectionPane>
+
+          <ReportSectionPane id="platform-readiness" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <PlatformReadinessSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="technical-overview" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <TechnicalOverview auditDirOrSlug={auditRef} onNavigate={goToSection} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="crawler-access" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <CrawlerAccessSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="citability" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <CitabilitySection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="content-overview" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <ContentOverview auditDirOrSlug={auditRef} onNavigate={goToSection} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="eeat-signals" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <EeatSignalsSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="content-structure-answerability" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <ContentStructureAnswerabilitySection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="schema-entity-markup" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <SchemaEntityMarkupSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="brand-visibility-authority" activeId={section}>
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <BrandVisibilityAuthoritySection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="reddit-citations" activeId={section} label="Reddit Citations">
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <RedditInsightsSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="youtube-citations" activeId={section} label="YouTube Citations">
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <YouTubeInsightsSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          {WIP_SECTIONS.has(section) ? (
+            <ReportSectionPane id={section} activeId={section}>
+              <div className="max-w-[1200px] mx-auto px-6 py-8">
+                <WipSection
+                  title={WIP_LABELS[section]?.title ?? section}
+                  description={WIP_LABELS[section]?.description}
+                />
+              </div>
+            </ReportSectionPane>
+          ) : null}
+
+          {isIframeFallback ? (
+            <ReportSectionPane id={section} activeId={section}>
+              {audit?.has_report_html ? (
+                <iframe
+                  title={`GEO audit report section ${section}`}
+                  className="report-embed-frame w-full border-0 bg-[#e8e5e0] min-h-[calc(100vh-12rem)]"
+                  src={reportHtmlUrl(auditRef, section, true)}
+                />
+              ) : (
+                <div className="max-w-[1200px] mx-auto px-6 py-8">
+                  <Card>
+                    <CardDescription>
+                      Report HTML is not available for this audit.
+                    </CardDescription>
+                  </Card>
+                </div>
+              )}
+            </ReportSectionPane>
+          ) : null}
         </div>
       </div>
     </div>

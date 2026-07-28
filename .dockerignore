@@ -23,8 +23,11 @@ env/.env.*
 # Optional heavy deps (PyTorch); not installed in Cloud Run image
 requirements-brand-sentiment.txt
 
-# Research sandbox (offline econometrics; not part of Cloud Run image)
-research/
+# Research sandbox — exclude by default; keep GA4 export scripts for AI-impact.
+research/*
+!research/ga4/
+!research/ga4/**
+!research/paths.py
 
 # Web dev artifacts (dist built in Docker; keep web/src)
 web/node_modules

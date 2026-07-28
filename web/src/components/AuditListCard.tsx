@@ -1,5 +1,6 @@
-import { Calendar, Eye } from "lucide-react";
+import { Calendar, Eye, Loader2 } from "lucide-react";
 import type { LocalAudit } from "../types";
+import { formatReportScore } from "../lib/reportScore";
 
 function auditDisplayName(audit: LocalAudit): string {
   const brand = audit.brand_name?.trim();
@@ -27,14 +28,10 @@ export function AuditListCard({
 }) {
   const label = auditDisplayName(audit);
   const favicon = audit.favicon_url?.trim();
+  const stillRunning = Boolean(audit.still_running);
 
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="card-surface p-5 text-left hover:scale-[1.01] transition-transform animate-slide-up w-full"
-      style={{ animationDelay: `${index * 50}ms` }}
-    >
+  const body = (
+    <>
       <div className="flex items-center gap-2 mb-1 min-w-0">
         <h3 className="font-semibold text-gray-900 truncate flex-1 min-w-0">{label}</h3>
         {favicon ? (
@@ -57,7 +54,7 @@ export function AuditListCard({
       </div>
       {audit.overall_score != null && (
         <p className="text-2xl font-bold text-brand-accent mb-2">
-          {audit.overall_score}
+          {formatReportScore(audit.overall_score)}
           <span className="text-sm font-normal text-gray-500"> / 100</span>
         </p>
       )}
@@ -65,10 +62,45 @@ export function AuditListCard({
         <Calendar className="w-4 h-4 mr-2" />
         {audit.modified_at.slice(0, 10)}
       </div>
-      <span className="mt-4 inline-flex items-center text-sm text-blue-600 font-medium">
-        <Eye className="w-4 h-4 mr-1" />
-        View report
-      </span>
+      {stillRunning ? (
+        <span className="mt-4 inline-flex items-center text-sm font-medium text-gray-500">
+          <Loader2 className="w-4 h-4 mr-1 animate-spin" aria-hidden />
+          Still running
+        </span>
+      ) : (
+        <span className="mt-4 inline-flex items-center text-sm text-blue-600 font-medium">
+          <Eye className="w-4 h-4 mr-1" />
+          View report
+        </span>
+      )}
+    </>
+  );
+
+  if (stillRunning) {
+    return (
+      <div
+        className="card-surface relative p-5 text-left w-full opacity-55 grayscale pointer-events-none select-none animate-slide-up"
+        style={{ animationDelay: `${index * 50}ms` }}
+        aria-disabled="true"
+        aria-busy="true"
+        aria-label={`${label}: still running`}
+      >
+        <span className="absolute right-3 top-3 rounded bg-gray-700/80 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">
+          Still running
+        </span>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="card-surface p-5 text-left hover:scale-[1.01] transition-transform animate-slide-up w-full"
+      style={{ animationDelay: `${index * 50}ms` }}
+    >
+      {body}
     </button>
   );
 }

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { PageLoading } from "./PageLoading";
 import { ensurePromptPerformance } from "../lib/promptPerformanceStore";
@@ -870,10 +870,11 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     void fetchCitationsView(auditDirOrSlug, { signal: ac.signal })
       .then((payload) => {
         if (cancelled) return;
-        startTransition(() => applyPayload(payload));
+        applyPayload(payload);
       })
       .catch((err) => {
-        if (cancelled || ac.signal.aborted) return;
+        // Unmount/remount only — never leave an infinite spinner on timeout/network errors.
+        if (cancelled) return;
         setLoading(false);
         setView(null);
         setError(err instanceof Error ? err.message : "Failed to load citations");
@@ -918,7 +919,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     setError(null);
     void fetchCitationsView(auditDirOrSlug, { locale: key })
       .then((payload) => {
-        startTransition(() => applyPayload(payload));
+        applyPayload(payload);
       })
       .catch((err) => {
         setLoading(false);
@@ -961,6 +962,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     ...(hasAio ? [{ id: "aio" as TabId, label: "Google AIO", count: aioUrls.length }] : []),
   ];
   const tabs = allTabs.filter((t) => t.count > 0);
+  const activeTab = tabs.some((t) => t.id === tab) ? tab : (tabs[0]?.id ?? "domains");
 
   return (
     <Card className="!mb-0">
@@ -1003,7 +1005,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
                   onClick={() => setTab(t.id)}
                   className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold -mb-px border-b-2 transition-colors"
                   style={
-                    tab === t.id
+                    activeTab === t.id
                       ? { borderColor: "#1a1a1a", color: "#1a1a1a" }
                       : { borderColor: "transparent", color: "#9ca3af" }
                   }
@@ -1012,7 +1014,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
                   <span
                     className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                     style={
-                      tab === t.id
+                      activeTab === t.id
                         ? { background: "#1a1a1a", color: "#fff" }
                         : { background: "#f3f4f6", color: "#6b7280" }
                     }
@@ -1025,7 +1027,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
           )}
 
           <div className="mt-4">
-            {(tab === "domains" || tabs.length === 1) && (
+            {activeTab === "domains" && (
               <>
                 {topSites.length > 0
                   ? (
@@ -1039,7 +1041,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
                   : <p className="text-sm text-gray-500">No domain data — run live probes first.</p>}
               </>
             )}
-            {tab === "urls" && (
+            {activeTab === "urls" && (
               <>
                 {topUrls.length > 0
                   ? (
@@ -1053,7 +1055,7 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
                   : <p className="text-sm text-gray-500">No URL data — run live probes first.</p>}
               </>
             )}
-            {tab === "aio" && (
+            {activeTab === "aio" && (
               <>
                 {aioUrls.length > 0
                   ? (

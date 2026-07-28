@@ -26,15 +26,30 @@ def _parse_iso_date(value: Any) -> date | None:
         return None
 
 
+def _latest_audit_file_date(audit_dir: Path) -> date | None:
+    latest: date | None = None
+    for path in audit_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            file_date = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).date()
+        except OSError:
+            continue
+        if latest is None or file_date > latest:
+            latest = file_date
+    return latest
+
+
 def audit_created_date(audit_dir: Path) -> date | None:
-    """Best-effort creation date for an audit directory."""
+    """Best-effort latest activity date for an audit directory."""
+    latest: date | None = None
     summary_path = audit_dir / "audit_summary.json"
     if summary_path.is_file():
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8", errors="replace"))
             parsed = _parse_iso_date(summary.get("created_at") if isinstance(summary, dict) else None)
-            if parsed:
-                return parsed
+            if parsed and (latest is None or parsed > latest):
+                latest = parsed
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -45,8 +60,8 @@ def audit_created_date(audit_dir: Path) -> date | None:
             if isinstance(status, dict):
                 for key in ("started_at", "created_at"):
                     parsed = _parse_iso_date(status.get(key))
-                    if parsed:
-                        return parsed
+                    if parsed and (latest is None or parsed > latest):
+                        latest = parsed
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -56,24 +71,47 @@ def audit_created_date(audit_dir: Path) -> date | None:
         archive = {"runs": []}
     rel = geo.audit_dir_api_rel(audit_dir)
     folder = audit_dir.name
-    earliest: date | None = None
+    # Try to determine the audit's site key (hostname) from its summary so
+    # we can match archive runs even when folder naming differs (e.g. with/without www).
+    audit_site_key: str | None = None
+    try:
+        summary = geo.load_audit_summary(audit_dir)
+        base = str(summary.get("base_url") or "").strip()
+        if base:
+            try:
+                audit_site_key = geo.site_key_from_url(base)
+            except Exception:
+                audit_site_key = None
+    except Exception:
+        audit_site_key = None
     for run in archive.get("runs") or []:
         if not isinstance(run, dict):
             continue
         run_dir = str(run.get("audit_dir") or "")
-        if folder not in run_dir and rel not in run_dir and audit_dir.name not in run_dir:
+        # Match by stored audit_dir path or by audit_dir name fragment first.
+        matched = False
+        if folder in run_dir or rel in run_dir or audit_dir.name in run_dir:
+            matched = True
+        else:
+            # Fall back to matching primary_url site key when folder names differ.
+            primary = str(run.get("primary_url") or "").strip()
+            if primary and audit_site_key:
+                try:
+                    run_site = geo.site_key_from_url(primary)
+                    if run_site and run_site == audit_site_key:
+                        matched = True
+                except Exception:
+                    pass
+        if not matched:
             continue
         parsed = _parse_iso_date(run.get("created_at"))
-        if parsed and (earliest is None or parsed < earliest):
-            earliest = parsed
-    if earliest:
-        return earliest
+        if parsed and (latest is None or parsed > latest):
+            latest = parsed
 
-    # Last resort: directory mtime (may refresh on writes — only used if nothing else).
-    try:
-        return datetime.fromtimestamp(audit_dir.stat().st_mtime, tz=timezone.utc).date()
-    except OSError:
-        return None
+    file_date = _latest_audit_file_date(audit_dir)
+    if file_date and (latest is None or file_date > latest):
+        latest = file_date
+    return latest
 
 
 def ensure_audit_created_at(audit_dir: Path) -> date | None:
@@ -102,11 +140,10 @@ def ensure_audit_created_at(audit_dir: Path) -> date | None:
 
 def is_automated_tracking_eligible(audit_dir: Path) -> bool:
     """True when the audit should receive automated daily/weekly refreshes."""
-    ensure_audit_created_at(audit_dir)
-    created = audit_created_date(audit_dir)
-    if created is None:
+    last_activity = audit_created_date(audit_dir)
+    if last_activity is None:
         return False
-    return created >= AUTOMATED_TRACKING_SINCE
+    return last_activity >= AUTOMATED_TRACKING_SINCE
 
 
 def rebuild_full_audit_crawl_payload(audit_dir: Path) -> dict[str, Any]:

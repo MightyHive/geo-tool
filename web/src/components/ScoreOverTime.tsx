@@ -140,7 +140,14 @@ export default function ScoreOverTime({
   const chartRows = useMemo(() => {
     return entries
       .slice()
-      .sort((a, b) => a.date.localeCompare(b.date))
+      .sort((a, b) => {
+        const aTime = Date.parse(a.date);
+        const bTime = Date.parse(b.date);
+        if (Number.isFinite(aTime) && Number.isFinite(bTime)) {
+          return aTime - bTime;
+        }
+        return String(a.date).localeCompare(String(b.date));
+      })
       .map((entry) => {
         const row: Record<string, string | number | null> = { date: entry.date };
         for (const metric of activeMetrics) {

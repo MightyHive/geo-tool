@@ -17,6 +17,10 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 METRICS_FILE = "prompt_performance_metrics.json"
+# Precomputed Citations-page payloads (capped domains/URLs) — avoids reading the
+# multi‑MB metrics blob on every Citations GET (GCS FUSE cold reads time out).
+CITATIONS_VIEW_FILE = "prompt_performance_citations.json"
+CITATIONS_VIEW_VERSION = 1
 # Slim runs omit per-run citations (row-level citations_* is enough). Older v1
 # blobs are sanitized at response time via sanitize_context_runs_inplace.
 METRICS_VERSION = 1
@@ -45,6 +49,10 @@ _NEGATIVE_WORDS = (
 
 def metrics_path(audit_dir: Path) -> Path:
     return audit_dir / METRICS_FILE
+
+
+def citations_view_path(audit_dir: Path) -> Path:
+    return audit_dir / CITATIONS_VIEW_FILE
 
 
 def probe_mtime(audit_dir: Path) -> float | None:
@@ -663,6 +671,10 @@ def write_metrics_file(audit_dir: Path, payload: dict[str, Any]) -> Path:
         maybe_write_gcs_slim_locale_blobs(audit_dir, payload)
     except Exception:
         log.debug("GCS slim locale blob write failed for %s", audit_dir, exc_info=True)
+    try:
+        write_citations_view_file(audit_dir, payload)
+    except Exception:
+        log.exception("Failed to write citations view cache for %s", audit_dir)
     return path
 
 
@@ -1391,14 +1403,12 @@ def _citation_eligible(
     brand_domains: set[str],
     brand_stems: set[str],
 ) -> bool:
-    from api.geo_services import _is_vendor_domain, _stem_brand_label
-
     d = str(domain or "").lower().removeprefix("www.")
-    if not d or _is_vendor_domain(d):
+    if not d or _is_vendor_domain_local(d):
         return False
     if d in brand_domains:
         return False
-    if _stem_brand_label(d) in brand_stems:
+    if _stem_brand_label_local(d) in brand_stems:
         return False
     return True
 
@@ -1569,19 +1579,17 @@ def _aggregate_aio_urls(
 
 
 def _brand_entity_sets(metrics: dict[str, Any]) -> tuple[set[str], set[str]]:
-    from api.geo_services import _stem_brand_label
-
     brand_domains: set[str] = set()
     brand_stems: set[str] = set()
     site = _website_domain(str(metrics.get("brand_site_url") or ""))
     name = str(metrics.get("brand_name") or "").strip()
     if site:
         brand_domains.add(site)
-        stem = _stem_brand_label(site)
+        stem = _stem_brand_label_local(site)
         if stem:
             brand_stems.add(stem)
     if name:
-        stem = _stem_brand_label(name)
+        stem = _stem_brand_label_local(name)
         if stem:
             brand_stems.add(stem)
     return brand_domains, brand_stems
@@ -1651,6 +1659,46 @@ def _live_rows_for_locale(
 CITATIONS_TOP_SITES = 15
 CITATIONS_TOP_URLS = 30
 
+# Mirror api.geo_services vendor list (keep Citations GET free of that heavy import).
+_CITATION_VENDOR_DOMAINS = frozenset({
+    "boots.com", "superdrug.com", "lookfantastic.com", "cultbeauty.co.uk",
+    "spacenk.com", "beautybay.com", "feelunique.com", "allbeauty.com", "pharmaca.com",
+    "johnlewis.com", "marksandspencer.com", "selfridges.com", "harrods.com",
+    "libertylondon.com", "debenhams.com", "next.co.uk", "nextdirect.com",
+    "tkmaxx.com", "tkmaxx.co.uk", "hmv.com",
+    "tesco.com", "sainsburys.co.uk", "asda.com", "waitrose.com", "ocado.com",
+    "morrisons.com", "aldi.co.uk", "lidl.co.uk", "iceland.co.uk",
+    "asos.com", "asos.co.uk", "zalando.co.uk", "zalando.com", "farfetch.com",
+    "net-a-porter.com", "matchesfashion.com", "notonthehighstreet.com", "etsy.com",
+    "sephora.com", "ulta.com", "cvs.com", "walgreens.com", "target.com",
+    "walmart.com", "costco.com",
+    "amazon.com", "amazon.co.uk", "amazon.ca", "amazon.com.au", "amazon.de", "amazon.fr",
+    "macys.com", "nordstrom.com", "bloomingdales.com", "kohls.com", "jcpenney.com",
+    "ebay.com", "ebay.co.uk",
+    "tripadvisor.com", "opentable.com", "bookatable.co.uk", "booking.com",
+    "hotels.com", "airbnb.com", "expedia.com",
+    "deliveroo.co.uk", "ubereats.com", "just-eat.co.uk", "doordash.com",
+    "hollandandbarrett.com", "chemistdirect.co.uk", "pharmacy2u.co.uk", "nhs.uk",
+    "diy.com", "screwfix.com", "homebase.co.uk", "wickes.co.uk", "dunelm.com",
+    "argos.co.uk", "ikea.com",
+})
+
+
+def _stem_brand_label_local(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\.(com|co\.uk|co|org|net|io|uk|au|ca|de|fr|es|it)(\.[a-z]{2})?$", "", text)
+    text = re.sub(r"^www\.", "", text)
+    return re.sub(r"[\s\-_'.]+", "", text)
+
+
+def _is_vendor_domain_local(domain: str) -> bool:
+    d = str(domain or "").lower().removeprefix("www.")
+    if not d:
+        return False
+    if d in _CITATION_VENDOR_DOMAINS:
+        return True
+    return any(d.endswith(f".{vendor}") for vendor in _CITATION_VENDOR_DOMAINS)
+
 
 def build_citations_view_payload(
     metrics: dict[str, Any],
@@ -1692,3 +1740,153 @@ def build_citations_view_payload(
         "aio_cited_urls": aio_urls[:CITATIONS_TOP_URLS],
         "metrics_from_cache": True,
     }
+
+
+def build_citations_view_bundle(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Precompute capped Citations payloads for Overall + each configured locale."""
+    preferred = _preferred_citations_locale(metrics)
+    locales = metrics.get("prompt_locales") if isinstance(metrics.get("prompt_locales"), list) else []
+    locale_keys = [
+        str(loc.get("key") or "").strip()
+        for loc in locales
+        if isinstance(loc, dict) and str(loc.get("key") or "").strip()
+    ]
+    keys = ["__overall__", *locale_keys]
+    # Prefer first so cold GETs without ?locale= hit a warm key.
+    if preferred and preferred not in keys:
+        keys.insert(0, preferred)
+    payloads: dict[str, Any] = {}
+    for key in keys:
+        payloads[key] = build_citations_view_payload(metrics, locale_key=key)
+    return {
+        "version": CITATIONS_VIEW_VERSION,
+        "probe_mtime": metrics.get("probe_mtime"),
+        "metrics_version": int(metrics.get("version") or 0),
+        "preferred_locale_key": preferred,
+        "payloads": payloads,
+    }
+
+
+def write_citations_view_file(audit_dir: Path, metrics: dict[str, Any]) -> Path:
+    """Persist the tiny Citations bundle next to metrics (GCS-friendly)."""
+    path = citations_view_path(audit_dir)
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    bundle = build_citations_view_bundle(metrics)
+    path.write_text(json.dumps(bundle, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        from api.audit_json_cache import invalidate_path
+
+        invalidate_path(path)
+    except Exception:
+        pass
+    return path
+
+
+def read_citations_view_bundle(audit_dir: Path) -> dict[str, Any] | None:
+    from api.audit_json_cache import load_json_cached
+
+    raw = load_json_cached(citations_view_path(audit_dir))
+    if not isinstance(raw, dict):
+        return None
+    if int(raw.get("version") or 0) != CITATIONS_VIEW_VERSION:
+        return None
+    payloads = raw.get("payloads")
+    if not isinstance(payloads, dict) or not payloads:
+        return None
+    return raw
+
+
+def citations_view_bundle_matches_metrics(
+    bundle: dict[str, Any] | None,
+    metrics: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(bundle, dict) or not isinstance(metrics, dict):
+        return False
+    try:
+        if int(bundle.get("metrics_version") or 0) != int(metrics.get("version") or 0):
+            return False
+    except (TypeError, ValueError):
+        return False
+    b_mtime, m_mtime = bundle.get("probe_mtime"), metrics.get("probe_mtime")
+    if b_mtime is None or m_mtime is None:
+        return b_mtime is None and m_mtime is None
+    try:
+        return abs(float(b_mtime) - float(m_mtime)) < 0.001
+    except (TypeError, ValueError):
+        return False
+
+
+def payload_from_citations_bundle(
+    bundle: dict[str, Any],
+    *,
+    locale_key: str | None = None,
+) -> dict[str, Any] | None:
+    payloads = bundle.get("payloads") if isinstance(bundle.get("payloads"), dict) else {}
+    preferred = str(bundle.get("preferred_locale_key") or "").strip() or "__overall__"
+    requested = (locale_key or "").strip() or preferred
+    if requested in ("overall",):
+        requested = "__overall__"
+    hit = payloads.get(requested)
+    if isinstance(hit, dict):
+        return hit
+    # Fall back to preferred then Overall.
+    for key in (preferred, "__overall__"):
+        alt = payloads.get(key)
+        if isinstance(alt, dict):
+            return alt
+    return None
+
+
+def citations_view_file_is_fresh(audit_dir: Path) -> bool:
+    """True when the slim citations file exists and is not older than metrics."""
+    cpath = citations_view_path(audit_dir)
+    if not cpath.is_file():
+        return False
+    mpath = metrics_path(audit_dir)
+    if not mpath.is_file():
+        return True
+    try:
+        return cpath.stat().st_mtime >= (mpath.stat().st_mtime - 1.0)
+    except OSError:
+        return False
+
+
+def serve_citations_view_if_fresh(
+    audit_dir: Path,
+    *,
+    locale_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Hot path: serve Citations without opening the multi‑MB metrics JSON."""
+    if not citations_view_file_is_fresh(audit_dir):
+        return None
+    bundle = read_citations_view_bundle(audit_dir)
+    if bundle is None:
+        return None
+    return payload_from_citations_bundle(bundle, locale_key=locale_key)
+
+
+def get_or_build_citations_view_payload(
+    audit_dir: Path,
+    metrics: dict[str, Any],
+    *,
+    locale_key: str | None = None,
+) -> dict[str, Any]:
+    """Serve Citations from the slim cache file; build+persist on miss/stale."""
+    bundle = read_citations_view_bundle(audit_dir)
+    if citations_view_bundle_matches_metrics(bundle, metrics) and bundle is not None:
+        hit = payload_from_citations_bundle(bundle, locale_key=locale_key)
+        if hit is not None:
+            return hit
+
+    # Cold path: scan metrics once, persist slim bundle for subsequent GETs.
+    try:
+        write_citations_view_file(audit_dir, metrics)
+        bundle = read_citations_view_bundle(audit_dir)
+        if bundle is not None:
+            hit = payload_from_citations_bundle(bundle, locale_key=locale_key)
+            if hit is not None:
+                return hit
+    except Exception:
+        log.exception("Citations view cache write failed for %s", audit_dir)
+
+    return build_citations_view_payload(metrics, locale_key=locale_key)

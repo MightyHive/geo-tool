@@ -1801,14 +1801,28 @@ def get_prompt_performance_citations(
 
     Omit ``locale`` to use the same preferred-locale rule as the UI (single
     market for huge multi-locale audits, otherwise Overall).
+
+    Hot path reads ``prompt_performance_citations.json`` only (tens of KB). The
+    multi‑MB metrics blob is touched only on cache miss / stale.
     """
     from api.prompt_performance_metrics import (
-        build_citations_view_payload,
         ensure_persisted_metrics,
+        get_or_build_citations_view_payload,
+        payload_from_citations_bundle,
+        read_citations_view_bundle,
         read_metrics_file,
+        serve_citations_view_if_fresh,
     )
 
     audit_dir = _audit_dir_or_404(audit_id)
+    key = locale
+    if key == "overall":
+        key = "__overall__"
+
+    cached = serve_citations_view_if_fresh(audit_dir, locale_key=key)
+    if cached is not None:
+        return cached
+
     metrics = read_metrics_file(audit_dir)
     if not metrics:
         metrics = ensure_persisted_metrics(
@@ -1816,11 +1830,14 @@ def get_prompt_performance_citations(
             build_full_context=lambda d: _build_full_context_response(d),
         )
     if not metrics:
+        # Last resort: stale citations cache still better than 404.
+        bundle = read_citations_view_bundle(audit_dir)
+        if bundle is not None:
+            hit = payload_from_citations_bundle(bundle, locale_key=key)
+            if hit is not None:
+                return hit
         raise HTTPException(404, "Prompt-performance metrics not available")
-    key = locale
-    if key == "overall":
-        key = "__overall__"
-    return build_citations_view_payload(metrics, locale_key=key)
+    return get_or_build_citations_view_payload(audit_dir, metrics, locale_key=key)
 
 
 @router.get("/{audit_id}/prompt-performance/prompts/{prompt_id}")

@@ -94,12 +94,14 @@ export function PlatformLogoRow({
   platforms,
   size = 18,
 }: {
-  platforms: string[];
+  platforms?: string[] | null;
   size?: number;
 }) {
+  const list = platforms ?? [];
+  if (!list.length) return <span className="text-xs text-gray-300">—</span>;
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
-      {platforms.map((p) => (
+      {list.map((p) => (
         <PlatformLogo key={p} platform={p} size={size} />
       ))}
     </div>

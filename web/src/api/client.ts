@@ -429,6 +429,8 @@ export function fetchExecutiveSummary(
 /** Slim all-locales GET can be multi‑MB on huge audits — fail fast instead of spinning forever. */
 export const PROMPT_PERFORMANCE_FETCH_TIMEOUT_MS = 45_000;
 export const PROMPT_PERFORMANCE_SUMMARY_TIMEOUT_MS = 15_000;
+/** Citations cold-build may still touch metrics once; keep above FUSE read latency. */
+export const CITATIONS_VIEW_TIMEOUT_MS = 45_000;
 
 function promptPerfSignal(ms: number, init?: RequestInit): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
@@ -436,7 +438,18 @@ function promptPerfSignal(ms: number, init?: RequestInit): AbortSignal {
   if (typeof AbortSignal.any === "function") {
     return AbortSignal.any([timeout, init.signal]);
   }
-  return init.signal;
+  // Browsers without AbortSignal.any: still enforce the timeout.
+  const ac = new AbortController();
+  const abortWith = (reason?: unknown) => {
+    if (!ac.signal.aborted) ac.abort(reason);
+  };
+  const onCallerAbort = () => abortWith(init.signal?.reason);
+  const onTimeout = () => abortWith(timeout.reason);
+  init.signal.addEventListener("abort", onCallerAbort, { once: true });
+  timeout.addEventListener("abort", onTimeout, { once: true });
+  if (init.signal.aborted) onCallerAbort();
+  if (timeout.aborted) onTimeout();
+  return ac.signal;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -556,7 +569,7 @@ export function fetchCitationsView(
   const qs = params.toString();
   return json<CitationsViewPayload>(
     `/audits/${encodeURIComponent(slug)}/prompt-performance/citations${qs ? `?${qs}` : ""}`,
-    { signal: promptPerfSignal(PROMPT_PERFORMANCE_SUMMARY_TIMEOUT_MS, opts) },
+    { signal: promptPerfSignal(CITATIONS_VIEW_TIMEOUT_MS, opts) },
   ).catch((err) => {
     if (isAbortError(err)) {
       throw new Error("Timed out loading citations. Try a single market/language view.");

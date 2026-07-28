@@ -3,24 +3,43 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import os
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from api import automated_refresh, score_history
 
 
-def test_is_automated_tracking_eligible_cutoff(tmp_path: Path) -> None:
+def test_is_automated_tracking_eligible_uses_latest_file_activity(tmp_path: Path) -> None:
     audit = tmp_path / "audit"
     audit.mkdir()
-    (audit / "audit_summary.json").write_text(
-        json.dumps({"audit_label": "primary", "created_at": "2026-07-22T10:00:00+00:00"})
-    )
-    assert automated_refresh.is_automated_tracking_eligible(audit) is True
-
-    (audit / "audit_summary.json").write_text(
+    summary_path = audit / "audit_summary.json"
+    summary_path.write_text(
         json.dumps({"audit_label": "primary", "created_at": "2026-07-21T10:00:00+00:00"})
     )
+    mtime = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(summary_path, (mtime, mtime))
+
     assert automated_refresh.is_automated_tracking_eligible(audit) is False
+
+
+def test_is_automated_tracking_eligible_recent_file_mtime(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    summary_path = audit / "audit_summary.json"
+    summary_path.write_text(
+        json.dumps({"audit_label": "primary", "created_at": "2026-07-21T10:00:00+00:00"})
+    )
+    old_mtime = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(summary_path, (old_mtime, old_mtime))
+
+    target = audit / "probe_history" / "2026-07-24.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}")
+    recent_mtime = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(target, (recent_mtime, recent_mtime))
+
+    assert automated_refresh.is_automated_tracking_eligible(audit) is True
 
 
 def test_rebuild_payload_always_follow_on_when_competitors_configured(

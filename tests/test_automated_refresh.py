@@ -135,3 +135,30 @@ def test_save_score_snapshot_writes_index(tmp_path: Path, monkeypatch) -> None:
     assert len(entries) == 1
     assert entries[0]["overall"] == 55.0
     assert entries[0]["competitors"][0]["name"] == "Rival"
+
+
+def test_get_score_history_entries_falls_back_to_history_files(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    hist_dir = audit / "score_history"
+    hist_dir.mkdir()
+    entry = {
+        "date": "2026-07-24",
+        "created_at": "2026-07-24T12:00:00Z",
+        "source": "manual",
+        "overall": 68.5,
+        "ai_visibility": 71.0,
+        "technical_setup": 64.0,
+        "content_structure": 69.0,
+        "competitors": [
+            {"name": "Rival", "overall": 54.0, "ai_visibility": 50.0, "technical_setup": 53.0, "content_structure": 52.0},
+        ],
+    }
+    (hist_dir / "2026-07-24.json").write_text(json.dumps(entry), encoding="utf-8")
+
+    entries = score_history.get_score_history_entries(audit)
+
+    assert len(entries) == 1
+    assert entries[0]["date"] == "2026-07-24"
+    assert entries[0]["overall"] == 68.5
+    assert (audit / "score_history_index.json").is_file()

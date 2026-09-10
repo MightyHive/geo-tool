@@ -24,10 +24,12 @@ RUNTIME_LAUNCHERS = (
 
 
 @pytest.mark.parametrize("relative_path", DEPLOY_SCRIPTS)
-def test_deploy_scripts_use_migrated_project_and_app_oauth(relative_path: str) -> None:
+def test_deploy_scripts_use_migrated_project_and_iap(relative_path: str) -> None:
     script = (ROOT / relative_path).read_text(encoding="utf-8")
 
     assert 'PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"' in script
+    assert "--iap" in script
+    assert "--allow-unauthenticated" not in script
     assert "_add_secret AUTH_CLIENT_ID google-oauth-client-id-geo-tool 1" in script
     assert "_add_secret AUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1" in script
     assert "_add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool 1" in script

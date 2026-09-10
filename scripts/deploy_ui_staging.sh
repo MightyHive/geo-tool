@@ -205,7 +205,7 @@ DEPLOY_CMD=(
   --cpu-boost
   --no-cpu-throttling
   --port=8080
-  --allow-unauthenticated
+  --iap
   --update-env-vars="${ENV_VARS}"
   --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
   --add-volume-mount=volume=geo-data,mount-path=/var/geo-data

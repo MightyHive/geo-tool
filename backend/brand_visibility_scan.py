@@ -44,6 +44,114 @@ PLATFORM_IMPACT_BLURB: dict[str, str] = {
     "LinkedIn": "High — company and executive verification signals.",
 }
 
+_SAME_AS_PLATFORM_HOSTS: dict[str, tuple[str, ...]] = {
+    "wikipedia": ("wikipedia.org",),
+    "youtube": ("youtube.com", "youtu.be", "youtube-nocookie.com"),
+    "reddit": ("reddit.com", "redd.it"),
+    "linkedin": ("linkedin.com",),
+}
+
+
+def _url_host(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    host = urllib.parse.urlparse(raw).netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _url_path(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    return urllib.parse.urlparse(raw).path.lower()
+
+
+def same_as_platform_url(url: str) -> tuple[str, str] | None:
+    """Return (platform_key, url) when JSON-LD sameAs is a relevant official profile."""
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("//"):
+        raw = "https:" + raw
+    host = _url_host(raw)
+    path = _url_path(raw)
+    if not host:
+        return None
+
+    if any(host == h or host.endswith("." + h) for h in _SAME_AS_PLATFORM_HOSTS["wikipedia"]):
+        if "/wiki/" not in path:
+            return None
+        if "/wiki/special:" in path or "/wiki/help:" in path:
+            return None
+        return ("wikipedia", raw)
+
+    if any(host == h or host.endswith("." + h) for h in _SAME_AS_PLATFORM_HOSTS["youtube"]):
+        if host in {"youtu.be"} or "/watch" in path or "/shorts/" in path or "/embed/" in path:
+            return None
+        if not (
+            path.startswith("/@")
+            or path.startswith("/channel/")
+            or path.startswith("/c/")
+            or path.startswith("/user/")
+        ):
+            return None
+        return ("youtube", raw)
+
+    if any(host == h or host.endswith("." + h) for h in _SAME_AS_PLATFORM_HOSTS["reddit"]):
+        if not (path.startswith("/r/") or path.startswith("/user/") or path.startswith("/u/")):
+            return None
+        return ("reddit", raw)
+
+    if any(host == h or host.endswith("." + h) for h in _SAME_AS_PLATFORM_HOSTS["linkedin"]):
+        if not (
+            path.startswith("/company/")
+            or path.startswith("/school/")
+            or path.startswith("/in/")
+        ):
+            return None
+        return ("linkedin", raw)
+
+    return None
+
+
+def same_as_urls_by_platform(urls: list[str] | None) -> dict[str, str]:
+    """First relevant sameAs URL per scan platform."""
+    found: dict[str, str] = {}
+    for item in urls or []:
+        classified = same_as_platform_url(str(item or ""))
+        if not classified:
+            continue
+        key, raw = classified
+        if key not in found:
+            found[key] = raw
+    return found
+
+
+def _same_as_url_still_live(url: str) -> bool:
+    """Treat sameAs as usable unless the profile clearly 404s."""
+    status, _body = _fetch_html(url)
+    if status in (404, 410):
+        return False
+    return True
+
+
+def _row_from_same_as(platform_label: str, url: str) -> dict[str, Any]:
+    return {
+        "platform": platform_label,
+        "present": True,
+        "status": f"Organization JSON-LD sameAs lists this {platform_label} profile.",
+        "url": url,
+        "impact": PLATFORM_IMPACT_BLURB[platform_label],
+        "source": "json_ld_same_as",
+    }
+
 
 def derive_brand_from_base(base_url: str) -> str:
     """Best-effort display name from hostname (e.g. example-parts.com → Example Parts)."""
@@ -730,84 +838,126 @@ def scan_brand_platforms(
     *,
     delay: float = 0.25,
     brand_source: str = "derived_hostname",
+    same_as_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Returns audit_summary-shaped `brand_visibility` dict (four platforms).
+
+    Prefer relevant Organization JSON-LD ``sameAs`` profile URLs. Search probes
+    run only for Wikipedia / YouTube / Reddit / LinkedIn when no sameAs link
+    exists for that platform (or the listed URL 404s).
     """
     brand = (brand or "").strip() or derive_brand_from_base(base_url)
     rows: list[dict[str, Any]] = []
+    from_same_as = same_as_urls_by_platform(same_as_urls)
+    used_same_as: list[str] = []
 
-    ok_wp, st_wp, u_wp = _wikipedia_probe(brand, base_url, delay)
-    rows.append(
-        {
+    def _take_same_as(key: str, label: str) -> dict[str, Any] | None:
+        url = from_same_as.get(key)
+        if not url:
+            return None
+        if not _same_as_url_still_live(url):
+            return None
+        time.sleep(delay)
+        used_same_as.append(label)
+        row = _row_from_same_as(label, url)
+        if key == "reddit":
+            row.update(
+                {
+                    "reddit_threads": [],
+                    "reddit_sentiment_summary": "",
+                    "reddit_sentiment_model": "distilbert-base-uncased-finetuned-sst-2-english",
+                    "reddit_sentiment_error": "",
+                }
+            )
+        return row
+
+    wiki_row = _take_same_as("wikipedia", "Wikipedia")
+    if wiki_row is None:
+        ok_wp, st_wp, u_wp = _wikipedia_probe(brand, base_url, delay)
+        wiki_row = {
             "platform": "Wikipedia",
             "present": ok_wp,
             "status": st_wp,
             "url": u_wp,
             "impact": PLATFORM_IMPACT_BLURB["Wikipedia"],
+            "source": "search",
         }
-    )
+    rows.append(wiki_row)
 
-    ok_yt, st_yt, u_yt = _youtube_probe(brand, base_url, delay)
-    rows.append(
-        {
+    yt_row = _take_same_as("youtube", "YouTube")
+    if yt_row is None:
+        ok_yt, st_yt, u_yt = _youtube_probe(brand, base_url, delay)
+        yt_row = {
             "platform": "YouTube",
             "present": ok_yt,
             "status": st_yt,
             "url": u_yt,
             "impact": PLATFORM_IMPACT_BLURB["YouTube"],
+            "source": "search",
         }
-    )
+    rows.append(yt_row)
 
-    rd_extra = _reddit_scan_search_threads_with_sentiment(brand, base_url, delay)
-    r_threads = list(rd_extra.get("reddit_threads") or [])
-    if r_threads:
-        ok_rd = True
-        u_rd = str(r_threads[0].get("url") or "").strip() or None
-        st_rd = (
-            f"Matched {len(r_threads)} thread(s)—expand for titles, comment samples, "
-            "and DistilBERT sentiment (directional only)."
-        )
-        reddit_row: dict[str, Any] = {
-            "platform": "Reddit",
-            "present": ok_rd,
-            "status": st_rd,
-            "url": u_rd,
-            "impact": PLATFORM_IMPACT_BLURB["Reddit"],
-            **rd_extra,
-        }
-    else:
-        ok_rd, st_rd, u_rd = _reddit_probe_legacy_subreddit_only(brand, delay)
-        reddit_row = {
-            "platform": "Reddit",
-            "present": ok_rd,
-            "status": st_rd,
-            "url": u_rd,
-            "impact": PLATFORM_IMPACT_BLURB["Reddit"],
-            "reddit_threads": [],
-            "reddit_sentiment_summary": "",
-            "reddit_sentiment_model": "distilbert-base-uncased-finetuned-sst-2-english",
-            "reddit_sentiment_error": "",
-        }
-    rows.append(reddit_row)
+    rd_row = _take_same_as("reddit", "Reddit")
+    if rd_row is None:
+        rd_extra = _reddit_scan_search_threads_with_sentiment(brand, base_url, delay)
+        r_threads = list(rd_extra.get("reddit_threads") or [])
+        if r_threads:
+            ok_rd = True
+            u_rd = str(r_threads[0].get("url") or "").strip() or None
+            st_rd = (
+                f"Matched {len(r_threads)} thread(s)—expand for titles, comment samples, "
+                "and DistilBERT sentiment (directional only)."
+            )
+            rd_row = {
+                "platform": "Reddit",
+                "present": ok_rd,
+                "status": st_rd,
+                "url": u_rd,
+                "impact": PLATFORM_IMPACT_BLURB["Reddit"],
+                "source": "search",
+                **rd_extra,
+            }
+        else:
+            ok_rd, st_rd, u_rd = _reddit_probe_legacy_subreddit_only(brand, delay)
+            rd_row = {
+                "platform": "Reddit",
+                "present": ok_rd,
+                "status": st_rd,
+                "url": u_rd,
+                "impact": PLATFORM_IMPACT_BLURB["Reddit"],
+                "source": "search",
+                "reddit_threads": [],
+                "reddit_sentiment_summary": "",
+                "reddit_sentiment_model": "distilbert-base-uncased-finetuned-sst-2-english",
+                "reddit_sentiment_error": "",
+            }
+    rows.append(rd_row)
 
-    ok_li, st_li, u_li = _linkedin_probe(brand, base_url, delay)
-    rows.append(
-        {
+    li_row = _take_same_as("linkedin", "LinkedIn")
+    if li_row is None:
+        ok_li, st_li, u_li = _linkedin_probe(brand, base_url, delay)
+        li_row = {
             "platform": "LinkedIn",
             "present": ok_li,
             "status": st_li,
             "url": u_li,
             "impact": PLATFORM_IMPACT_BLURB["LinkedIn"],
+            "source": "search",
         }
-    )
+    rows.append(li_row)
 
+    same_as_note = (
+        f" JSON-LD sameAs supplied {', '.join(used_same_as)} (search skipped for those platforms)."
+        if used_same_as
+        else " No relevant JSON-LD sameAs for Wikipedia/YouTube/Reddit/LinkedIn; used search probes."
+    )
     note = (
-        "Checks: Wikipedia (multi-query API), YouTube (@handles + search HTML), "
-        "Reddit (search.json for up to three on-brand threads; optional DistilBERT SST-2 sentiment on title + "
-        "top-scoring comments when requirements-brand-sentiment.txt deps are installed; else subreddit slug fallback), "
-        "LinkedIn (expanded /company/ slugs). "
-        "Pass an accurate --brand and use the audited domain so host-based guesses "
+        "Checks: Wikipedia (sameAs wiki article or multi-query API), YouTube (sameAs channel "
+        "or @handles + search HTML), Reddit (sameAs subreddit/user or search.json), "
+        "LinkedIn (sameAs company page or expanded /company/ slugs)."
+        + same_as_note
+        + " Pass an accurate --brand and use the audited domain so host-based guesses "
         "(e.g. autopartsdirect → Auto Parts Direct) apply. Confirm in browser if a site blocks bots."
     )
     return {
@@ -816,4 +966,5 @@ def scan_brand_platforms(
         "base_url": base_url,
         "platforms": rows,
         "method_note": note,
+        "same_as_used": used_same_as,
     }

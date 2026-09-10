@@ -157,6 +157,28 @@ export function buildInformationSourceDomainPredicate(
   };
 }
 
+export function buildCompetitorDomainPredicate(
+  ctx: PromptPerformanceContext | null | undefined,
+): (rawDomain: string) => boolean {
+  const { competitorDomains, competitorStems } = buildEntitySets(ctx);
+  return (rawDomain: string): boolean => {
+    const domain = normalizeCitationDomain(rawDomain);
+    return Boolean(domain)
+      && (competitorDomains.has(domain) || competitorStems.has(stemBrand(domain)));
+  };
+}
+
+export function buildBrandDomainPredicate(
+  ctx: PromptPerformanceContext | null | undefined,
+): (rawDomain: string) => boolean {
+  const { brandDomains, brandStems } = buildEntitySets(ctx);
+  return (rawDomain: string): boolean => {
+    const domain = normalizeCitationDomain(rawDomain);
+    return Boolean(domain)
+      && (brandDomains.has(domain) || brandStems.has(stemBrand(domain)));
+  };
+}
+
 /**
  * Source of truth for Prompts "Citations" and the Citations page.
  *

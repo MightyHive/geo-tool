@@ -880,6 +880,30 @@ def extract_html_title(html: str) -> str | None:
     return t or None
 
 
+def extract_page_headings(html: str, *, limit: int = 8) -> dict[str, list[str]]:
+    """Bounded H1/H2 texts for page-specific prompt generation."""
+
+    def _clean(raw: str) -> str:
+        text = html_unescape_meta(re.sub(r"<[^>]+>", " ", raw))
+        return re.sub(r"\s+", " ", text).strip()
+
+    h1: list[str] = []
+    h2: list[str] = []
+    for raw in re.findall(r"<h1\b[^>]*>(.*?)</h1>", html, flags=re.IGNORECASE | re.DOTALL):
+        heading = _clean(raw)
+        if 2 <= len(heading) <= 180 and heading not in h1:
+            h1.append(heading)
+        if len(h1) >= 3:
+            break
+    for raw in re.findall(r"<h2\b[^>]*>(.*?)</h2>", html, flags=re.IGNORECASE | re.DOTALL):
+        heading = _clean(raw)
+        if 4 <= len(heading) <= 180 and heading not in h2:
+            h2.append(heading)
+        if len(h2) >= limit:
+            break
+    return {"h1": h1, "h2": h2}
+
+
 def extract_meta_description(html: str) -> str | None:
     for rx in (META_DESC_RE, META_DESC_RE_ALT):
         m = rx.search(html)
@@ -2383,7 +2407,7 @@ def run_site_audit(
             bq = derive_brand_from_base(base)
         time.sleep(args.delay)
         report["brand_visibility"] = scan_brand_platforms(
-            bq, base, delay=args.delay, brand_source=src
+            bq, base, delay=args.delay, brand_source=src, same_as_urls=same_as_sorted
         )
 
     report["audit_inputs"] = {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { ProbeHistoryEntry } from "../types";
+import type { PlatformDailySummary, ProbeHistoryEntry } from "../types";
 import { auditSlug } from "../lib/auditPath";
 import { legendItemSorterByLatestValueDesc } from "../lib/chartLegend";
 import { sortTooltipItemsByValueDesc } from "../lib/chartTooltip";
@@ -17,11 +17,11 @@ import { fetchProbeHistory } from "../lib/probeHistoryFetch";
 import { PLATFORM_META } from "./PlatformLogo";
 
 const PLATFORM_LABELS: Record<string, string> = {
-  gemini: "Gemini",
-  openai: "OpenAI",
-  google_aio: "Google AI",
-  claude: "Claude",
+  gemini: "Gemini", openai: "OpenAI", google_aio: "Google AI Overview", claude: "Claude",
+  chatbots: "Chatbots", overviews: "AI Overviews",
 };
+const CHATBOT_PLATFORMS = ["gemini", "openai", "claude"] as const;
+const ALL_PLATFORMS = [...CHATBOT_PLATFORMS, "google_aio"] as const;
 
 const BRAND_STYLE = "solid";
 const COMP_STYLE = "dashed";
@@ -31,17 +31,51 @@ interface ChartRow {
   [key: string]: number | string;
 }
 
-function buildChartRows(entries: ProbeHistoryEntry[]): ChartRow[] {
+function summaryFor(
+  entry: ProbeHistoryEntry,
+  topic: string | undefined,
+  platform: string,
+): PlatformDailySummary | undefined {
+  const topicSummary = topic && entry.topic_summaries?.[topic]?.[platform as keyof typeof entry.summary];
+  const summary = entry.summary?.[platform as keyof typeof entry.summary];
+  return (topicSummary && !Array.isArray(topicSummary) ? topicSummary : undefined)
+    || (summary && !Array.isArray(summary) ? summary : undefined);
+}
+
+function buildChartRows(
+  entries: ProbeHistoryEntry[],
+  selectedPlatform: string,
+  topic?: string,
+): ChartRow[] {
   return entries
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((entry) => {
       const row: ChartRow = { date: entry.date };
-      for (const plat of ["gemini", "openai", "google_aio", "claude"] as const) {
-        const s = entry.summary?.[plat];
-        if (s) {
-          row[`${plat}_brand`] = Math.round((s.brand_visibility ?? 0) * 100);
-          row[`${plat}_comp`] = Math.round((s.avg_competitor_visibility ?? 0) * 100);
+      for (const group of [
+        { key: "chatbots", platforms: CHATBOT_PLATFORMS },
+        { key: "overviews", platforms: ["google_aio"] as const },
+      ]) {
+        if (selectedPlatform !== "all" && !group.platforms.includes(selectedPlatform as never)) continue;
+        const selectedGroupPlatforms = selectedPlatform === "all"
+          ? group.platforms
+          : group.platforms.filter((platform) => platform === selectedPlatform);
+        const summaries = selectedGroupPlatforms.map((platform) => summaryFor(entry, topic, platform)).filter(Boolean);
+        const totalResponses = summaries.reduce((sum, summary) => sum + Number(summary?.response_count ?? 0), 0);
+        const aggregate = summaries.length === 1
+          ? summaries[0]
+          : {
+              brand_visibility: totalResponses
+                ? summaries.reduce((sum, summary) => sum + Number(summary?.brand_visibility ?? 0) * Number(summary?.response_count ?? 0), 0) / totalResponses
+                : 0,
+              avg_competitor_visibility: totalResponses
+                ? summaries.reduce((sum, summary) => sum + Number(summary?.avg_competitor_visibility ?? 0) * Number(summary?.response_count ?? 0), 0) / totalResponses
+                : 0,
+            };
+        if (aggregate && (selectedPlatform === "all" || group.platforms.includes(selectedPlatform as never))) {
+          const key = selectedPlatform === "all" ? group.key : selectedPlatform;
+          row[`${key}_brand`] = Math.round(Number(aggregate.brand_visibility ?? 0) * 100);
+          row[`${key}_comp`] = Math.round(Number(aggregate.avg_competitor_visibility ?? 0) * 100);
         }
       }
       return row;
@@ -89,19 +123,16 @@ function CustomTooltip({ active, payload, label }: {
 export default function VisibilityOverTime({
   auditId,
   brandLabel,
+  topic,
 }: {
   auditId: string;
   brandLabel?: string;
+  topic?: string;
 }) {
   const [data, setData] = useState<ProbeHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activePlatforms, setActivePlatforms] = useState<string[]>([
-    "gemini",
-    "openai",
-    "google_aio",
-    "claude",
-  ]);
+  const [selectedPlatform, setSelectedPlatform] = useState("all");
   const [showCompetitor, setShowCompetitor] = useState(true);
   const [rerunning, setRerunning] = useState(false);
 
@@ -126,7 +157,13 @@ export default function VisibilityOverTime({
     };
   }, [auditId]);
 
-  const chartRows = buildChartRows(data);
+  const platformOptions = ALL_PLATFORMS.filter((platform) =>
+    data.some((entry) => summaryFor(entry, topic, platform)),
+  );
+  const chartRows = useMemo(
+    () => buildChartRows(data, selectedPlatform, topic),
+    [data, selectedPlatform, topic],
+  );
   const hasMultipleDates = chartRows.length > 1;
 
   const triggerRerun = () => {
@@ -144,12 +181,10 @@ export default function VisibilityOverTime({
       .catch(() => setRerunning(false));
   };
 
-  const platforms = ["gemini", "openai", "google_aio", "claude"].filter((p) =>
-    data.some((e) => e.summary?.[p as keyof typeof e.summary])
-  );
-
   const colorForPlatform = (platform: string, competitor = false): string => {
     const meta = PLATFORM_META[platform];
+    if (platform === "chatbots") return competitor ? "#C4B5FD" : "#8B5CF6";
+    if (platform === "overviews") return competitor ? "#FCA5A5" : "#EA4335";
     return competitor ? (meta?.lightColor ?? "#D1D5DB") : (meta?.color ?? "#4B5563");
   };
 
@@ -198,31 +233,15 @@ export default function VisibilityOverTime({
         </div>
       </div>
 
-      {/* Platform toggles */}
-      <div className="flex flex-wrap gap-1.5 mb-4">
-        {platforms.map((p) => {
-          const active = activePlatforms.includes(p);
-          const color = colorForPlatform(p);
-          return (
-            <button
-              key={p}
-              type="button"
-              onClick={() =>
-                setActivePlatforms((prev) =>
-                  active ? prev.filter((x) => x !== p) : [...prev, p]
-                )
-              }
-              className="text-[10px] font-semibold px-2.5 py-1 rounded-full border transition-colors"
-              style={
-                active
-                  ? { background: color + "18", color, borderColor: color + "44" }
-                  : { background: "#f5f5f5", color: "#aaa", borderColor: "#e5e5e5" }
-              }
-            >
-              {PLATFORM_LABELS[p] ?? p}
-            </button>
-          );
-        })}
+      <div className="mb-4 flex flex-wrap items-center gap-1.5">
+        <select
+          value={selectedPlatform}
+          onChange={(event) => setSelectedPlatform(event.target.value)}
+          className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-semibold text-gray-500"
+        >
+          <option value="all">Chatbots vs AI Overviews</option>
+          {platformOptions.map((platform) => <option key={platform} value={platform}>{PLATFORM_LABELS[platform]}</option>)}
+        </select>
       </div>
 
       {!hasMultipleDates && (
@@ -256,7 +275,7 @@ export default function VisibilityOverTime({
             wrapperStyle={{ fontSize: 10, paddingTop: 8 }}
             itemSorter={legendItemSorterByLatestValueDesc(chartRows)}
           />
-          {activePlatforms.flatMap((p) => {
+          {[...((selectedPlatform === "all") ? ["chatbots", "overviews"] : [selectedPlatform])].flatMap((p) => {
             const brandColor = colorForPlatform(p);
             const competitorColor = colorForPlatform(p, true);
             const lines = [

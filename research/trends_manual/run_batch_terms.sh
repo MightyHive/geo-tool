@@ -90,7 +90,7 @@ print(data_dir_for_slug('$slug'))
     cat "$SHARED_ENV"
     printf 'QUERY_TERM="%s"\n' "$term"
     printf 'TRENDS_DATA_DIR="%s"\n' "$data_dir"
-    printf 'BQ_TRENDS_WEEKLY_TABLE="emea-ds-sandbox.geo_tool.google_trends_weekly_%s"\n' "$slug"
+    printf 'BQ_TRENDS_WEEKLY_TABLE="geo-tool-emea-ds.geo_tool.google_trends_weekly_%s"\n' "$slug"
   } > "$config"
 
   echo ""

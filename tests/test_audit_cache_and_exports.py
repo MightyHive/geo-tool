@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import api.audit_json_cache as cache
@@ -57,5 +58,7 @@ def test_precomputed_html_freshness(tmp_path: Path, monkeypatch) -> None:
 
     # Touch probe → stale
     probe.write_text(json.dumps({"live_probe": {"per_prompt": [{"x": 1}]}}), encoding="utf-8")
+    newer_mtime = float(sources["live_probe"]) + 1
+    os.utime(probe, (newer_mtime, newer_mtime))
     assert not precompute.precomputed_html_is_fresh(tmp_path, section="summary")
     assert precompute.read_precomputed_section_html(tmp_path, "summary") is None

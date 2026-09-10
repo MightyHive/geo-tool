@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from api.geo_services import seed_audit_dir_from_wizard
 
 
@@ -37,3 +39,32 @@ def test_normal_audit_clears_prompt_artifacts(tmp_path) -> None:
     _seed(tmp_path, preserve_prompt_data=False)
 
     assert not prompt_file.exists()
+
+
+def test_seed_persists_primary_prompt_language(tmp_path) -> None:
+    seed_audit_dir_from_wizard(
+        tmp_path,
+        primary_url="https://example.it",
+        brand_name="Esempio",
+        industry="Software",
+        market_country="Italy",
+        market_country_code="IT",
+        additional_markets=[],
+        competitor_urls=[],
+        products_rows=[],
+        competitors_detail=[],
+        prompt_locales=[
+            {
+                "country": "Italy",
+                "country_code": "IT",
+                "language": "it",
+                "language_name": "Italian",
+            }
+        ],
+    )
+
+    onboarding = json.loads(
+        (tmp_path / "onboarding_context.json").read_text(encoding="utf-8")
+    )
+    assert onboarding["prompt_locales"][0]["key"] == "IT:it"
+    assert onboarding["prompt_source_language"] == "it"

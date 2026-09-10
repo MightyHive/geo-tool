@@ -2029,14 +2029,20 @@ def load_prompt_visibility_metrics(
     audit_dir: Path,
     *,
     prefer_persisted: bool = True,
+    live_override: dict[str, Any] | None = None,
+    platforms: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
-    """Canonical probe-driven AI Visibility metrics used across the product."""
+    """Canonical probe-driven AI Visibility metrics used across the product.
+
+    ``live_override`` and ``platforms`` let page audits reuse the exact master
+    scoring path without writing into the master's prompt artifacts.
+    """
     from api.audit_json_cache import load_json_cached
 
     # Prefer fresh persisted metrics when available (avoids re-parsing multi-MB probe JSON).
     # Do not lazy-backfill here — backfill belongs to prompt-performance GET so SOV
     # stays on the canonical probe-parsing path until metrics are written at probe time.
-    if prefer_persisted:
+    if prefer_persisted and live_override is None and platforms is None:
         try:
             from api.prompt_performance_metrics import metrics_are_fresh, read_metrics_file
 
@@ -2054,20 +2060,29 @@ def load_prompt_visibility_metrics(
             pass
 
     sov_competitor_limit = 10
-    probe_path = audit_dir / "prompt_performance_live_probe.json"
-    if not probe_path.is_file():
-        return None
-    raw = load_json_cached(probe_path)
-    if not isinstance(raw, dict):
-        return None
-    live = raw.get("live_probe", raw) if isinstance(raw, dict) else {}
+    if live_override is not None:
+        live = live_override
+    else:
+        probe_path = audit_dir / "prompt_performance_live_probe.json"
+        if not probe_path.is_file():
+            return None
+        raw = load_json_cached(probe_path)
+        if not isinstance(raw, dict):
+            return None
+        live = raw.get("live_probe", raw) if isinstance(raw, dict) else {}
     if not isinstance(live, dict):
         return None
     rows = live.get("per_prompt")
     if not isinstance(rows, list) or not rows:
         return None
 
-    platforms = ("gemini", "openai", "google_aio", "claude")
+    selected_platforms = tuple(
+        platform
+        for platform in (platforms or ("gemini", "openai", "google_aio", "claude"))
+        if platform in {"gemini", "openai", "google_aio", "claude"}
+    )
+    if not selected_platforms:
+        return None
     brand_tokens = [
         str(token).lower()
         for token in [live.get("brand_name"), *(live.get("brand_match_tokens") or [])]
@@ -2085,13 +2100,13 @@ def load_prompt_visibility_metrics(
             "brand_hits": 0.0,
             "competitor_hits_by_name": {},
         }
-        for platform in platforms
+        for platform in selected_platforms
     }
 
     for row in rows:
         if not isinstance(row, dict):
             continue
-        for platform in platforms:
+        for platform in selected_platforms:
             raw_runs = (row.get("runs") or {}).get(platform) or []
             completed_runs = [
                 run for run in raw_runs
@@ -2996,7 +3011,20 @@ def latest_audit_dir() -> Path | None:
 def audit_dir_for_run(out_base: str, primary_url: str) -> Path:
     cr = load_crawl_site()
     base = cr.normalize_base(primary_url.strip())
-    return (audit_output_base(out_base) / cr.safe_dir_name(base)).resolve()
+    root = audit_output_base(out_base)
+    safe_name = cr.safe_dir_name(base)
+    primary_dir = root / safe_name
+    if not primary_dir.exists():
+        return primary_dir.resolve()
+
+    # Preserve existing primary run and place reruns into unique date-stamped folders.
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    candidate = root / f"{safe_name}_{timestamp}"
+    suffix = 1
+    while candidate.exists():
+        candidate = root / f"{safe_name}_{timestamp}_{suffix}"
+        suffix += 1
+    return candidate.resolve()
 
 
 def seed_audit_dir_from_wizard(
@@ -3007,10 +3035,10 @@ def seed_audit_dir_from_wizard(
     industry: str,
     market_country: str,
     market_country_code: str,
-    additional_markets: list[dict[str, Any]] | None,
     competitor_urls: list[str],
     products_rows: list[dict[str, Any]],
     competitors_detail: list[dict[str, Any]],
+    additional_markets: list[dict[str, Any]] | None = None,
     ga4_property_id: str = "",
     ga4_ai_channel_names: str = "",
     ga4_conversion_event_name: str = "purchase",
@@ -3088,13 +3116,13 @@ def seed_audit_dir_from_wizard(
     try:
         from prompt_locales import normalize_prompt_locales
 
-        onboarding["prompt_locales"] = normalize_prompt_locales(
+        normalized_locales = normalize_prompt_locales(
             prompt_locales,
             market_country=market_country.strip(),
             market_country_code=market_country_code.strip(),
         )
     except Exception:
-        onboarding["prompt_locales"] = [
+        normalized_locales = [
             {
                 "country": market_country.strip(),
                 "country_code": market_country_code.strip(),
@@ -3104,15 +3132,25 @@ def seed_audit_dir_from_wizard(
                 "label": f"{market_country.strip() or 'Market'}: English",
             }
         ]
+    onboarding["prompt_locales"] = normalized_locales
+    source_locale = normalized_locales[0]
+    onboarding["prompt_source_language"] = str(
+        source_locale.get("language") or "en"
+    ).strip().lower()
+    onboarding["prompt_source_language_name"] = str(
+        source_locale.get("language_name") or "English"
+    ).strip()
+
     extra_markets: list[dict[str, str]] = []
     for row in additional_markets or []:
         if not isinstance(row, dict):
             continue
-        c = str(row.get("country") or "").strip()
-        cc = str(row.get("country_code") or "").strip().upper()
-        if not c or not cc:
-            continue
-        extra_markets.append({"country": c, "country_code": cc})
+        country = str(row.get("country") or "").strip()
+        country_code = str(row.get("country_code") or "").strip().upper()
+        if country and country_code:
+            extra_markets.append(
+                {"country": country, "country_code": country_code}
+            )
     onboarding["additional_crawl_markets"] = extra_markets
     onboarding["accepted_competitors"] = list(competitor_urls)
     if crawl_urls:
@@ -3827,32 +3865,43 @@ def crawl_competitors_in_place(
 
 def app_config() -> dict[str, Any]:
     from geo_app_env import app_env_display_label, current_app_env
+    from api.workshop_dashboards import workshop_dashboard_enabled
 
+    report_sections = [
+        {"id": "summary", "label": "Summary", "group": "Overview"},
+        {"id": "config", "label": "Config", "group": "Overview"},
+        {"id": "recommendations", "label": "Recommendations", "group": "Overview"},
+        {"id": "ai-traffic-dashboard", "label": "AI Traffic Dashboard", "group": "Overview"},
+        {"id": "competitor-comparison", "label": "Competitor comparison", "group": "Overview"},
+        {"id": "ai-visibility-overview", "label": "Overview", "group": "AI visibility"},
+        {"id": "prompts", "label": "Prompts", "group": "AI visibility"},
+        {"id": "topics", "label": "Topics", "group": "AI visibility"},
+        {"id": "competitor-visibility", "label": "Competitor visibility", "group": "AI visibility"},
+        {"id": "citations", "label": "Citations", "group": "AI visibility"},
+        {"id": "reddit-citations", "label": "Reddit Citations", "group": "AI visibility"},
+        {"id": "youtube-citations", "label": "YouTube Citations", "group": "AI visibility"},
+        {"id": "technical-overview", "label": "Overview", "group": "Technical setup"},
+        {"id": "crawler-access", "label": "Crawler access", "group": "Technical setup"},
+        {"id": "citability", "label": "Citability", "group": "Technical setup"},
+        {"id": "platform-readiness", "label": "Platform readiness", "group": "Technical setup"},
+        {"id": "content-overview", "label": "Overview", "group": "Content quality"},
+        {"id": "eeat-signals", "label": "E-E-A-T Signals", "group": "Content quality"},
+        {"id": "content-structure-answerability", "label": "Content Structure & Answerability", "group": "Content quality"},
+        {"id": "schema-entity-markup", "label": "Schema & Entity Markup", "group": "Content quality"},
+        {"id": "brand-visibility-authority", "label": "Brand Visibility & Authority", "group": "Content quality"},
+        {"id": "sample-scripts", "label": "Sample scripts", "group": "Workshop"},
+        {"id": "content-outline-generator", "label": "Content outline generator", "group": "Workshop"},
+        {"id": "single-page-audits", "label": "Single-page audit", "group": "Workshop"},
+    ]
+    if workshop_dashboard_enabled():
+        report_sections.append(
+            {"id": "dashboard", "label": "Dashboard", "group": "Workshop"}
+        )
     return {
         "app_env": current_app_env(),
         "app_env_label": app_env_display_label(),
-        "report_sections": [
-            {"id": "summary", "label": "Summary", "group": "Overview"},
-            {"id": "config", "label": "Config", "group": "Overview"},
-            {"id": "recommendations", "label": "Recommendations", "group": "Overview"},
-            {"id": "ai-traffic-dashboard", "label": "AI Traffic Dashboard", "group": "Overview"},
-            {"id": "competitor-comparison", "label": "Competitor comparison", "group": "Overview"},
-            {"id": "ai-visibility-overview", "label": "Overview", "group": "AI visibility"},
-            {"id": "prompts", "label": "Prompts", "group": "AI visibility"},
-            {"id": "competitor-visibility", "label": "Competitor visibility", "group": "AI visibility"},
-            {"id": "citations", "label": "Citations", "group": "AI visibility"},
-            {"id": "reddit-citations", "label": "Reddit Citations", "group": "AI visibility"},
-            {"id": "youtube-citations", "label": "YouTube Citations", "group": "AI visibility"},
-            {"id": "technical-overview", "label": "Overview", "group": "Technical setup"},
-            {"id": "crawler-access", "label": "Crawler access", "group": "Technical setup"},
-            {"id": "citability", "label": "Citability", "group": "Technical setup"},
-            {"id": "platform-readiness", "label": "Platform readiness", "group": "Technical setup"},
-            {"id": "content-overview", "label": "Overview", "group": "Content quality"},
-            {"id": "eeat-signals", "label": "E-E-A-T Signals", "group": "Content quality"},
-            {"id": "content-structure-answerability", "label": "Content Structure & Answerability", "group": "Content quality"},
-            {"id": "schema-entity-markup", "label": "Schema & Entity Markup", "group": "Content quality"},
-            {"id": "brand-visibility-authority", "label": "Brand Visibility & Authority", "group": "Content quality"},
-            {"id": "sample-scripts", "label": "Sample scripts", "group": "Workshop"},
-            {"id": "content-outline-generator", "label": "Content outline generator", "group": "Workshop"},
-        ],
+        "features": {
+            "workshop_dashboard_builder": workshop_dashboard_enabled(),
+        },
+        "report_sections": report_sections,
     }

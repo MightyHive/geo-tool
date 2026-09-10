@@ -88,24 +88,34 @@ function ScoreBandDescription({ score }: { score: number }) {
 export function ContentOverview({
   auditDirOrSlug,
   onNavigate,
+  breakdown: breakdownProp,
+  hideScoreHistory = false,
 }: {
   auditDirOrSlug: string;
   onNavigate?: (sectionId: string) => void;
+  breakdown?: Awaited<ReturnType<typeof fetchScoreBreakdown>> | null;
+  hideScoreHistory?: boolean;
 }) {
-  const [breakdown, setBreakdown] = useState<Awaited<ReturnType<typeof fetchScoreBreakdown>> | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [fetched, setFetched] = useState<Awaited<ReturnType<typeof fetchScoreBreakdown>> | null>(null);
+  const [loading, setLoading] = useState(!breakdownProp);
   const { ctx } = usePromptPerformanceContext(auditDirOrSlug);
   const brandName = ctx?.brand_name?.trim() || "Your Brand";
 
   const load = useCallback(() => {
+    if (breakdownProp) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetchScoreBreakdown(auditDirOrSlug)
-      .then((b) => setBreakdown(b))
-      .catch(() => setBreakdown(null))
+      .then((b) => setFetched(b))
+      .catch(() => setFetched(null))
       .finally(() => setLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, breakdownProp]);
 
   useEffect(() => { load(); }, [load]);
+
+  const breakdown = breakdownProp ?? fetched;
 
   if (loading) {
     return <PageLoading />;
@@ -166,6 +176,7 @@ export function ContentOverview({
         )}
       </div>
 
+      {hideScoreHistory ? null : (
       <ScoreOverTime
         auditId={auditDirOrSlug}
         brandLabel={brandName}
@@ -173,6 +184,7 @@ export function ContentOverview({
         title="Content Quality over time"
         description="Brand content score trend, with competitor lines when competitor crawls have run."
       />
+      )}
 
       {/* What's measured */}
       <div className="bg-white rounded-2xl border border-gray-200 p-5">

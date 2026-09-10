@@ -26,8 +26,10 @@ import { textMentionsBrand } from "../lib/brandMatch";
 import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales";
 import { CompetitorFavicon } from "./PlatformLogo";
 import { PromptLocaleFilter, liveProbeForLocale } from "./PromptLocaleFilter";
+import { ReportFilterSelect } from "./ReportFilterSelect";
 import { OVERALL_LOCALE_KEY } from "../lib/localeProbeView";
 import { preferredInitialLocaleKey } from "../lib/defaultLocaleView";
+import { filterContextByTopic, listProbeTopics } from "../lib/promptCategoryGrouping";
 import {
   buildBrandRows,
   completedPlatformRuns,
@@ -35,6 +37,8 @@ import {
   type BrandRow,
 } from "./CompetitorComparisonSection";
 import { globalSignalHits, rowSignalHits } from "../lib/brandVisibilityRows";
+import { AI_OVERVIEW_PLATFORMS, CHATBOT_PLATFORMS } from "../lib/visibilityMetrics";
+import type { VisibilityPlatform } from "../lib/brandVisibilityRows";
 
 const SERIES_COLORS = [
   "#047857",
@@ -120,14 +124,18 @@ function competitorVisibilityFor(
 function buildHistoryRows(
   entries: ProbeHistoryEntry[],
   series: BrandRow[],
+  topic?: string,
 ): ChartDatum[] {
   return entries
     .slice()
     .sort((left, right) => left.date.localeCompare(right.date))
     .map((entry) => {
       const result: ChartDatum = { date: entry.date };
+      const summary = topic && entry.topic_summaries?.[topic]
+        ? entry.topic_summaries[topic]
+        : entry.summary;
       const platformRows = COMPETITOR_PLATFORMS
-        .map((platform) => entry.summary?.[platform])
+        .map((platform) => summary?.[platform])
         .filter((summary): summary is PlatformDailySummary => Boolean(summary?.response_count));
       const totalResponses = platformRows.reduce(
         (sum, summary) => sum + Number(summary.response_count ?? 0),
@@ -321,7 +329,21 @@ export function BrandCompetitorVisibilityTable({
   );
   const [trackingName, setTrackingName] = useState("");
   const [trackError, setTrackError] = useState("");
-  const totalHits = globalSignalHits(rows[0]);
+  const ownRow = rows.find((row) => row.isOwnBrand);
+  const surfaceMetrics = (row: BrandRow, platforms: readonly VisibilityPlatform[]) => {
+    const hits = platforms.reduce((sum, platform) => sum + (row.platformMentionCounts[platform] ?? 0), 0);
+    const denominator = platforms.reduce((sum, platform) => sum + (row.platformResponseCounts[platform] ?? 0), 0);
+    const totalSurfaceHits = platforms.reduce(
+      (sum, platform) => sum + (ownRow?.globalPlatformTotal[platform] ?? 0),
+      0,
+    );
+    return {
+      visibility: (hits / denominator) * 100,
+      sov: totalSurfaceHits > 0 && ownRow
+        ? (hits / totalSurfaceHits) * 100
+        : 0,
+    };
+  };
 
   return (
     <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -330,52 +352,63 @@ export function BrandCompetitorVisibilityTable({
         <p className="mt-1 text-[11px] text-gray-400">Current response-level performance.</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[520px] text-sm">
+        <table className="w-full min-w-[560px] table-fixed text-[11px]">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50">
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Brand</th>
-              <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wide text-gray-400">Visibility</th>
-              <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wide text-gray-400">SOV</th>
+              <th className="w-[32%] px-2 py-1.5 text-left text-[9px] font-semibold uppercase tracking-wide text-gray-400">Brand</th>
+              <th colSpan={2} className="w-[28%] border-l border-gray-200 px-1.5 py-1.5 text-center text-[9px] font-semibold uppercase tracking-wide text-violet-600">Chatbots</th>
+              <th colSpan={2} className="w-[28%] border-l border-gray-200 px-1.5 py-1.5 text-center text-[9px] font-semibold uppercase tracking-wide text-red-600">AI Overviews</th>
               {showTrackCompetitor && (
-                <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wide text-gray-400">Tracking</th>
+                <th className="w-[12%] px-1.5 py-1.5 text-right text-[9px] font-semibold uppercase tracking-wide text-gray-400">Tracking</th>
               )}
+            </tr>
+            <tr className="border-b border-gray-100 bg-gray-50">
+              <th className="px-2 py-1" />
+              {["VISIBILITY", "SOV", "VISIBILITY", "SOV"].map((label, index) => (
+                <th key={`${label}-${index}`} className={`w-[14%] px-1.5 py-1 text-right text-[9px] font-semibold uppercase tracking-wide text-gray-400 ${index === 0 || index === 2 ? "border-l border-gray-200" : ""}`}>
+                  {label}
+                </th>
+              ))}
+              {showTrackCompetitor && <th className="px-1.5 py-1" />}
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const visibility = percentage(row.promptMentionCount, row.totalPrompts);
-              const sov = percentage(rowSignalHits(row), totalHits);
+              const chatbot = surfaceMetrics(row, CHATBOT_PLATFORMS);
+              const overview = surfaceMetrics(row, AI_OVERVIEW_PLATFORMS);
               return (
                   <tr
                     key={row.name}
                     className={`border-b border-gray-50 ${row.isOwnBrand ? "bg-emerald-50/40" : ""}`}
                   >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <CompetitorFavicon name={row.name} website={row.website} size={17} />
+                    <td className="px-2 py-1.5">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <CompetitorFavicon name={row.name} website={row.website} size={14} />
                         {row.isOwnBrand ? (
-                          <span className="inline-flex flex-wrap items-center gap-2 font-semibold text-emerald-700">
-                            {row.name}
-                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                              Your Brand
+                          <span className="inline-flex min-w-0 flex-wrap items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                            <span className="truncate">{row.name}</span>
+                            <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+                              YOUR BRAND
                             </span>
                           </span>
                         ) : (
                           <CompetitorLink
                             name={row.name}
                             website={row.website}
-                            className="font-semibold text-gray-800"
+                            className="truncate text-[11px] font-semibold text-gray-800"
                           />
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-700">{formatPct(visibility)}</td>
-                    <td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-700">{formatPct(sov)}</td>
+                    <td className="border-l border-gray-200 px-1.5 py-1.5 text-right font-semibold tabular-nums text-gray-700">{formatPct(chatbot.visibility)}</td>
+                    <td className="px-1.5 py-1.5 text-right font-semibold tabular-nums text-gray-700">{formatPct(chatbot.sov)}</td>
+                    <td className="border-l border-gray-200 px-1.5 py-1.5 text-right font-semibold tabular-nums text-gray-700">{formatPct(overview.visibility)}</td>
+                    <td className="px-1.5 py-1.5 text-right font-semibold tabular-nums text-gray-700">{formatPct(overview.sov)}</td>
                     {showTrackCompetitor && (
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-1.5 py-1.5 text-right">
                         {!row.isOwnBrand && (
                           trackedNames.has(stemBrand(row.name)) ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
                               <Check className="h-3.5 w-3.5" /> Tracked
                             </span>
                           ) : (
@@ -424,12 +457,14 @@ export function BrandCompetitorVisibility({
   showComparison = true,
   title = "Brand & competitor visibility over time",
   competitorLimit = 10,
+  topic,
 }: {
   auditId: string;
   ctx: PromptPerformanceContext;
   showComparison?: boolean;
   title?: string;
   competitorLimit?: number;
+  topic?: string;
 }) {
   const allRows = useMemo(() => buildBrandRows(ctx), [ctx]);
   const competitors = allRows
@@ -465,7 +500,7 @@ export function BrandCompetitorVisibility({
 
   const selected = competitors.find((competitor) => competitor.name === selectedName);
   const comparison = selected ? pairwiseMetrics(ctx, allRows, selected) : null;
-  const chartRows = buildHistoryRows(history, chartSeries);
+  const chartRows = buildHistoryRows(history, chartSeries, topic);
   const legendSeries = useMemo(
     () =>
       sortByLatestSeriesValueDesc(
@@ -641,9 +676,11 @@ export function BrandCompetitorVisibility({
 export function CompetitorComparisonDashboard({ auditId }: { auditId: string }) {
   const { ctx, loading, error, ensureScope } = usePromptPerformanceContext(auditId);
   const [selectedLocaleKey, setSelectedLocaleKey] = useState<string | null>(null);
+  const [selectedTopic, setSelectedTopic] = useState("All topics");
 
   useEffect(() => {
     setSelectedLocaleKey(null);
+    setSelectedTopic("All topics");
   }, [auditId]);
 
   useEffect(() => {
@@ -653,6 +690,7 @@ export function CompetitorComparisonDashboard({ auditId }: { auditId: string }) 
 
   const onLocaleChange = (key: string) => {
     setSelectedLocaleKey(key);
+    setSelectedTopic("All topics");
     void ensureScope(
       key === OVERALL_LOCALE_KEY ? { allLocales: true } : { locale: key },
     ).catch(() => undefined);
@@ -661,14 +699,20 @@ export function CompetitorComparisonDashboard({ auditId }: { auditId: string }) 
   const localeKey = selectedLocaleKey || OVERALL_LOCALE_KEY;
   const live = liveProbeForLocale(ctx, localeKey);
   const localeCtx = ctx ? { ...ctx, live_probe: live } : null;
+  const topics = useMemo(() => listProbeTopics(localeCtx), [localeCtx]);
+  const filteredCtx = useMemo(
+    () => filterContextByTopic(localeCtx, selectedTopic),
+    [localeCtx, selectedTopic],
+  );
   const filterLocales = normalizePromptLocales(
     ctx?.prompt_locales as PromptLocale[] | undefined,
     ctx?.primary_market?.country ?? "",
     ctx?.primary_market?.country_id ?? "",
   );
+  const topicParam = selectedTopic === "All topics" ? undefined : selectedTopic;
 
   if (error) return <div className="alert-error m-6">{error}</div>;
-  if (loading || !ctx || !localeCtx) {
+  if (loading || !ctx || !localeCtx || !filteredCtx) {
     return <PageLoading />;
   }
 
@@ -680,14 +724,29 @@ export function CompetitorComparisonDashboard({ auditId }: { auditId: string }) 
           Compare your brand with the 10 most visible competitors found in AI responses.
         </p>
       </div>
-      <PromptLocaleFilter
-        locales={filterLocales}
-        selectedKey={localeKey}
-        onChange={onLocaleChange}
-        hideIfSingle={false}
-        ctx={ctx}
-      />
-      {!localeCtx.live_probe?.per_prompt?.length ? (
+      <div className="flex flex-wrap items-end gap-4">
+        <PromptLocaleFilter
+          locales={filterLocales}
+          selectedKey={localeKey}
+          onChange={onLocaleChange}
+          hideIfSingle={false}
+          ctx={ctx}
+          className="mb-0"
+        />
+        <ReportFilterSelect
+          id="competitor-topic-select"
+          label="Topic"
+          hint="Limit the comparison to prompts tagged with one product or service topic."
+          value={selectedTopic}
+          onChange={(event) => setSelectedTopic(event.target.value)}
+        >
+          <option>All topics</option>
+          {topics.map((topic) => (
+            <option key={topic}>{topic}</option>
+          ))}
+        </ReportFilterSelect>
+      </div>
+      {!filteredCtx.live_probe?.per_prompt?.length ? (
         <div className="px-6 py-16 text-center text-sm text-gray-400">
           {localeKey === OVERALL_LOCALE_KEY
             ? "No probe data yet. Run prompt probes to compare competitors."
@@ -696,11 +755,15 @@ export function CompetitorComparisonDashboard({ auditId }: { auditId: string }) 
       ) : (
         <>
           <BrandCompetitorVisibilityTable
-            ctx={localeCtx}
+            ctx={filteredCtx}
             auditId={auditId}
             showTrackCompetitor
           />
-          <BrandCompetitorVisibility auditId={auditId} ctx={localeCtx} />
+          <BrandCompetitorVisibility
+            auditId={auditId}
+            ctx={filteredCtx}
+            topic={topicParam}
+          />
         </>
       )}
     </div>

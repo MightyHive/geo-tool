@@ -6,7 +6,12 @@ import {
   globalSignalHits,
   rowSignalHits,
 } from "./brandVisibilityRows";
-import { computeVisibilityMetrics, visibilityPlatformsWithResults } from "./visibilityMetrics";
+import {
+  computeVisibilityMetrics,
+  computeVisibilityMetricsForPlatforms,
+  notableSurfaceScoreDifference,
+  visibilityPlatformsWithResults,
+} from "./visibilityMetrics";
 
 function makeCtx(overrides: Partial<PromptPerformanceContext> = {}): PromptPerformanceContext {
   return {
@@ -190,5 +195,50 @@ describe("score consistency", () => {
       "google_aio",
       "claude",
     ]);
+  });
+
+  it("calculates chatbot and AI Overview scores from separate platform groups", () => {
+    const ctx = makeCtx({
+      live_probe: {
+        brand_match_tokens: ["example"],
+        per_prompt: [
+          {
+            prompt: "Best tools?",
+            runs: {
+              gemini: [{ run_index: 1, citations: [], response: "Example.", mention_scores: { brand_signal: 1 } }],
+              openai: [{ run_index: 1, citations: [], response: "Rival.", mention_scores: { competitor_detail: { Rival: 1 } } }],
+              google_aio: [{ run_index: 1, citations: [], response: "Example.", mention_scores: { brand_signal: 1 } }],
+            },
+          },
+        ],
+      },
+    });
+
+    const chatbots = computeVisibilityMetricsForPlatforms(ctx, ["gemini", "openai", "claude"]);
+    const overviews = computeVisibilityMetricsForPlatforms(ctx, ["google_aio"]);
+
+    expect(chatbots?.promptCount).toBe(2);
+    expect(chatbots?.visiblePromptCount).toBe(1);
+    expect(overviews?.promptCount).toBe(1);
+    expect(overviews?.visiblePromptCount).toBe(1);
+    expect(overviews?.score).toBeGreaterThan(chatbots?.score ?? 0);
+  });
+});
+
+describe("notableSurfaceScoreDifference", () => {
+  it("returns null when either surface lacks data or the gap is small", () => {
+    expect(notableSurfaceScoreDifference(40, 50, true, true)).toBeNull();
+    expect(notableSurfaceScoreDifference(40, 80, false, true)).toBeNull();
+    expect(notableSurfaceScoreDifference(40, 80, true, false)).toBeNull();
+    expect(notableSurfaceScoreDifference(null, 80, true, true)).toBeNull();
+  });
+
+  it("describes which surface leads when the gap is notable", () => {
+    expect(notableSurfaceScoreDifference(42, 71, true, true)).toContain(
+      "stronger presence in Google AI Overviews",
+    );
+    expect(notableSurfaceScoreDifference(71, 42, true, true)).toContain(
+      "stronger presence in chatbot answers",
+    );
   });
 });

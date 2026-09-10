@@ -13,6 +13,7 @@ describe("reportSections", () => {
     expect(byLabel["AI Traffic Dashboard"]).toBe("ai-traffic-dashboard");
     expect(byLabel["Competitor comparison"]).toBe("competitor-comparison");
     expect(byLabel["Prompts"]).toBe("prompts");
+    expect(byLabel["Topics"]).toBe("topics");
     expect(byLabel["Reddit Citations"]).toBe("reddit-citations");
     expect(byLabel["YouTube Citations"]).toBe("youtube-citations");
     expect(byLabel["Crawler access"]).toBe("crawler-access");
@@ -23,6 +24,7 @@ describe("reportSections", () => {
     expect(byLabel["Brand Visibility & Authority"]).toBe("brand-visibility-authority");
     expect(byLabel["Sample scripts"]).toBe("sample-scripts");
     expect(byLabel["Content outline generator"]).toBe("content-outline-generator");
+    expect(byLabel["Single-page audit"]).toBe("single-page-audits");
   });
 
   it("keeps group-prefixed Overview ids unique", () => {
@@ -43,6 +45,7 @@ describe("reportSections", () => {
     expect(resolveReportSectionId("ai-visibility")).toBe("citability");
     expect(resolveReportSectionId("content-eeat")).toBe("eeat-signals");
     expect(resolveReportSectionId("samples")).toBe("sample-scripts");
+    expect(resolveReportSectionId("single-page-audit")).toBe("single-page-audits");
     expect(REPORT_SECTION_ALIASES["reddit-insights"]).toBe("reddit-citations");
   });
 });

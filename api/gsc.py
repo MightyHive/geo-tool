@@ -278,7 +278,7 @@ def gsc_list_sites(request: Request) -> dict[str, Any]:
         if "accessNotConfigured" in message or "SERVICE_DISABLED" in message:
             raise HTTPException(
                 status_code=503,
-                detail="Enable the Google Search Console API in emea-ds-sandbox, then retry.",
+                detail="Enable the Google Search Console API in geo-tool-emea-ds, then retry.",
             ) from exc
         raise HTTPException(
             status_code=502,

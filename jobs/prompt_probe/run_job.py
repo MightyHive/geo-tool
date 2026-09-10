@@ -296,7 +296,14 @@ def run() -> None:
     if not manifest:
         raise FileNotFoundError(f"Prompt job manifest not found: {manifest_path}")
     mode = str(manifest.get("mode") or "")
-    pending = audit_dir / (AIO_PENDING_FILE if mode == "aio" else PROMPT_PENDING_FILE)
+    page_id = str(manifest.get("page_id") or "").strip()
+    is_page_job = mode == "page"
+    if is_page_job:
+        if not page_id:
+            raise ValueError("page_id is required for page prompt jobs")
+        pending = audit_dir / "page_audits" / page_id / "page_probe_pending.json"
+    else:
+        pending = audit_dir / (AIO_PENDING_FILE if mode == "aio" else PROMPT_PENDING_FILE)
     manifest.pop("error", None)
     manifest.update({"status": "running", "started_at": _utc_now()})
     _write_json(manifest_path, manifest)
@@ -310,16 +317,16 @@ def run() -> None:
     # Use a locked merge (never a fixed .tmp + blind RMW) so sibling locales
     # don't trigger ESTALE / clobber each other's progress metadata.
     if not is_locale_job:
-        _write_json(
-            pending,
-            {
-                "status": "running",
-                "request_id": request_id,
-                "mode": mode,
-                "execution": str(manifest.get("execution") or ""),
-                "started_at": manifest["started_at"],
-            },
-        )
+        pending_payload = {
+            "status": "running",
+            "request_id": request_id,
+            "mode": mode,
+            "execution": str(manifest.get("execution") or ""),
+            "started_at": manifest["started_at"],
+        }
+        if is_page_job:
+            pending_payload["page_id"] = page_id
+        _write_json(pending, pending_payload)
     else:
         touch_fanout_pending_running(
             audit_dir,
@@ -356,6 +363,13 @@ def run() -> None:
             )
         elif mode == "aio":
             _run_aio(audit_dir, max_prompts=int(manifest.get("max_prompts") or 25))
+        elif mode == "page":
+            from api.page_audits import run_page_prompt_job
+
+            prompts = manifest.get("prompts")
+            if not isinstance(prompts, list) or not prompts:
+                raise ValueError("prompts are required for page prompt jobs")
+            run_page_prompt_job(audit_dir, page_id, [str(p) for p in prompts])
         else:
             raise ValueError(f"Unsupported prompt job mode: {mode}")
         manifest.update({"status": "completed", "completed_at": _utc_now()})
@@ -375,6 +389,31 @@ def run() -> None:
                     "error": str(exc),
                 },
             )
+        if is_page_job:
+            from api.page_audits import (
+                PAGE_AUDIT_FILE,
+                _index_summary,
+                _read_json as read_page,
+                _upsert_index_item,
+                _utc_now as page_now,
+                _write_json as write_page,
+                page_audits_root,
+            )
+
+            page_dir = page_audits_root(audit_dir) / page_id
+            record = read_page(page_dir / PAGE_AUDIT_FILE) or {}
+            record.update(
+                {
+                    "status": "error",
+                    "stage": "probing",
+                    "error": f"Page prompt probes failed: {exc}",
+                    "probe_status": "error",
+                    "probe_error": str(exc),
+                    "updated_at": page_now(),
+                }
+            )
+            write_page(page_dir / PAGE_AUDIT_FILE, record)
+            _upsert_index_item(audit_dir, _index_summary(record))
         raise
     finally:
         if not is_locale_job:

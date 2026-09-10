@@ -8,6 +8,7 @@ import {
 } from "../lib/localeProbeView";
 import type { LiveProbeResult, PromptPerformanceContext } from "../types";
 import { cn } from "../lib/utils";
+import { ReportFilterSelect } from "./ReportFilterSelect";
 
 interface PromptLocaleFilterProps {
   locales: PromptLocale[];
@@ -19,6 +20,8 @@ interface PromptLocaleFilterProps {
   /** Locale keys known failed from fan-out status. */
   failedLocaleKeys?: string[];
   className?: string;
+  /** Optional short explanation shown under the select. */
+  hint?: string;
 }
 
 function optionLabel(opt: LocaleViewOption): string {
@@ -41,6 +44,7 @@ export function PromptLocaleFilter({
   ctx,
   failedLocaleKeys = [],
   className,
+  hint = "Limit scores and charts to one market/language, or Overall for every probed locale.",
 }: PromptLocaleFilterProps) {
   const options = useMemo(() => {
     if (ctx) return buildLocaleViewOptions(ctx, failedLocaleKeys);
@@ -65,24 +69,22 @@ export function PromptLocaleFilter({
   const selected = options.find((o) => o.key === selectedKey) ?? options[0];
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-2 mb-4", className)}>
-      <label className="text-xs font-semibold uppercase tracking-wide text-gray-400 mr-1" htmlFor="locale-view-select">
-        Market / language
-      </label>
-      <select
+    <div className={cn("flex flex-wrap items-end gap-3", className)}>
+      <ReportFilterSelect
         id="locale-view-select"
+        label="Market / language"
+        hint={hint}
         value={selected?.key ?? OVERALL_LOCALE_KEY}
         onChange={(e) => onChange(e.target.value)}
-        className="text-sm rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[#0d0d0d] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#0984e3]/30 min-w-[12rem]"
       >
         {options.map((opt) => (
-          <option key={opt.key} value={opt.key} disabled={opt.key !== OVERALL_LOCALE_KEY && opt.availability === "missing" && false}>
+          <option key={opt.key} value={opt.key}>
             {optionLabel(opt)}
           </option>
         ))}
-      </select>
+      </ReportFilterSelect>
       {selected && selected.key !== OVERALL_LOCALE_KEY && selected.availability !== "ready" ? (
-        <span className="text-xs text-amber-700">
+        <span className="pb-6 text-xs text-amber-700">
           {selected.availability === "failed"
             ? "Probe failed for this market — re-run failed markets to fill it in."
             : "No probe data for this market yet."}

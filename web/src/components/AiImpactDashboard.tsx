@@ -2,7 +2,7 @@
  * AI Impact Estimates — separate from the iframe GA4 Traffic dashboard.
  * Connect GA4 via the same wizard OAuth; pull channels via ga4_channel_export.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, ChevronDown, ExternalLink, Upload } from "lucide-react";
 import {
   CartesianGrid,
@@ -19,7 +19,9 @@ import {
   disconnectGa4,
   disconnectGsc,
   fetchAiImpactConfig,
+  fetchAiImpactEstimateForAudit,
   fetchAiImpactRun,
+  fetchAudit,
   fetchGa4Status,
   fetchGscSites,
   fetchGscStatus,
@@ -27,10 +29,14 @@ import {
   gscLoginUrl,
   saveGa4Selection,
   saveGscSelection,
-  saveAiImpactEstimateForAudit,
+  type SavedAiImpactEstimate,
+  setAuditModelCategory,
   uploadAiImpactTrends,
+  type AiImpactConfig,
   type AiImpactEstimate,
+  type AiImpactPosteriorInterval,
   type AiImpactRunStatus,
+  type AiImpactSensitivityOutcome,
   type AiImpactTrendsUpload,
   type AiImpactWeeklyPoint,
   type GscSite,
@@ -39,10 +45,6 @@ import {
 import { filterCompletedWeeks } from "../lib/completedSundayWeeks";
 import { legendItemSorterByLatestValueDesc } from "../lib/chartLegend";
 import { sortTooltipItemsByValueDesc } from "../lib/chartTooltip";
-import {
-  formatIndirectSessionsRange,
-  probabilityOfResultPercent,
-} from "../lib/estimateRange";
 import {
   buildConversionEventSpec,
   eventNamesInput,
@@ -61,13 +63,6 @@ function fmt(n: number | undefined): string {
   return Math.round(n).toLocaleString();
 }
 
-function fmtShare(value: number, total: number): string {
-  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return "—";
-  const percentage = (100 * value) / total;
-  const digits = percentage < 0.1 ? 2 : 1;
-  return `${percentage.toFixed(digits)}% of total`;
-}
-
 function connectorReturnPath(): string {
   const { pathname, search } = window.location;
   const params = new URLSearchParams(search);
@@ -83,6 +78,132 @@ function savedRunKey(auditDirOrSlug: string): string {
   return `geo-ai-impact-run:${auditDirOrSlug}`;
 }
 
+export function aiImpactConfigPresentation(
+  modelHydrated: boolean,
+): "loading" | "collapsed" {
+  // Always keep Config available once hydrated so users can re-run even when
+  // a completed estimate is already on screen (collapsed by default).
+  if (!modelHydrated) return "loading";
+  return "collapsed";
+}
+
+export function stripSavedEstimateRunId(saved: SavedAiImpactEstimate): {
+  estimate: AiImpactEstimate;
+  runId: string | null;
+} {
+  const { _run_id: storedRunId, ...estimate } = saved;
+  const runId = typeof storedRunId === "string" && storedRunId.trim() ? storedRunId.trim() : null;
+  return { estimate: estimate as AiImpactEstimate, runId };
+}
+
+export function hydrateAiImpactRunFromSaved(
+  saved: SavedAiImpactEstimate,
+  run: AiImpactRunStatus | null,
+): AiImpactRunStatus {
+  const { estimate, runId } = stripSavedEstimateRunId(saved);
+  if (run?.estimate) {
+    return run;
+  }
+  return {
+    run_id: runId || run?.run_id || "",
+    status: run?.status || "completed",
+    created_at: run?.created_at || "",
+    conversion_event_name: run?.conversion_event_name,
+    jobs: run?.jobs || {},
+    estimate,
+    hierarchical_refit: run?.hierarchical_refit,
+    category: estimate.category ?? run?.category,
+    estimate_mode: estimate.estimate_mode ?? run?.estimate_mode,
+    model_artifact_version: estimate.model_artifact_version ?? run?.model_artifact_version,
+    signal_artifact_version: estimate.signal_artifact_version ?? run?.signal_artifact_version,
+  };
+}
+
+export function aiImpactResultLabel(estimateMode?: string | null): string {
+  return estimateMode === "site_refit"
+    ? "Site-inclusive hierarchical refit"
+    : "Category-level AI effect applied to this site's traffic";
+}
+
+export function aiImpactRefitStatus(run: AiImpactRunStatus | null): string | null {
+  const state = run?.hierarchical_refit?.status;
+  if (state) return state;
+  const legacyJobState = run?.jobs?.hierarchical_refit;
+  return legacyJobState || null;
+}
+
+/** Hide portfolio-lag copy once the site refit has finished (or produced a refit estimate). */
+export function shouldShowAwaitingSignalWeeks(
+  awaitingWeeks: number | undefined,
+  estimateMode?: string | null,
+  refitStatus?: string | null,
+): boolean {
+  if (!awaitingWeeks) return false;
+  if (estimateMode === "site_refit") return false;
+  if (refitStatus === "completed") return false;
+  return true;
+}
+
+function intervalConclusion(interval: AiImpactPosteriorInterval): "positive" | "negative" | "uncertain" {
+  if (interval.lower_94 > 0) return "positive";
+  if (interval.upper_94 < 0) return "negative";
+  return "uncertain";
+}
+
+export function isRobustSensitivity(outcome: AiImpactSensitivityOutcome): boolean {
+  const uncappedConclusion = intervalConclusion(outcome.uncapped);
+  const cappedConclusion = intervalConclusion(outcome.capped);
+  const derivedDirectionAgreement =
+    Math.sign(outcome.uncapped.posterior_mean) === Math.sign(outcome.capped.posterior_mean);
+  const derivedUncertaintyAgreement =
+    uncappedConclusion === cappedConclusion && uncappedConclusion !== "uncertain";
+  return (
+    (outcome.direction_agrees ?? derivedDirectionAgreement)
+    && (outcome.uncertainty_agrees ?? derivedUncertaintyAgreement)
+    && uncappedConclusion === cappedConclusion
+    && uncappedConclusion !== "uncertain"
+  );
+}
+
+/** Calendar days covered by the estimate window (Sunday weeks × 7). */
+export function estimateWindowDayCount(
+  estimate: Pick<AiImpactEstimate, "window_start" | "window_end" | "weekly_series">,
+): number {
+  const weeks = filterCompletedWeeks(estimate.weekly_series ?? []).length;
+  if (weeks > 0) return weeks * 7;
+  const start = Date.parse(estimate.window_start);
+  const end = Date.parse(estimate.window_end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return NaN;
+  // window_* are Sunday week starts; include the full last week.
+  return Math.round((end - start) / 86_400_000) + 7;
+}
+
+/** Primary (uncapped) impact sessions averaged over calendar days in the window. */
+export function estimatedSessionsPerDay(
+  impactSessions: number,
+  dayCount: number,
+): number {
+  if (!Number.isFinite(impactSessions) || !Number.isFinite(dayCount) || dayCount <= 0) {
+    return NaN;
+  }
+  return impactSessions / dayCount;
+}
+
+/** Primary impact as a share of all-channel sessions in the window. */
+export function estimatedImpactShareOfTotal(
+  impactSessions: number,
+  totalSessions: number,
+): number {
+  if (
+    !Number.isFinite(impactSessions)
+    || !Number.isFinite(totalSessions)
+    || totalSessions <= 0
+  ) {
+    return NaN;
+  }
+  return impactSessions / totalSessions;
+}
+
 function hydrateConversionFields(stored: string): { eventsInput: string; label: string } {
   const parsed = tryParseConversionEvents(stored.trim() || "purchase");
   if (!parsed.ok) {
@@ -94,8 +215,17 @@ function hydrateConversionFields(stored: string): { eventsInput: string; label: 
   };
 }
 
+/** Temporarily hide Search Console from the AI Impact UI (backend still accepts it). */
+const SHOW_GSC_SECTION = false;
+
+const MODEL_CATEGORY_OPTIONS = [
+  { value: "advertiser-retail", label: "Advertiser — retail" },
+  { value: "advertiser-services", label: "Advertiser — services" },
+  { value: "publisher", label: "Publisher" },
+] as const;
+
 export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const formDetailsRef = useRef<HTMLDetailsElement>(null);
+  const [formOpen, setFormOpen] = useState(false);
   const [windowWeeks, setWindowWeeks] = useState(13);
   const [localPanel, setLocalPanel] = useState("");
   const [ga4Status, setGa4Status] = useState<Ga4Status | null>(null);
@@ -108,9 +238,19 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
   const [gscSiteUrl, setGscSiteUrl] = useState("");
   const [gscLoading, setGscLoading] = useState(false);
   const [trendsUpload, setTrendsUpload] = useState<AiImpactTrendsUpload | null>(null);
+  const [brandTrendsTerm, setBrandTrendsTerm] = useState("");
+  const [brandName, setBrandName] = useState("");
+  const [trendsConfig, setTrendsConfig] = useState<AiImpactConfig | null>(null);
   const [trendsUploadBusy, setTrendsUploadBusy] = useState(false);
   const [trendsUploadError, setTrendsUploadError] = useState<string | null>(null);
+  const [showManualTrends, setShowManualTrends] = useState(false);
+  const [modelCategory, setModelCategory] = useState<string | null>(null);
+  const [modelCategoryDraft, setModelCategoryDraft] = useState("advertiser-retail");
+  const [modelCategoryBusy, setModelCategoryBusy] = useState(false);
   const [run, setRun] = useState<AiImpactRunStatus | null>(null);
+  const [runAuditId, setRunAuditId] = useState<string | null>(null);
+  const [modelHydrated, setModelHydrated] = useState(false);
+  const [hydratedAuditId, setHydratedAuditId] = useState("");
   const [busy, setBusy] = useState(false);
   const [runProgress, setRunProgress] = useState<{ percent: number; label: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,31 +296,153 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
   }, []);
 
   useEffect(() => {
-    void fetchAiImpactConfig().catch(() => null);
+    let cancelled = false;
+    setBrandName("");
+    setBrandTrendsTerm("");
+    setTrendsUpload(null);
+    setTrendsUploadError(null);
+    setShowManualTrends(false);
+    setModelCategory(null);
+
+    void fetchAiImpactConfig()
+      .then((cfg) => {
+        if (!cancelled) setTrendsConfig(cfg);
+      })
+      .catch(() => {
+        if (!cancelled) setTrendsConfig(null);
+      });
+    void fetchAudit(auditDirOrSlug)
+      .then((audit) => {
+        if (cancelled) return;
+        const name = (audit.onboarding_context?.brand_name_used || "").trim();
+        setBrandName(name);
+        setBrandTrendsTerm(name);
+        const category = (audit.onboarding_context?.model_category || "").trim();
+        if (category) {
+          setModelCategory(category);
+          setModelCategoryDraft(category);
+        } else {
+          setModelCategory(null);
+        }
+      })
+      .catch(() => undefined);
     refreshGa4();
-    refreshGsc();
-  }, [refreshGa4, refreshGsc]);
+    if (SHOW_GSC_SECTION) refreshGsc();
+    return () => {
+      cancelled = true;
+    };
+  }, [auditDirOrSlug, refreshGa4, refreshGsc]);
+
+  async function saveModelCategory(opts: { category?: string; classify?: boolean }) {
+    setModelCategoryBusy(true);
+    setError(null);
+    try {
+      const result = await setAuditModelCategory(auditDirOrSlug, opts);
+      setModelCategory(result.model_category);
+      setModelCategoryDraft(result.model_category);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save model category");
+    } finally {
+      setModelCategoryBusy(false);
+    }
+  }
+
+  const applyHydratedRun = useCallback((savedRun: AiImpactRunStatus) => {
+    if (!savedRun.estimate) return;
+    setRun(savedRun);
+    setRunAuditId(auditDirOrSlug);
+    setFormOpen(false);
+    if (savedRun.conversion_event_name) {
+      const hydrated = hydrateConversionFields(savedRun.conversion_event_name);
+      setConversionEventsInput(hydrated.eventsInput);
+      setConversionLabel(hydrated.label);
+    }
+    if (savedRun.run_id) {
+      window.sessionStorage.setItem(savedRunKey(auditDirOrSlug), savedRun.run_id);
+    }
+  }, [auditDirOrSlug]);
 
   useEffect(() => {
-    const runId = window.sessionStorage.getItem(savedRunKey(auditDirOrSlug));
-    if (!runId) return;
-    fetchAiImpactRun(runId)
-      .then((savedRun) => {
-        if (!savedRun.estimate) return;
-        setRun(savedRun);
-        if (savedRun.conversion_event_name) {
-          const hydrated = hydrateConversionFields(savedRun.conversion_event_name);
-          setConversionEventsInput(hydrated.eventsInput);
-          setConversionLabel(hydrated.label);
+    let cancelled = false;
+
+    async function hydrate() {
+      setModelHydrated(false);
+      setHydratedAuditId("");
+      setRun(null);
+      setRunAuditId(null);
+      try {
+        const saved = await fetchAiImpactEstimateForAudit(auditDirOrSlug);
+        if (cancelled) return;
+        if (saved) {
+          const { runId } = stripSavedEstimateRunId(saved);
+          let liveRun: AiImpactRunStatus | null = null;
+          if (runId) {
+            try {
+              liveRun = await fetchAiImpactRun(runId);
+            } catch {
+              liveRun = null;
+            }
+          }
+          if (cancelled) return;
+          applyHydratedRun(hydrateAiImpactRunFromSaved(saved, liveRun));
+          return;
         }
-        void saveAiImpactEstimateForAudit(
-          auditDirOrSlug,
-          savedRun.estimate as AiImpactEstimate,
-          savedRun.run_id,
-        ).catch(() => undefined);
-      })
-      .catch(() => window.sessionStorage.removeItem(savedRunKey(auditDirOrSlug)));
-  }, [auditDirOrSlug]);
+
+        const sessionRunId = window.sessionStorage.getItem(savedRunKey(auditDirOrSlug));
+        if (sessionRunId) {
+          try {
+            const savedRun = await fetchAiImpactRun(sessionRunId);
+            if (cancelled) return;
+            if (savedRun.estimate) {
+              applyHydratedRun(savedRun);
+            }
+          } catch {
+            window.sessionStorage.removeItem(savedRunKey(auditDirOrSlug));
+          }
+        }
+      } catch {
+        // No saved estimate for this audit.
+      } finally {
+        if (!cancelled) {
+          setHydratedAuditId(auditDirOrSlug);
+          setModelHydrated(true);
+        }
+      }
+    }
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [auditDirOrSlug, applyHydratedRun]);
+
+  useEffect(() => {
+    const refitStatus = aiImpactRefitStatus(run);
+    if (
+      runAuditId !== auditDirOrSlug
+      || !run?.run_id
+      || !["queued", "running"].includes(refitStatus || "")
+    ) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void fetchAiImpactRun(run.run_id)
+        .then((latest) => {
+          if (cancelled) return;
+          setRun(latest);
+          setRunAuditId(auditDirOrSlug);
+          if (latest.estimate) {
+            window.sessionStorage.setItem(savedRunKey(auditDirOrSlug), latest.run_id);
+            setFormOpen(false);
+            setError(null);
+          }
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [auditDirOrSlug, run, runAuditId]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -311,14 +573,27 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
     }
     setBusy(true);
     setError(null);
-    setRunProgress({ percent: 8, label: "Preparing data sources" });
+    const autoTrends = Boolean(trendsConfig?.trends_auto_fetch) && !trendsUpload;
+    setRunProgress({
+      percent: 8,
+      label: autoTrends
+        ? "Fetching Google Trends for brand…"
+        : "Preparing data sources",
+    });
     let succeeded = false;
     let progressTimer: ReturnType<typeof window.setInterval> | undefined;
     progressTimer = window.setInterval(() => {
       setRunProgress((current) => {
-        const percent = Math.min((current?.percent ?? 8) + 6, 88);
-        const label =
-          percent < 28
+        const percent = Math.min((current?.percent ?? 8) + 4, 88);
+        const label = autoTrends
+          ? percent < 35
+            ? "Fetching Google Trends for brand…"
+            : percent < 60
+              ? "Pulling analytics data"
+              : percent < 80
+                ? "Building the weekly model"
+                : "Finalising estimate"
+          : percent < 28
             ? "Connecting to Google"
             : percent < 58
               ? "Pulling analytics data"
@@ -327,7 +602,7 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
                 : "Finalising estimate";
         return { percent, label };
       });
-    }, 3500);
+    }, autoTrends ? 5000 : 3500);
     try {
       if (propertyId) {
         await persistProperty(propertyId, accountId);
@@ -342,26 +617,44 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
         ga4_property_name: propName || null,
         gsc_site_url: gscSiteUrl || null,
         conversion_event_name: conversionSpec,
+        audit_id: auditDirOrSlug,
+        brand_trends_term: brandTrendsTerm || brandName || null,
+        start_date: trendsConfig?.trends_expected_start || "2023-06-01",
       });
       setRun(created);
+      setRunAuditId(auditDirOrSlug);
       if (created.needs_ga4_reauth) {
         setError(
           created.error ||
             "Google Analytics session expired. Disconnect and reconnect, then try again.",
         );
       } else if (created.run_id) {
-        const latest = await fetchAiImpactRun(created.run_id);
-        setRun(latest);
-        if (latest.estimate && formDetailsRef.current) {
-          window.sessionStorage.setItem(savedRunKey(auditDirOrSlug), latest.run_id);
-          void saveAiImpactEstimateForAudit(
-            auditDirOrSlug,
-            latest.estimate as AiImpactEstimate,
-            latest.run_id,
-          ).catch(() => undefined);
-          succeeded = true;
-          formDetailsRef.current.open = false;
+        let latest = created;
+        try {
+          latest = await fetchAiImpactRun(created.run_id);
+          setRun(latest);
+          setRunAuditId(auditDirOrSlug);
+        } catch {
+          // The POST already returned; a follow-up GET can  fail with
+          // "Failed to fetch" (proxy, timeout) even when the estimate is ready.
         }
+        if (latest.jobs?.trends === "failed" && !latest.estimate) {
+          setError(
+            latest.trends_upload?.error
+              || "Google Trends fetch failed. You can upload a CSV manually and retry.",
+          );
+        } else if ((latest.status === "failed" || latest.error) && !latest.estimate) {
+          setError(latest.error || created.error || "Estimate failed.");
+        }
+        const estimate = latest.estimate ?? created.estimate;
+        if (estimate) {
+          window.sessionStorage.setItem(savedRunKey(auditDirOrSlug), latest.run_id || created.run_id);
+          succeeded = true;
+          setError(null);
+          setFormOpen(false);
+        }
+      } else if (created.error) {
+        setError(created.error);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -371,22 +664,41 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
         percent: succeeded ? 100 : 0,
         label: succeeded ? "Complete" : "Could not complete",
       });
-      window.setTimeout(() => setRunProgress(null), 800);
+      // Keep failure state visible longer; success can clear quickly.
+      window.setTimeout(() => setRunProgress(null), succeeded ? 800 : 8000);
       setBusy(false);
     }
   }
 
   const ga4Connected = Boolean(ga4Status?.connected);
   const gscConnected = Boolean(gscStatus?.connected);
-  const est = run?.estimate as AiImpactEstimate | null | undefined;
+  const est = (
+    runAuditId === auditDirOrSlug ? run?.estimate : null
+  ) as AiImpactEstimate | null | undefined;
+  const configPresentation = aiImpactConfigPresentation(
+    modelHydrated && hydratedAuditId === auditDirOrSlug,
+  );
   const returnPath = connectorReturnPath();
   const loginHref = ga4LoginUrl(2, true, returnPath);
   const gscLoginHref = gscLoginUrl(returnPath);
-  const trendsStartDate = "2023-01-01";
-  const trendsEndDate = new Date().toISOString().slice(0, 10);
+  const trendsAutoFetch = Boolean(trendsConfig?.trends_auto_fetch);
+  const trendsStartDate = trendsConfig?.trends_expected_start || "2023-06-01";
+  const trendsEndDate =
+    trendsConfig?.trends_expected_end || new Date().toISOString().slice(0, 10);
+  const effectiveBrandTerm = (brandTrendsTerm || brandName).trim();
+  const trendsReady = Boolean(trendsUpload) || (trendsAutoFetch && Boolean(effectiveBrandTerm));
+  const canRunEstimate =
+    !busy
+    && !trendsUploadBusy
+    && !modelCategoryBusy
+    && Boolean(modelCategory)
+    && (!!localPanel.trim() || !!propertyId)
+    && conversionSpecValid
+    && trendsReady
+    && (!trendsUpload || trendsUpload.terms.length <= 1 || !!effectiveBrandTerm);
   const trendsUrl =
     `https://trends.google.com/trends/explore?date=${trendsStartDate}%20${trendsEndDate}`
-    + "&geo=GB&hl=en-GB";
+    + `&geo=GB&q=${encodeURIComponent(effectiveBrandTerm || "brand")}&hl=en`;
 
   async function onTrendsFile(file: File | undefined) {
     if (!file) return;
@@ -396,6 +708,10 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
     try {
       const validated = await uploadAiImpactTrends(file, trendsStartDate, trendsEndDate);
       setTrendsUpload(validated);
+      setBrandTrendsTerm(
+        validated.terms.length === 1 ? validated.terms[0] : brandName || "",
+      );
+      setShowManualTrends(true);
     } catch (uploadError) {
       setTrendsUploadError(
         uploadError instanceof Error ? uploadError.message : "The CSV could not be validated.",
@@ -406,13 +722,21 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
   }
 
   return (
-    <div className="space-y-5">
-      <details
-        ref={formDetailsRef}
-        className="group overflow-hidden rounded-lg border border-neutral-300 bg-white"
+    <div className="space-y-5 p-0">
+      {configPresentation === "loading" ? (
+        <div className="px-5 py-4 text-sm text-neutral-500" role="status">
+          Loading completed AI impact model…
+        </div>
+      ) : configPresentation === "collapsed" ? (
+        <details
+        open={formOpen}
+        onToggle={(event) => {
+          setFormOpen((event.currentTarget as HTMLDetailsElement).open);
+        }}
+        className="group overflow-hidden bg-white"
       >
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 font-semibold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-600">
-          <span>Estimate overall AI impact on traffic and conversions</span>
+          <span>Config</span>
           <ChevronDown
             className="h-5 w-5 shrink-0 text-neutral-500 transition-transform group-open:rotate-180"
             aria-hidden="true"
@@ -420,6 +744,54 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
         </summary>
 
         <div className="space-y-6 border-t border-neutral-200 px-5 py-5">
+          {!modelCategory ? (
+            <section className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+              <div className="font-semibold">Model category required</div>
+              <p className="mt-1 text-xs leading-5">
+                Existing audits created before category classification need one of
+                advertiser-retail, advertiser-services, or publisher. This does not
+                re-run the crawl — it only updates onboarding metadata.
+              </p>
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <label className="block text-xs font-medium">
+                  Category
+                  <select
+                    className="mt-1 block rounded border border-amber-300 bg-white px-3 py-2 text-sm text-neutral-900"
+                    value={modelCategoryDraft}
+                    disabled={modelCategoryBusy}
+                    onChange={(event) => setModelCategoryDraft(event.target.value)}
+                  >
+                    {MODEL_CATEGORY_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="rounded-md bg-amber-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={modelCategoryBusy}
+                  onClick={() => void saveModelCategory({ category: modelCategoryDraft })}
+                >
+                  {modelCategoryBusy ? "Saving…" : "Save category"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-amber-400 bg-white px-3 py-2 text-sm font-semibold text-amber-950 disabled:opacity-60"
+                  disabled={modelCategoryBusy}
+                  onClick={() => void saveModelCategory({ classify: true })}
+                >
+                  Classify with Gemini
+                </button>
+              </div>
+            </section>
+          ) : (
+            <p className="text-xs text-neutral-500">
+              Model category: <span className="font-medium text-neutral-800">{modelCategory}</span>
+            </p>
+          )}
+
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -538,6 +910,8 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
             )}
           </section>
 
+          {/* Search Console temporarily hidden from AI Impact UI */}
+          {SHOW_GSC_SECTION && (
           <section className="border-t border-neutral-200 pt-5">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -603,6 +977,7 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
               </>
             )}
           </section>
+          )}
 
           <section className="border-t border-neutral-200 pt-5">
             <div className="mb-2 flex items-center gap-2">
@@ -613,90 +988,202 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
               />
               <h3 className="text-sm font-semibold text-neutral-900">
                 Google Trends{" "}
-                <span className="font-normal text-neutral-500">(Optional, manual upload)</span>
+                <span className="font-normal text-neutral-500">
+                  {effectiveBrandTerm ? "(auto from brand name)" : "(required)"}
+                </span>
               </h3>
             </div>
             <p className="max-w-2xl text-xs leading-5 text-neutral-600">
-              Add weekly search-interest data to control for changes in underlying demand. The file
-              is checked before it is used in the estimate.
+              Weekly UK search interest controls for demand shifts in the estimate.
+              {effectiveBrandTerm
+                ? " When you run the estimate, we fetch Trends for your setup brand automatically."
+                : " Add a brand name in setup, or upload a weekly Interest over time CSV."}
             </p>
 
-            <ol className="mt-3 max-w-2xl list-decimal space-y-1.5 pl-5 text-xs leading-5 text-neutral-700">
-              <li>
-                <a
-                  href={trendsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900"
-                >
-                  Open Google Trends
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                </a>
-                .
-              </li>
-              <li>Add one to five search terms that represent demand for this business.</li>
-              <li>
-                Keep the location as United Kingdom and use{" "}
-                <strong>{trendsStartDate}</strong> to <strong>{trendsEndDate}</strong>.
-              </li>
-              <li>
-                In the <strong>Interest over time</strong> chart, select Download CSV. Upload that
-                file unchanged below.
-              </li>
-            </ol>
-
-            <label className="mt-4 flex max-w-2xl cursor-pointer items-center gap-3 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-4 py-3 text-sm transition-colors hover:border-neutral-400 hover:bg-neutral-100 focus-within:ring-2 focus-within:ring-blue-600">
-              <Upload className="h-5 w-5 shrink-0 text-neutral-500" aria-hidden="true" />
-              <span className="min-w-0">
-                <span className="block font-semibold text-neutral-900">
-                  {trendsUploadBusy ? "Checking CSV…" : "Choose Google Trends CSV"}
-                </span>
-                <span className="block text-xs text-neutral-500">CSV only, maximum 2 MB</span>
-              </span>
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                className="sr-only"
-                disabled={trendsUploadBusy}
-                onChange={(event) => void onTrendsFile(event.target.files?.[0])}
-              />
-            </label>
-
-            {trendsUpload ? (
+            {effectiveBrandTerm ? (
               <div
-                className="mt-3 flex max-w-2xl items-start gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-900"
+                className={`mt-3 flex max-w-2xl items-start gap-2 rounded-md border px-3 py-2.5 text-sm ${
+                  trendsAutoFetch
+                    ? "border-green-200 bg-green-50 text-green-900"
+                    : "border-amber-200 bg-amber-50 text-amber-950"
+                }`}
                 role="status"
               >
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {trendsAutoFetch ? (
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                ) : (
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
                 <div>
-                  <div className="font-semibold">
-                    {trendsUpload.filename} is ready ({trendsUpload.week_count} weeks)
-                  </div>
-                  <div className="mt-0.5 text-xs">
-                    {trendsUpload.start_date} to {trendsUpload.end_date}:{" "}
-                    {trendsUpload.terms.join(", ")}
-                  </div>
-                  {trendsUpload.warnings.map((warning) => (
-                    <div key={warning} className="mt-1 text-xs">
-                      {warning}
-                    </div>
-                  ))}
+                  {trendsAutoFetch ? (
+                    <>
+                      <div className="font-semibold">
+                        Will fetch Trends for “{effectiveBrandTerm}”
+                      </div>
+                      <div className="mt-0.5 text-xs leading-5">
+                        United Kingdom · weekly · {trendsStartDate} to last completed Saturday.
+                        Saved under this audit as <code className="text-[11px]">google_trends/</code>.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-semibold">
+                        Brand “{effectiveBrandTerm}” is ready, but auto-fetch is not enabled here
+                      </div>
+                      <div className="mt-0.5 text-xs leading-5">
+                        Redeploy geo-audit with <code className="text-[11px]">GOOGLE_TRENDS_JOB_NAME</code>{" "}
+                        set, or upload a CSV below.
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
-            ) : null}
-
-            {trendsUploadError ? (
+            ) : (
               <div
-                className="mt-3 flex max-w-2xl items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900"
-                role="alert"
+                className="mt-3 flex max-w-2xl items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950"
+                role="status"
               >
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                 <div>
-                  <div className="font-semibold">This CSV cannot be used</div>
-                  <div className="mt-0.5 text-xs leading-5">{trendsUploadError}</div>
+                  <div className="font-semibold">Brand name missing</div>
+                  <div className="mt-0.5 text-xs leading-5">
+                    Add a brand name in setup / config, or upload a Trends CSV below.
+                  </div>
                 </div>
               </div>
+            )}
+
+            {run?.jobs?.trends && run.jobs.trends !== "skipped" && run.jobs.trends !== "not_started" ? (
+              <div className="mt-3 max-w-2xl text-xs text-neutral-600">
+                Last Trends step:{" "}
+                <span className="font-medium text-neutral-800">{run.jobs.trends}</span>
+                {run.trends_upload?.week_count
+                  ? ` · ${run.trends_upload.week_count} weeks`
+                  : null}
+                {run.trends_upload?.query_term || run.trends_upload?.terms?.[0]
+                  ? ` · ${run.trends_upload.query_term || run.trends_upload.terms[0]}`
+                  : null}
+              </div>
             ) : null}
+
+            <details
+              className="mt-4 max-w-2xl"
+              open={
+                showManualTrends
+                || !trendsAutoFetch
+                || !effectiveBrandTerm
+                || Boolean(trendsUploadError)
+              }
+              onToggle={(event) =>
+                setShowManualTrends((event.target as HTMLDetailsElement).open)
+              }
+            >
+              <summary className="cursor-pointer text-xs font-semibold text-neutral-700 underline decoration-neutral-300 underline-offset-2">
+                {trendsAutoFetch && effectiveBrandTerm
+                  ? "Use a manual CSV instead (optional)"
+                  : "Upload Google Trends CSV"}
+              </summary>
+
+              <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-xs leading-5 text-neutral-700">
+                <li>
+                  <a
+                    href={trendsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900"
+                  >
+                    Open Google Trends
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                  .
+                </li>
+                <li>
+                  Keep United Kingdom and {trendsStartDate} to {trendsEndDate}
+                  {trendsAutoFetch ? " (brand term is enough for auto-fetch)." : "."}
+                </li>
+                <li>
+                  Download the Interest over time CSV and upload it unchanged.
+                </li>
+              </ol>
+
+              <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-4 py-3 text-sm transition-colors hover:border-neutral-400 hover:bg-neutral-100 focus-within:ring-2 focus-within:ring-blue-600">
+                <Upload className="h-5 w-5 shrink-0 text-neutral-500" aria-hidden="true" />
+                <span className="min-w-0">
+                  <span className="block font-semibold text-neutral-900">
+                    {trendsUploadBusy ? "Checking CSV…" : "Choose Google Trends CSV"}
+                  </span>
+                  <span className="block text-xs text-neutral-500">CSV only, maximum 2 MB</span>
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="sr-only"
+                  disabled={trendsUploadBusy}
+                  onChange={(event) => void onTrendsFile(event.target.files?.[0])}
+                />
+              </label>
+
+              {trendsUpload ? (
+                <div
+                  className="mt-3 flex items-start gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-900"
+                  role="status"
+                >
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <div>
+                    <div className="font-semibold">
+                      {trendsUpload.filename || "CSV"} is ready ({trendsUpload.week_count} weeks)
+                    </div>
+                    <div className="mt-0.5 text-xs">
+                      {trendsUpload.start_date} to {trendsUpload.end_date}:{" "}
+                      {trendsUpload.terms.join(", ")}
+                    </div>
+                    <button
+                      type="button"
+                      className="mt-2 text-xs font-semibold underline"
+                      onClick={() => {
+                        setTrendsUpload(null);
+                        setBrandTrendsTerm(brandName);
+                      }}
+                    >
+                      Clear upload and use auto-fetch
+                    </button>
+                    {trendsUpload.warnings.map((warning) => (
+                      <div key={warning} className="mt-1 text-xs">
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {trendsUpload && trendsUpload.terms.length > 1 ? (
+                <label className="mt-3 block text-sm font-medium text-neutral-800">
+                  Brand search term
+                  <select
+                    className="mt-1 w-full rounded border border-neutral-300 bg-white px-3 py-2"
+                    value={brandTrendsTerm}
+                    onChange={(event) => setBrandTrendsTerm(event.target.value)}
+                  >
+                    <option value="">Select the brand term</option>
+                    {trendsUpload.terms.map((term) => (
+                      <option key={term} value={term}>{term}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {trendsUploadError ? (
+                <div
+                  className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900"
+                  role="alert"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <div>
+                    <div className="font-semibold">This CSV cannot be used</div>
+                    <div className="mt-0.5 text-xs leading-5">{trendsUploadError}</div>
+                  </div>
+                </div>
+              ) : null}
+            </details>
           </section>
 
           {import.meta.env.DEV ? (
@@ -712,12 +1199,7 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
 
           <button
             type="button"
-            disabled={
-              busy
-              || trendsUploadBusy
-              || (!localPanel.trim() && !propertyId)
-              || !conversionSpecValid
-            }
+            disabled={!canRunEstimate}
             onClick={() => void onRun()}
             className="rounded-md bg-neutral-900 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
           >
@@ -750,11 +1232,13 @@ export function AiImpactDashboard({ auditDirOrSlug }: { auditDirOrSlug: string }
             </a>
           ) : null}
         </div>
-      </details>
+        </details>
+      ) : null}
 
       {est ? (
         <OverallImpactTable
           estimate={est}
+          run={run}
           conversionEventName={run?.conversion_event_name || storedConversionSpec}
         />
       ) : null}
@@ -781,15 +1265,29 @@ function ConnectorActions({
   );
 }
 
-function rangeAfterDirect(
-  range: { low: number; central: number; high: number },
-  direct: number,
-): { low: number; central: number; high: number } {
-  return {
-    low: range.low - direct,
-    central: range.central - direct,
-    high: range.high - direct,
-  };
+function fmtPercent(value: number | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function fmtSignedPercent(value: number | undefined, digits = 1): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const pct = value * 100;
+  const body = Math.abs(pct) >= 10 ? pct.toFixed(0) : pct.toFixed(digits);
+  return `${pct > 0 ? "+" : ""}${body}%`;
+}
+
+function fmtPerDay(value: number | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  const body = abs >= 100 ? Math.round(value).toLocaleString() : value.toLocaleString(undefined, {
+    maximumFractionDigits: abs >= 10 ? 0 : 1,
+  });
+  return value > 0 ? `+${body}` : body;
+}
+
+function fmtInterval(interval: AiImpactPosteriorInterval): string {
+  return `${fmt(interval.posterior_mean)} (${fmt(interval.lower_94)} to ${fmt(interval.upper_94)})`;
 }
 
 function formatWeekLabel(week: string): string {
@@ -826,15 +1324,13 @@ function SeriesTooltip({
 
 function OverallImpactTable({
   estimate,
+  run,
   conversionEventName,
 }: {
   estimate: AiImpactEstimate;
+  run: AiImpactRunStatus | null;
   conversionEventName: string;
 }) {
-  const indirectSessions = rangeAfterDirect(
-    estimate.sessions_overall_net,
-    estimate.direct_ai_sessions,
-  );
   const conversionEvents = useMemo(() => {
     try {
       return parseConversionEvents(conversionEventName);
@@ -843,44 +1339,30 @@ function OverallImpactTable({
     }
   }, [conversionEventName]);
   const conversionMethodNote = formatConversionMethodNote(conversionEvents);
-  const modelQualityScore = estimate.model_quality_score ?? estimate.confidence_score;
-  const probabilityPercent = probabilityOfResultPercent(estimate.p_value);
-  const qualityNarrative =
-    estimate.quality_narrative && estimate.quality_narrative !== "sessions_up_quality_down"
-      ? estimate.quality_narrative
-      : null;
   const weekly = useMemo(
     () => filterCompletedWeeks(estimate.weekly_series ?? []),
     [estimate.weekly_series],
   );
-  const hasGsc = weekly.some((point) => typeof point.gsc_clicks === "number");
-  const trendKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const point of weekly) {
-      for (const key of Object.keys(point)) {
-        if (key.startsWith("trends_")) keys.add(key);
-      }
-    }
-    return Array.from(keys);
-  }, [weekly]);
+  const outcomes = estimate.posterior_outcomes;
+  const refitStatus = aiImpactRefitStatus(run);
+  const windowDays = estimateWindowDayCount(estimate);
 
   const chartData = useMemo(() => {
     return weekly.map((point: AiImpactWeeklyPoint) => ({
       week: point.week,
-      "Total sessions": point.total_sessions,
-      "Tracked AI": point.ai_sessions,
-      SEO: point.seo_sessions,
-      "Estimated AI (direct + indirect)": point.estimated_ai_sessions,
-      "Counterfactual (no AI)": point.counterfactual_sessions,
+      "SEO actual": point.seo_sessions,
+      "SEO counterfactual":
+        point.seo_uncapped_counterfactual?.posterior_mean,
+      "Direct actual": point.direct_sessions,
+      "Direct counterfactual":
+        point.direct_uncapped_counterfactual?.posterior_mean,
     }));
   }, [weekly]);
 
   const methodNotes = estimate.method_notes?.length
     ? estimate.method_notes
     : [
-        "Direct AI = measured AI-channel sessions in the analysis window.",
-        "Indirect central estimate comes from detrended associations between AI traffic and other channels, capped at ±15% of window totals.",
-        "Displayed indirect sessions range is ±10% around the central estimate; it is not a statistical confidence interval.",
+        "This is a legacy estimate. Re-run to use the hierarchical posterior.",
       ];
 
   return (
@@ -889,23 +1371,36 @@ function OverallImpactTable({
         <div>
           <h3 className="font-semibold text-neutral-900">Estimated AI impact</h3>
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-500">
-            Weekly sources used in the model, with a counterfactual line showing what sessions
-            look like after removing tracked AI and the central indirect estimate.
+            {aiImpactResultLabel(estimate.estimate_mode)}
           </p>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-600">
+            {estimate.category ? <span>Category: {estimate.category}</span> : null}
+            {estimate.model_artifact_version ? (
+              <span>Model: {estimate.model_artifact_version}</span>
+            ) : null}
+            {estimate.signal_artifact_version ? (
+              <span>Signal: {estimate.signal_artifact_version}</span>
+            ) : null}
+            {shouldShowAwaitingSignalWeeks(
+              estimate.awaiting_signal_weeks,
+              estimate.estimate_mode,
+              refitStatus,
+            ) ? (
+              <span className="text-amber-700">
+                {estimate.awaiting_signal_weeks} week(s) awaiting portfolio refresh
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="text-right">
-          {modelQualityScore != null ? (
-            <div className="text-sm font-semibold text-neutral-800">
-              Data & model quality {Math.round(modelQualityScore)}%
-            </div>
-          ) : null}
-          {probabilityPercent != null ? (
-            <div className="text-sm font-semibold text-neutral-800">
-              Probability of result {probabilityPercent}%
-            </div>
-          ) : null}
+          {refitStatus ? <div className="text-sm font-semibold text-neutral-800">
+            Refit: {refitStatus.replaceAll("_", " ")}
+          </div> : null}
           <div className="mt-0.5 text-xs text-neutral-500">
             {estimate.window_start} to {estimate.window_end}
+            {Number.isFinite(windowDays) ? (
+              <span> · {windowDays} days</span>
+            ) : null}
           </div>
         </div>
       </div>
@@ -913,18 +1408,11 @@ function OverallImpactTable({
       {chartData.length > 0 ? (
         <div className="border-t border-neutral-200 px-5 py-5">
           <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Weekly sessions, sources, and counterfactual
+            Weekly actual vs counterfactual
           </h4>
           <p className="mb-4 max-w-3xl text-xs leading-relaxed text-neutral-500">
-            <strong>Total sessions</strong>, <strong>Tracked AI</strong>, and <strong>SEO</strong>{" "}
-            come from the GA4 weekly panel
-            {hasGsc ? " (Search Console was also connected for this run)" : ""}
-            {trendKeys.length
-              ? ` · ${trendKeys.length} Google Trends series used as demand controls`
-              : ""}
-            . <strong>Estimated AI</strong> adds the modelled indirect spillover.{" "}
-            <strong>Counterfactual (no AI)</strong> is total sessions minus tracked AI and that
-            central indirect estimate — the path the model implies without AI influence.
+            Counterfactual lines freeze the portfolio AI signal at its pre-ramp baseline.
+            Google Search Console is chart context only and is not a model covariate.
           </p>
           <ResponsiveContainer width="100%" height={320}>
             <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
@@ -948,21 +1436,20 @@ function OverallImpactTable({
                 wrapperStyle={{ fontSize: 11, paddingTop: 10 }}
                 itemSorter={legendItemSorterByLatestValueDesc(chartData)}
               />
-              <Line type="monotone" dataKey="Total sessions" stroke="#525252" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Tracked AI" stroke="#1d4ed8" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="SEO" stroke="#0f766e" strokeWidth={1.75} dot={false} />
+              <Line type="monotone" dataKey="SEO actual" stroke="#0f766e" strokeWidth={2} dot={false} />
               <Line
                 type="monotone"
-                dataKey="Estimated AI (direct + indirect)"
-                stroke="#7c3aed"
+                dataKey="SEO counterfactual"
+                stroke="#14b8a6"
                 strokeWidth={2}
                 strokeDasharray="4 3"
                 dot={false}
               />
+              <Line type="monotone" dataKey="Direct actual" stroke="#1d4ed8" strokeWidth={2} dot={false} />
               <Line
                 type="monotone"
-                dataKey="Counterfactual (no AI)"
-                stroke="#b45309"
+                dataKey="Direct counterfactual"
+                stroke="#60a5fa"
                 strokeWidth={2}
                 strokeDasharray="6 4"
                 dot={false}
@@ -977,60 +1464,98 @@ function OverallImpactTable({
         </div>
       )}
 
-      <div className="overflow-x-auto border-t border-neutral-200">
+      {outcomes ? <div className="overflow-x-auto border-t border-neutral-200">
         <table className="w-full text-left text-sm">
           <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
             <tr>
-              <th className="px-5 py-3 font-medium">Impact</th>
-              <th className="px-5 py-3 font-medium">Sessions</th>
+              <th className="px-5 py-3 font-medium">Channel</th>
+              <th className="px-5 py-3 font-medium">Primary posterior mean (94% CI)</th>
+              <th className="px-5 py-3 font-medium">Est. avg / day</th>
+              <th className="px-5 py-3 font-medium">Est. % of total sessions</th>
+              <th className="px-5 py-3 font-medium">Capped sensitivity (94% CI)</th>
+              <th className="px-5 py-3 font-medium">Conclusion</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-200">
-            <tr>
-              <th className="px-5 py-4 font-medium text-neutral-900">Direct (tracked)</th>
-              <td className="px-5 py-4 tabular-nums">
-                <div>{fmt(estimate.direct_ai_sessions)}</div>
-                <div className="mt-1 text-xs text-neutral-500">
-                  {fmtShare(estimate.direct_ai_sessions, estimate.total_sessions)}
-                </div>
-              </td>
-            </tr>
-            <tr>
-              <th className="px-5 py-4 font-medium text-neutral-900">Indirect estimate</th>
-              <td className="px-5 py-4 tabular-nums">
-                <div>{formatIndirectSessionsRange(indirectSessions.central)}</div>
-                <div className="mt-1 text-xs text-neutral-500">
-                  {fmtShare(indirectSessions.central, estimate.total_sessions)}
-                </div>
-              </td>
-            </tr>
+            {(["seo", "direct"] as const).map((channel) => {
+              const outcome = outcomes[channel];
+              const robust = isRobustSensitivity(outcome);
+              const impact = outcome.uncapped.posterior_mean;
+              const perDay = estimatedSessionsPerDay(impact, windowDays);
+              const share = estimatedImpactShareOfTotal(impact, estimate.total_sessions);
+              return <tr key={channel}>
+                <th className="px-5 py-4 font-medium uppercase text-neutral-900">
+                  {channel}
+                </th>
+                <td className="px-5 py-4 tabular-nums">{fmtInterval(outcome.uncapped)}</td>
+                <td className="px-5 py-4 tabular-nums">
+                  {fmtPerDay(perDay)}
+                  <div className="mt-1 text-xs font-normal normal-case text-neutral-500">
+                    sessions / day
+                  </div>
+                </td>
+                <td className="px-5 py-4 tabular-nums">
+                  {fmtSignedPercent(share)}
+                  <div className="mt-1 text-xs font-normal normal-case text-neutral-500">
+                    of {fmt(estimate.total_sessions)} total
+                  </div>
+                </td>
+                <td className="px-5 py-4 tabular-nums">
+                  {fmtInterval(outcome.capped)}
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Delta {fmt(outcome.sensitivity_delta)}
+                  </div>
+                </td>
+                <td className="px-5 py-4">
+                  <span className={robust ? "text-green-700" : "text-amber-700"}>
+                    {robust ? "Robust" : "Tail-sensitive / uncertain"}
+                  </span>
+                </td>
+              </tr>;
+            })}
           </tbody>
         </table>
+      </div> : (
+        <div className="border-t border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+          This saved run predates hierarchical posterior scoring. Re-run it to obtain
+          SEO and Direct posterior intervals.
+        </div>
+      )}
+
+      <div className="grid gap-4 border-t border-neutral-200 px-5 py-4 sm:grid-cols-3">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Measured AI sessions</div>
+          <div className="mt-1 text-lg font-semibold">{fmt(estimate.direct_ai_sessions)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Measured conversions</div>
+          <div className="mt-1 text-lg font-semibold">{fmt(estimate.direct_ai_purchases)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Measured AI CVR</div>
+          <div className="mt-1 text-lg font-semibold">{fmtPercent(estimate.ai_cvr)}</div>
+        </div>
       </div>
 
       <div className="space-y-3 border-t border-neutral-200 px-5 py-4">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           How this estimate is generated
         </h4>
-        {qualityNarrative ? (
-          <p className="text-xs leading-relaxed text-neutral-600">{qualityNarrative}</p>
-        ) : null}
         <ol className="list-decimal space-y-1.5 pl-4 text-xs leading-relaxed text-neutral-600">
           <li>
             Build a weekly panel from GA4 channel data
             {conversionMethodNote}
-            , optionally enriched with Search Console and a Google Trends CSV.
+            , plus one designated brand Google Trends series.
           </li>
           <li>
-            <strong>Tracked (direct) AI</strong> is the weekly AI-channel series from GA4.
+            Apply the inferred category&apos;s posterior AI coefficient draws to this
+            site&apos;s observed SEO and Direct traffic.
           </li>
           <li>
-            <strong>Indirect AI</strong> is estimated from detrended associations between AI volume
-            and other channels, then allocated across weeks in proportion to tracked AI.
+            Compute the primary uncapped scaled-log signal and capped sensitivity.
           </li>
           <li>
-            The <strong>counterfactual</strong> line is total sessions minus tracked AI and that
-            central indirect allocation — the model’s implied path without AI influence.
+            After eight eligible weeks, queue a site-inclusive hierarchical refit.
           </li>
         </ol>
         <ul className="space-y-1 text-xs leading-relaxed text-neutral-500">
@@ -1041,18 +1566,9 @@ function OverallImpactTable({
             </li>
           ))}
         </ul>
-        {modelQualityScore != null || probabilityPercent != null ? (
-          <p className="text-xs leading-relaxed text-neutral-500">
-            {modelQualityScore != null
-              ? "Quality reflects data coverage, estimable relationships, and agreement across model scenarios. "
-              : ""}
-            {probabilityPercent != null
-              ? "Probability of result is (1 − p) × 100 from the AI→non-AI sessions association. "
-              : ""}
-            The displayed sessions range is ±10% around the central indirect estimate; it is not a
-            statistical confidence interval.
-          </p>
-        ) : null}
+        <p className="text-xs leading-relaxed text-neutral-500">
+          Purchase impact is not modeled. Purchases and CVR above are measured GA4 quantities.
+        </p>
       </div>
     </section>
   );

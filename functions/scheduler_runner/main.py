@@ -1,3 +1,11 @@
+"""Pub/Sub Cloud Function: launch environment-isolated scheduler runner Jobs.
+
+Trusted routing only. Downstream job names and bucket mounts live on the
+dev/staging Cloud Run Jobs themselves — Pub/Sub payloads must not override them.
+"""
+
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -9,6 +17,9 @@ from cloudevents.http import CloudEvent
 from google.cloud import run_v2
 
 log = logging.getLogger("scheduler_job_runner")
+
+_SUPPORTED_ACTIONS = frozenset({"daily-rerun", "monthly-crawl"})
+_SUPPORTED_ENVIRONMENTS = frozenset({"dev", "staging"})
 
 
 def _decode_payload(message: dict[str, Any]) -> dict[str, Any]:
@@ -26,39 +37,44 @@ def _job_client() -> run_v2.JobsClient:
     return run_v2.JobsClient()
 
 
+def _runner_job_name(environment: str) -> str:
+    if environment == "staging":
+        return (
+            os.environ.get("STAGING_SCHEDULER_JOB_NAME")
+            or "geo-audit-scheduler-runner-staging"
+        )
+    return os.environ.get("DEV_SCHEDULER_JOB_NAME") or "geo-audit-scheduler-runner-dev"
+
+
 def _run_scheduler_job(action: str, payload: dict[str, Any]) -> str:
-    project = payload.get("SCHEDULER_JOB_PROJECT") or os.environ.get("SCHEDULER_JOB_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    region = payload.get("SCHEDULER_JOB_REGION") or os.environ.get("SCHEDULER_JOB_REGION") or os.environ.get("REGION")
-    name = payload.get("SCHEDULER_JOB_NAME") or os.environ.get("SCHEDULER_JOB_NAME")
+    environment = str(payload.get("environment") or "").strip().lower()
+    if environment not in _SUPPORTED_ENVIRONMENTS:
+        raise RuntimeError(f"Unsupported or missing environment: {environment!r}")
+
+    project = (
+        os.environ.get("SCHEDULER_JOB_PROJECT")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GCP_PROJECT")
+    )
+    region = (
+        os.environ.get("SCHEDULER_JOB_REGION")
+        or os.environ.get("REGION")
+        or "europe-west1"
+    )
+    name = _runner_job_name(environment)
     if not project or not region or not name:
-        raise RuntimeError("SCHEDULER_JOB_PROJECT, SCHEDULER_JOB_REGION, and SCHEDULER_JOB_NAME are required")
+        raise RuntimeError(
+            "SCHEDULER_JOB_PROJECT, SCHEDULER_JOB_REGION, and runner job name are required"
+        )
 
     job_path = f"projects/{project}/locations/{region}/jobs/{name}"
-    env_vars = [{"name": "SCHEDULER_RUNNER_ACTION", "value": action}]
-
-    for key in [
-        "APP_ENV",
-        "BUCKET",
-        "GEO_DATA_ROOT",
-        "PROMPT_PROBE_JOB_NAME",
-        "PROMPT_PROBE_JOB_REGION",
-        "PROMPT_PROBE_JOB_PROJECT",
-        "AUDIT_CRAWL_JOB_NAME",
-        "AUDIT_CRAWL_JOB_REGION",
-        "AUDIT_CRAWL_JOB_PROJECT",
-        "PDF_EXPORT_JOB_NAME",
-        "PDF_EXPORT_JOB_REGION",
-        "PDF_EXPORT_JOB_PROJECT",
-        "PROMPT_SENTIMENT_JOB_NAME",
-        "PROMPT_SENTIMENT_JOB_REGION",
-        "PROMPT_SENTIMENT_JOB_PROJECT",
-        "CONTENT_QUALITY_JOB_NAME",
-        "CONTENT_QUALITY_JOB_REGION",
-        "CONTENT_QUALITY_JOB_PROJECT",
-    ]:
-        value = payload.get(key) or os.environ.get(key)
-        if value:
-            env_vars.append({"name": key, "value": value})
+    excluded_val = payload.get("excluded_audits")
+    if excluded_val is None:
+        excluded_val = os.environ.get("SCHEDULE_EXCLUDED_AUDITS") or ""
+    env_vars = [
+        {"name": "SCHEDULER_RUNNER_ACTION", "value": action},
+        {"name": "EXCLUDED_AUDITS", "value": str(excluded_val)},
+    ]
 
     overrides = {
         "container_overrides": [
@@ -81,14 +97,19 @@ def pubsub_handler(cloud_event: CloudEvent) -> None:
     message = (cloud_event.data or {}).get("message") or {}
     data = _decode_payload(message)
     action = str(data.get("action") or "").strip()
-    if action not in {"daily-rerun", "weekly-crawl"}:
+    if action not in _SUPPORTED_ACTIONS:
         log.error("Unsupported or missing action: %r", action)
         return
 
     try:
         operation_name = _run_scheduler_job(action, data)
-    except Exception as exc:
+    except Exception:
         log.exception("Failed to launch scheduler job for action=%s", action)
         raise
 
-    log.info("Launched scheduler job for action=%s: %s", action, operation_name)
+    log.info(
+        "Launched scheduler job for action=%s environment=%s: %s",
+        action,
+        data.get("environment"),
+        operation_name,
+    )

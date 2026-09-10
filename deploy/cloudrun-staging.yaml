@@ -12,11 +12,11 @@ spec:
         run.googleapis.com/timeout: "3600"
         run.googleapis.com/cpu-throttling: "false"
     spec:
-      serviceAccountName: geo-audit-tool@emea-ds-sandbox.iam.gserviceaccount.com
+      serviceAccountName: geo-audit-tool@geo-tool-emea-ds.iam.gserviceaccount.com
       containerConcurrency: 2
       timeoutSeconds: 3600
       containers:
-        - image: REGION-docker.pkg.dev/emea-ds-sandbox/geo-audit/web:staging
+        - image: europe-west1-docker.pkg.dev/geo-tool-emea-ds/geo-audit/web:staging
           ports:
             - containerPort: 8080
           env:
@@ -24,6 +24,21 @@ spec:
               value: staging
             - name: GEO_DATA_ROOT
               value: /var/geo-data
+            - name: AUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: google-oauth-client-id-geo-tool
+                  key: latest
+            - name: AUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: google-oauth-client-secret-geo-tool
+                  key: latest
+            - name: AUTH_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-cookie-secret-geo-tool
+                  key: latest
           resources:
             limits:
               cpu: "2"
@@ -36,4 +51,4 @@ spec:
           csi:
             driver: gcsfuse.run.googleapis.com
             volumeAttributes:
-              bucketName: emea-ds-sandbox-geo-audit-staging
+              bucketName: geo-tool-emea-ds-geo-audit-staging

@@ -1,17 +1,28 @@
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { CheckCircle2, ChevronRight, Loader2 } from "lucide-react";
 import { fetchAudit, fetchConfig, reportHtmlUrl, reportAllPagesHtmlUrl } from "../api/client";
 import { PageLoading, usePageLoadingSignal } from "../components/PageLoading";
 import { AiVisibilityOverview } from "../components/AiVisibilityOverview";
 import { AiImpactDashboard } from "../components/AiImpactDashboard";
+import { AiTrafficMethodsIntro } from "../components/AiTrafficMethodsIntro";
 import { CitationsPage } from "../components/CitationsPage";
 import { CompetitorComparisonDashboard } from "../components/BrandCompetitorVisibility";
 import { SiteCrawlComparisonTable } from "../components/SiteCrawlComparisonTable";
 import { ConfigSection } from "../components/ConfigSection";
+import { ContentOutlineGeneratorSection } from "../components/ContentOutlineGeneratorSection";
 import { ContentOverview } from "../components/ContentOverview";
 import { PlatformReadinessSection } from "../components/PlatformReadinessSection";
 import { PromptPerformanceSection } from "../components/PromptPerformanceSection";
+import { TopicsVisibilitySection } from "../components/TopicsVisibilitySection";
 import { RedditInsightsSection } from "../components/RedditInsightsSection";
 import { RecommendationsSection } from "../components/RecommendationsSection";
 import { ReportHeader } from "../components/ReportHeader";
@@ -31,6 +42,8 @@ import {
 } from "../components/ContentQualitySections";
 import { WipSection } from "../components/WipSection";
 import { YouTubeInsightsSection } from "../components/YouTubeInsightsSection";
+import { WorkshopDashboard } from "../components/WorkshopDashboard";
+import { SinglePageAuditSection } from "../components/SinglePageAuditSection";
 import { Card, CardDescription } from "../components/ui/Card";
 import { useCompetitorCrawl } from "../hooks/useCompetitorCrawl";
 import {
@@ -60,6 +73,7 @@ const REACT_SECTIONS = new Set([
   "summary",
   "recommendations",
   "prompts",
+  "topics",
   "citations",
   "config",
   "ai-visibility-overview",
@@ -79,18 +93,14 @@ const REACT_SECTIONS = new Set([
   "crawler-access",
   "citability",
   "sample-scripts",
+  "dashboard",
+  "single-page-audits",
 ]);
 
 // WIP sections (show placeholder)
-const WIP_SECTIONS = new Set([
-  "content-outline-generator",
-]);
+const WIP_SECTIONS = new Set<string>();
 
 const WIP_LABELS: Record<string, { title: string; description?: string }> = {
-  "content-outline-generator": {
-    title: "Content outline generator",
-    description: "AI-powered content outline generation based on your brand and target prompts. Coming soon.",
-  },
 };
 
 function buildGroups(sections: ReportSectionDef[]): SectionGroup[] {
@@ -114,25 +124,16 @@ function buildGroups(sections: ReportSectionDef[]): SectionGroup[] {
   return ordered;
 }
 
-/** Same-origin report section path — full document loads discard prior React state. */
+/** Same-origin report section path. */
 function reportSectionPath(slug: string, sectionId: string): string {
   return `/report/${slug}/${sectionId}`;
 }
 
 /**
- * Full document navigation (like a hard refresh to the new path).
- * Prefer this over SPA navigate so heavy section trees are torn down.
+ * Mount only the active section, so switching sections tears the previous tree
+ * down. Keyed by id so the shared fallback pane cannot carry a captured error
+ * from the section the user just left.
  */
-function hardNavigateToSection(slug: string, sectionId: string, replace = false): void {
-  const href = reportSectionPath(slug, sectionId);
-  if (replace) {
-    window.location.replace(href);
-  } else {
-    window.location.assign(href);
-  }
-}
-
-/** Mount only the active section — no KeepAlive multi-mount. */
 function ReportSectionPane({
   id,
   activeId,
@@ -146,7 +147,7 @@ function ReportSectionPane({
 }) {
   if (activeId !== id) return null;
   return (
-    <ReportSectionErrorBoundary sectionId={id} sectionLabel={label}>
+    <ReportSectionErrorBoundary key={id} sectionId={id} sectionLabel={label}>
       {children}
     </ReportSectionErrorBoundary>
   );
@@ -157,28 +158,36 @@ export function ReportPage() {
     auditId: string;
     section?: string;
   }>();
+  const navigate = useNavigate();
+  const contentRef = useRef<HTMLDivElement>(null);
   const [audit, setAudit] = useState<AuditDetail | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [competitorsIframeKey, setCompetitorsIframeKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  /** Brief overlay while the document unloads to a new section path. */
-  const [navigatingAway, setNavigatingAway] = useState(false);
 
-  const rawSections = (config?.report_sections ?? DEFAULT_REPORT_SECTIONS) as ReportSectionDef[];
-  const sections = rawSections
-    .filter((item) => item.id !== "ai-impact")
-    .map(normalizeReportSection);
+  // Derived once per config: an unstable identity here would re-fire the
+  // canonical-path effect on every render and push duplicate history entries.
+  const sections = useMemo(() => {
+    const raw = (config?.report_sections ?? DEFAULT_REPORT_SECTIONS) as ReportSectionDef[];
+    return raw
+      .filter((item) => item.id !== "ai-impact")
+      .map(normalizeReportSection);
+  }, [config]);
   const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+  const knownSectionIds = useMemo(() => new Set(sectionIds), [sectionIds]);
   const groups = useMemo(() => buildGroups(sections), [sections]);
 
   const section = useMemo(() => {
     const resolved = resolveReportSectionId(sectionParam);
-    if (sectionIds.includes(resolved) || REACT_SECTIONS.has(resolved)) {
+    if (resolved === "dashboard" && config && !knownSectionIds.has("dashboard")) {
+      return "summary";
+    }
+    if (knownSectionIds.has(resolved) || REACT_SECTIONS.has(resolved)) {
       return resolved;
     }
     return "summary";
-  }, [sectionParam, sectionIds]);
+  }, [sectionParam, knownSectionIds]);
 
   const auditRefEarly = audit?.audit_dir ?? slug ?? "";
   const competitorCrawl = useCompetitorCrawl(auditRefEarly);
@@ -231,30 +240,48 @@ export function ReportPage() {
     };
   }, [slug, audit?.has_report_html]);
 
-  // Legacy / missing section ids → canonical path via full document replace.
+  // Legacy / missing section ids → canonical path, replacing so Back still
+  // returns to wherever the user entered the report from.
   useEffect(() => {
     if (!slug) return;
     const resolved = resolveReportSectionId(sectionParam);
     if (sectionParam && resolved !== sectionParam) {
-      hardNavigateToSection(slug, resolved, true);
+      navigate(reportSectionPath(slug, resolved), { replace: true });
       return;
     }
-    if (!sectionParam || (!sectionIds.includes(resolved) && !REACT_SECTIONS.has(resolved))) {
-      hardNavigateToSection(slug, section, true);
+    if (!sectionParam) {
+      navigate(reportSectionPath(slug, section), { replace: true });
+      return;
     }
-  }, [slug, sectionParam, section, sectionIds]);
+    if (config && resolved === "dashboard" && !knownSectionIds.has("dashboard")) {
+      navigate(reportSectionPath(slug, "summary"), { replace: true });
+      return;
+    }
+    // Only rewrite an unrecognised section once the real list has loaded, or a
+    // config-only section would be bounced to summary on first paint.
+    if (config && !knownSectionIds.has(resolved) && !REACT_SECTIONS.has(resolved)) {
+      navigate(reportSectionPath(slug, section), { replace: true });
+    }
+  }, [slug, sectionParam, section, knownSectionIds, config, navigate]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.data?.type !== "geo-report-nav") return;
       const next = resolveReportSectionId(String(event.data.section || ""));
-      if (!slug || !sectionIds.includes(next)) return;
-      setNavigatingAway(true);
-      hardNavigateToSection(slug, next);
+      if (!slug || !knownSectionIds.has(next)) return;
+      // Embedded reports announce their own hash, so ignore an echo of the
+      // section we are already showing rather than pushing a duplicate entry.
+      if (next === section) return;
+      navigate(reportSectionPath(slug, next));
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [slug, sectionIds]);
+  }, [slug, knownSectionIds, section, navigate]);
+
+  // Each section is a fresh pane, so carry over none of the previous scroll.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [section]);
 
   const auditRef = audit?.audit_dir ?? slug ?? "";
 
@@ -268,22 +295,23 @@ export function ReportPage() {
     [auditRef],
   );
 
-  const goToSection = (id: string) => {
-    if (!slug || id === section) return;
-    setNavigatingAway(true);
-    hardNavigateToSection(slug, id);
-  };
+  const goToSection = useCallback(
+    (id: string, options?: { topic?: string }) => {
+      if (!slug || id === section) return;
+      const params = new URLSearchParams();
+      if (options?.topic) params.set("topic", options.topic);
+      const query = params.toString();
+      navigate(`${reportSectionPath(slug, id)}${query ? `?${query}` : ""}`);
+    },
+    [navigate, section, slug],
+  );
 
+  /** Keep clicks on the current section from stacking identical history entries. */
   const onSectionLinkClick = (event: MouseEvent<HTMLAnchorElement>, id: string) => {
-    if (id === section) {
-      event.preventDefault();
-      return;
-    }
-    // Allow normal same-origin full navigation; show unload feedback.
-    setNavigatingAway(true);
+    if (id === section) event.preventDefault();
   };
 
-  usePageLoadingSignal(loading || navigatingAway, "report-audit");
+  usePageLoadingSignal(loading, "report-audit");
 
   if (loading) {
     return <PageLoading label="Loading report…" />;
@@ -315,7 +343,7 @@ export function ReportPage() {
       ) : null}
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-        {/* ── Sidebar — real <a href> full page loads ── */}
+        {/* ── Sidebar — client-side routing, real hrefs for open-in-new-tab ── */}
         <nav
           className="report-section-nav lg:w-56 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white/80 backdrop-blur-sm px-3 py-4 lg:py-6 overflow-y-auto"
           aria-label="Report sections"
@@ -324,8 +352,8 @@ export function ReportPage() {
           <ul className="flex lg:hidden gap-1 overflow-x-auto pb-1">
             {sections.map((s) => (
               <li key={s.id} className="shrink-0">
-                <a
-                  href={slug ? reportSectionPath(slug, s.id) : "#"}
+                <Link
+                  to={slug ? reportSectionPath(slug, s.id) : "#"}
                   onClick={(e) => onSectionLinkClick(e, s.id)}
                   aria-current={section === s.id ? "page" : undefined}
                   className={cn(
@@ -345,7 +373,7 @@ export function ReportPage() {
                       aria-label="Competitor crawl complete"
                     />
                   )}
-                </a>
+                </Link>
               </li>
             ))}
           </ul>
@@ -363,8 +391,8 @@ export function ReportPage() {
                     const isActive = section === s.id;
                     return (
                       <li key={s.id}>
-                        <a
-                          href={slug ? reportSectionPath(slug, s.id) : "#"}
+                        <Link
+                          to={slug ? reportSectionPath(slug, s.id) : "#"}
                           onClick={(e) => onSectionLinkClick(e, s.id)}
                           aria-current={isActive ? "page" : undefined}
                           className={cn(
@@ -409,7 +437,7 @@ export function ReportPage() {
                               WIP
                             </span>
                           )}
-                        </a>
+                        </Link>
                       </li>
                     );
                   })}
@@ -420,12 +448,10 @@ export function ReportPage() {
         </nav>
 
         {/* ── Main content ── */}
-        <div className="report-section-body relative flex-1 min-w-0 min-h-0 overflow-auto">
-          {navigatingAway ? (
-            <div className="absolute inset-0 z-30 flex items-start justify-center bg-[#e8e5e0]/85 backdrop-blur-[1px]">
-              <PageLoading label="Loading section…" compact />
-            </div>
-          ) : null}
+        <div
+          ref={contentRef}
+          className="report-section-body relative flex-1 min-w-0 min-h-0 overflow-auto"
+        >
           {sectionHasPageDownload(section) && auditRef ? (
             <div className="sticky top-0 z-20 flex justify-end border-b border-gray-200/80 bg-[#e8e5e0]/90 px-6 py-2 backdrop-blur-sm">
               <SectionDownloadMenu
@@ -438,16 +464,39 @@ export function ReportPage() {
 
           <ReportSectionPane id="ai-traffic-dashboard" activeId={section}>
             <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 px-6 py-6 pb-8">
+              <AiTrafficMethodsIntro />
+              <section
+                className="flex h-[900px] w-full min-w-0 flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white"
+                aria-labelledby="ai-impact-estimate-heading"
+              >
+                <h2
+                  id="ai-impact-estimate-heading"
+                  className="shrink-0 border-b border-neutral-200 px-5 py-3 text-sm font-semibold text-neutral-900"
+                >
+                  AI impact estimate
+                </h2>
+                <div className="min-h-0 flex-1 overflow-auto p-4">
+                  <AiImpactDashboard auditDirOrSlug={auditRef} />
+                </div>
+              </section>
               {audit?.has_report_html ? (
-                <iframe
-                  title="Direct AI Traffic"
-                  className="report-embed-frame min-h-[900px] w-full border-0 bg-[#e8e5e0]"
-                  src={ga4TrafficSrc}
-                />
+                <section
+                  className="flex h-[900px] w-full min-w-0 flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white"
+                  aria-labelledby="direct-ai-traffic-heading"
+                >
+                  <h2
+                    id="direct-ai-traffic-heading"
+                    className="shrink-0 border-b border-neutral-200 px-5 py-3 text-sm font-semibold text-neutral-900"
+                  >
+                    Direct AI traffic
+                  </h2>
+                  <iframe
+                    title="Direct AI Traffic"
+                    className="report-embed-frame min-h-0 w-full flex-1 border-0 bg-[#e8e5e0]"
+                    src={ga4TrafficSrc}
+                  />
+                </section>
               ) : null}
-              <div className="w-full min-w-0">
-                <AiImpactDashboard auditDirOrSlug={auditRef} />
-              </div>
             </div>
           </ReportSectionPane>
 
@@ -473,6 +522,32 @@ export function ReportPage() {
           <ReportSectionPane id="prompts" activeId={section} label="Prompts">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <PromptPerformanceSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="topics" activeId={section} label="Topics">
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <TopicsVisibilitySection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane
+            id="content-outline-generator"
+            activeId={section}
+            label="Content outline generator"
+          >
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <ContentOutlineGeneratorSection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane
+            id="single-page-audits"
+            activeId={section}
+            label="Single-page audit"
+          >
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <SinglePageAuditSection auditDirOrSlug={auditRef} />
             </div>
           </ReportSectionPane>
 
@@ -584,9 +659,15 @@ export function ReportPage() {
             </div>
           </ReportSectionPane>
 
+          <ReportSectionPane id="dashboard" activeId={section}>
+            <div className="mx-auto w-full max-w-[1400px] px-6 py-8">
+              <WorkshopDashboard auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
           <ReportSectionPane id="platform-readiness" activeId={section}>
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <PlatformReadinessSection auditDirOrSlug={auditRef} />
+              <PlatformReadinessSection auditDirOrSlug={auditRef} onNavigate={goToSection} />
             </div>
           </ReportSectionPane>
 
@@ -598,13 +679,13 @@ export function ReportPage() {
 
           <ReportSectionPane id="crawler-access" activeId={section}>
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <CrawlerAccessSection auditDirOrSlug={auditRef} />
+              <CrawlerAccessSection auditDirOrSlug={auditRef} onNavigate={goToSection} />
             </div>
           </ReportSectionPane>
 
           <ReportSectionPane id="citability" activeId={section}>
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <CitabilitySection auditDirOrSlug={auditRef} />
+              <CitabilitySection auditDirOrSlug={auditRef} onNavigate={goToSection} />
             </div>
           </ReportSectionPane>
 
@@ -628,7 +709,7 @@ export function ReportPage() {
 
           <ReportSectionPane id="schema-entity-markup" activeId={section}>
             <div className="max-w-[1200px] mx-auto px-6 py-8">
-              <SchemaEntityMarkupSection auditDirOrSlug={auditRef} />
+              <SchemaEntityMarkupSection auditDirOrSlug={auditRef} onNavigate={goToSection} />
             </div>
           </ReportSectionPane>
 
@@ -664,7 +745,12 @@ export function ReportPage() {
           {isIframeFallback ? (
             <ReportSectionPane id={section} activeId={section}>
               {audit?.has_report_html ? (
+                // Sections share one report.html and differ only by hash, so a
+                // reused frame would fire hashchange inside the embed (bouncing a
+                // geo-report-nav message back at us) and add a history entry that
+                // swallows the Back button. Keying forces a fresh frame instead.
                 <iframe
+                  key={`${auditRef}:${section}`}
                   title={`GEO audit report section ${section}`}
                   className="report-embed-frame w-full border-0 bg-[#e8e5e0] min-h-[calc(100vh-12rem)]"
                   src={reportHtmlUrl(auditRef, section, true)}

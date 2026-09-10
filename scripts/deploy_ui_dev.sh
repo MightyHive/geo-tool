@@ -14,13 +14,13 @@
 #
 # For a full deploy (service + jobs), use ./scripts/deploy_cloud_run_dev.sh
 #
-# Project: emea-ds-sandbox | Region: europe-west1 | SA: geo-audit-tool@...
+# Project: geo-tool-emea-ds | Region: europe-west1 | SA: geo-audit-tool@...
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
+PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"
 REGION="${GCP_REGION:-europe-west1}"
 SERVICE="${CLOUD_RUN_SERVICE:-geo-audit-dev}"
 # Job names are kept in service env so the UI/API can still enqueue existing jobs.
@@ -147,13 +147,26 @@ done
 
 ENV_VARS="APP_ENV=dev,GEO_DATA_ROOT=/var/geo-data,CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT}"
 
-SECRETS_FILE="${ROOT}/env/.env.dev"
+SECRETS_FILE="${ROOT}/env/.env.development"
+if [[ -f "${ROOT}/env/.env.dev" ]]; then
+  SECRETS_FILE="${ROOT}/env/.env.dev"
+fi
 if [[ -f "${SECRETS_FILE}" ]]; then
   # shellcheck disable=SC1090
   set -a
   source "${SECRETS_FILE}"
   set +a
 fi
+
+_append_env_if_set() {
+  local name="$1" value="${!1:-}"
+  if [[ -n "${value}" ]]; then
+    ENV_VARS="${ENV_VARS},${name}=${value}"
+  fi
+}
+for _name in AUTH_SERVER_METADATA_URL GOOGLE_OAUTH_DOMAIN IAP_HOSTED_DOMAIN IAP_ENABLED IAP_ENFORCE IAP_AUDIENCE IAP_OAUTH_CLIENT_ID; do
+  _append_env_if_set "${_name}"
+done
 
 SET_SECRETS=""
 _add_secret() {
@@ -172,6 +185,8 @@ _add_secret() {
 }
 _add_secret GA4_OAUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
 _add_secret GA4_OAUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
+_add_secret AUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
+_add_secret AUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
 _add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool 1
 _add_secret GEMINI_API_KEY gemini-api-key-geo-tool 1
 _add_secret OPENAI_API_KEY openai-api-key-geo-tool 1
@@ -199,8 +214,8 @@ gcloud run deploy "${SERVICE}" \
   --no-cpu-throttling \
   --port=8080 \
   --allow-unauthenticated \
-  --set-env-vars="${ENV_VARS}" \
-  --set-secrets="${SET_SECRETS}" \
+  --update-env-vars="${ENV_VARS}" \
+  --update-secrets="${SET_SECRETS}" \
   --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}" \
   --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
 

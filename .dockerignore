@@ -17,6 +17,15 @@ __pycache__
 audit_output
 audit_archive
 .streamlit/secrets.toml
+.streamlit/client_secret.json
+local-auth/
+general-sa.json
+*-sa.json
+*credentials*.json
+token.json
+env/.gmail_token.json
+env/gmail_client_secrets.json
+research/.ga4_oauth_token.json
 env/.env.*
 !.env.*.example
 
@@ -28,6 +37,10 @@ research/*
 !research/ga4/
 !research/ga4/**
 !research/paths.py
+!research/modelling/
+research/modelling/*
+!research/modelling/custom_ci.py
+!research/modelling/train_baseline_artifact.py
 
 # Web dev artifacts (dist built in Docker; keep web/src)
 web/node_modules
@@ -35,4 +48,5 @@ web/dist
 
 # Large / optional local data
 assets/samples/
+backend/ai_impact/model_artifacts/
 *.log

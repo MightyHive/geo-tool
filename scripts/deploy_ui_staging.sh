@@ -14,13 +14,13 @@
 #
 # For a full deploy (service + jobs), use ./scripts/deploy_cloud_run_staging.sh
 #
-# Project: emea-ds-sandbox | Region: europe-west1 | SA: geo-audit-tool@...
+# Project: geo-tool-emea-ds | Region: europe-west1 | SA: geo-audit-tool@...
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
+PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"
 REGION="${GCP_REGION:-europe-west1}"
 SERVICE="${CLOUD_RUN_SERVICE:-geo-audit-staging}"
 # Job names are kept in service env so the UI/API can still enqueue existing jobs.
@@ -147,6 +147,16 @@ if [[ -f "${SECRETS_FILE}" ]]; then
   set +a
 fi
 
+_append_env_if_set() {
+  local name="$1" value="${!1:-}"
+  if [[ -n "${value}" ]]; then
+    ENV_VARS="${ENV_VARS},${name}=${value}"
+  fi
+}
+for _name in AUTH_SERVER_METADATA_URL GOOGLE_OAUTH_DOMAIN IAP_HOSTED_DOMAIN IAP_ENABLED IAP_ENFORCE IAP_AUDIENCE IAP_OAUTH_CLIENT_ID; do
+  _append_env_if_set "${_name}"
+done
+
 # Must stay aligned with scripts/deploy_cloud_run_staging.sh — omitting a required
 # secret from --set-secrets wipes it on the next deploy.
 SET_SECRETS=""
@@ -166,6 +176,8 @@ _add_secret() {
 }
 _add_secret GA4_OAUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
 _add_secret GA4_OAUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
+_add_secret AUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
+_add_secret AUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
 _add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool 1
 _add_secret GEMINI_API_KEY gemini-api-key-geo-tool 1
 _add_secret OPENAI_API_KEY openai-api-key-geo-tool 1
@@ -194,12 +206,12 @@ DEPLOY_CMD=(
   --no-cpu-throttling
   --port=8080
   --allow-unauthenticated
-  --set-env-vars="${ENV_VARS}"
+  --update-env-vars="${ENV_VARS}"
   --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}"
   --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
 )
 if [[ -n "${SET_SECRETS}" ]]; then
-  DEPLOY_CMD+=(--set-secrets="${SET_SECRETS}")
+  DEPLOY_CMD+=(--update-secrets="${SET_SECRETS}")
 fi
 "${DEPLOY_CMD[@]}"
 
@@ -213,7 +225,7 @@ echo "==> Service URL: ${SERVICE_URL}"
 gcloud run services update "${SERVICE}" \
   --project="${PROJECT}" \
   --region="${REGION}" \
-  --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback,GA4_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/ga4/callback"
+  --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback,GA4_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/ga4/callback,GSC_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/gsc/callback"
 
 echo ""
 echo "UI-only deploy complete: ${SERVICE} → ${SERVICE_URL}"

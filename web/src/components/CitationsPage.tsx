@@ -14,12 +14,21 @@ import { CompetitorFavicon, PlatformLogoRow } from "./PlatformLogo";
 import { platformScoreColor } from "../lib/platformScoreColor";
 import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales";
 import {
+  aggregateCitationSitesFromPrompts,
+  aggregateCitationUrlsFromPrompts,
   isPromptCitationSource,
+  PROBE_CITATION_PLATFORMS,
   registrableDomain,
 } from "../lib/citationSource";
 import { buildCompetitorCitationMatcher, OVERALL_LOCALE_KEY } from "../lib/localeProbeView";
 import { preferredInitialLocaleKey } from "../lib/defaultLocaleView";
-import { PromptLocaleFilter } from "./PromptLocaleFilter";
+import { filterContextByTopic, listProbeTopics } from "../lib/promptCategoryGrouping";
+import {
+  platformsForSurface,
+  type SurfaceFilter,
+} from "../lib/visibilityMetrics";
+import { PromptLocaleFilter, liveProbeForLocale } from "./PromptLocaleFilter";
+import { ReportFilterSelect } from "./ReportFilterSelect";
 import { VirtualScrollTable } from "./VirtualScrollTable";
 import { ViewportOverlay } from "./ViewportOverlay";
 import type { ReactNode } from "react";
@@ -78,6 +87,37 @@ const CITATIONS_INITIAL_PAGE_URLS = CITATIONS_TOP_URLS;
 const CITATIONS_PAGE_SIZE = 10;
 /** When the full list is at least this long, virtualize instead of paginating. */
 const CITATIONS_VIRTUALIZE_THRESHOLD = 40;
+
+function filterCitedSitesByPlatforms(
+  sites: TopCitedSite[],
+  platforms: readonly string[],
+): TopCitedSite[] {
+  const allowed = new Set(platforms);
+  return sites
+    .map((site) => ({
+      ...site,
+      platforms: (site.platforms ?? []).filter((platform) => allowed.has(platform)),
+    }))
+    .filter((site) => site.platforms.length > 0)
+    .sort((left, right) => Number(right.count ?? 0) - Number(left.count ?? 0));
+}
+
+function filterCitedUrlsByPlatforms(
+  urls: TopCitedUrl[],
+  platforms: readonly string[],
+): TopCitedUrl[] {
+  const allowed = new Set(platforms);
+  return urls
+    .map((url) => ({
+      ...url,
+      probe_platforms: (url.probe_platforms ?? []).filter((platform) => allowed.has(platform)),
+    }))
+    .filter((url) => {
+      if (url.probe_platforms.length > 0) return true;
+      return Boolean(url.platform && allowed.has(url.platform));
+    })
+    .sort((left, right) => Number(right.frequency ?? 0) - Number(left.frequency ?? 0));
+}
 
 function LoadMoreFooter({
   visible,
@@ -833,10 +873,13 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [selectedLocaleKey, setSelectedLocaleKey] = useState<string | null>(null);
+  const [selectedTopic, setSelectedTopic] = useState("All topics");
+  const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>("all");
   const [view, setView] = useState<CitationsViewState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  /** Full probe context — loaded only when opening domain/URL drill-down. */
+  /** Full probe context — for topic list, filtered re-aggregation, and drill-down overlays. */
+  const [probeCtx, setProbeCtx] = useState<PromptPerformanceContext | null>(null);
   const [overlayCtx, setOverlayCtx] = useState<PromptPerformanceContext | null>(null);
   const [overlayLoading, setOverlayLoading] = useState(false);
 
@@ -860,8 +903,11 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
 
   useEffect(() => {
     setSelectedLocaleKey(null);
+    setSelectedTopic("All topics");
+    setSurfaceFilter("all");
     setView(null);
     setError(null);
+    setProbeCtx(null);
     setOverlayCtx(null);
     setLoading(true);
 
@@ -886,20 +932,44 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     };
   }, [auditDirOrSlug]);
 
-  // Lazy-load full slim probe only for drill-down overlays.
+  const localeKey = selectedLocaleKey || OVERALL_LOCALE_KEY;
+
+  // Load slim probe for topic filtering (and reuse for overlays).
+  useEffect(() => {
+    if (!view) return;
+    let cancelled = false;
+    void ensurePromptPerformance(
+      auditDirOrSlug,
+      localeKey === OVERALL_LOCALE_KEY ? { allLocales: true } : { locale: localeKey },
+    )
+      .then((ctx) => {
+        if (!cancelled) {
+          setProbeCtx(ctx);
+          setOverlayCtx(ctx);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProbeCtx(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auditDirOrSlug, localeKey, view]);
+
+  // Lazy-load full slim probe only for drill-down overlays when not already loaded.
   useEffect(() => {
     if (!selectedDomain && !selectedUrl) return;
     if (overlayCtx) return;
     let cancelled = false;
     setOverlayLoading(true);
-    const locale = selectedLocaleKey || OVERALL_LOCALE_KEY;
     void ensurePromptPerformance(
       auditDirOrSlug,
-      locale === OVERALL_LOCALE_KEY ? { allLocales: true } : { locale },
+      localeKey === OVERALL_LOCALE_KEY ? { allLocales: true } : { locale: localeKey },
     )
       .then((ctx) => {
         if (!cancelled) {
           setOverlayCtx(ctx);
+          setProbeCtx(ctx);
           setOverlayLoading(false);
         }
       })
@@ -909,11 +979,13 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     return () => {
       cancelled = true;
     };
-  }, [auditDirOrSlug, selectedDomain, selectedUrl, selectedLocaleKey, overlayCtx]);
+  }, [auditDirOrSlug, selectedDomain, selectedUrl, localeKey, overlayCtx]);
 
   const onLocaleChange = (key: string) => {
     if (key === selectedLocaleKey) return;
     setSelectedLocaleKey(key);
+    setSelectedTopic("All topics");
+    setProbeCtx(null);
     setOverlayCtx(null);
     setLoading(true);
     setError(null);
@@ -937,7 +1009,67 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
     [view],
   );
 
-  const localeKey = selectedLocaleKey || OVERALL_LOCALE_KEY;
+  const localeProbeCtx = useMemo(() => {
+    if (!probeCtx) return null;
+    const live = liveProbeForLocale(probeCtx, localeKey);
+    return { ...probeCtx, live_probe: live };
+  }, [probeCtx, localeKey]);
+
+  const topics = useMemo(() => listProbeTopics(localeProbeCtx), [localeProbeCtx]);
+
+  const surfacePlatforms = useMemo(
+    () => platformsForSurface(surfaceFilter, PROBE_CITATION_PLATFORMS),
+    [surfaceFilter],
+  );
+
+  const filteredLists = useMemo(() => {
+    const payload = view?.payload;
+    if (!payload) {
+      return { topSites: [] as TopCitedSite[], topUrls: [] as TopCitedUrl[], aioUrls: [] as TopCitedUrl[] };
+    }
+    const topicActive = selectedTopic !== "All topics";
+    const surfaceActive = surfaceFilter !== "all";
+
+    // Topic filter requires probe rows; keep slim payload until they load.
+    if (topicActive && !localeProbeCtx) {
+      return {
+        topSites: [] as TopCitedSite[],
+        topUrls: [] as TopCitedUrl[],
+        aioUrls: [] as TopCitedUrl[],
+      };
+    }
+
+    if (localeProbeCtx && (topicActive || surfaceActive)) {
+      const topicCtx = filterContextByTopic(localeProbeCtx, selectedTopic);
+      const rows = topicCtx?.live_probe?.per_prompt as Array<Record<string, unknown>> | undefined;
+      return {
+        topSites: aggregateCitationSitesFromPrompts(rows, topicCtx, surfacePlatforms).slice(
+          0,
+          CITATIONS_TOP_DOMAINS,
+        ),
+        topUrls: aggregateCitationUrlsFromPrompts(rows, topicCtx, surfacePlatforms).slice(
+          0,
+          CITATIONS_TOP_URLS,
+        ),
+        aioUrls:
+          surfaceFilter === "chatbots"
+            ? []
+            : (payload.aio_cited_urls ?? []).slice(0, CITATIONS_TOP_URLS),
+      };
+    }
+
+    const sites = payload.top_cited_sites ?? [];
+    const urls = payload.top_cited_urls ?? [];
+    const aio = payload.aio_cited_urls ?? [];
+    if (!surfaceActive) {
+      return { topSites: sites, topUrls: urls, aioUrls: aio };
+    }
+    return {
+      topSites: filterCitedSitesByPlatforms(sites, surfacePlatforms),
+      topUrls: filterCitedUrlsByPlatforms(urls, surfacePlatforms),
+      aioUrls: surfaceFilter === "chatbots" ? [] : aio,
+    };
+  }, [view, localeProbeCtx, selectedTopic, surfaceFilter, surfacePlatforms]);
 
   if (loading && !view && !error) {
     return <PageLoading label="Loading citations…" />;
@@ -948,13 +1080,12 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
   if (!view) return null;
 
   const { payload, competitorDomainMatch, competitorMap } = view;
-  const topSites = payload.top_cited_sites ?? [];
-  const topUrls = payload.top_cited_urls ?? [];
-  const aioUrls = payload.aio_cited_urls ?? [];
+  const { topSites, topUrls, aioUrls } = filteredLists;
   const hasLive = topSites.length > 0 || topUrls.length > 0;
   const hasAio = aioUrls.length > 0;
   const hasAnything = hasLive || hasAio;
   const hasProbe = Boolean(payload.has_probe_data);
+  const topicFilterPending = selectedTopic !== "All topics" && !localeProbeCtx;
 
   const allTabs: { id: TabId; label: string; count: number }[] = [
     { id: "domains", label: "Top Domains", count: topSites.length },
@@ -971,13 +1102,39 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
         Domains and URLs the AI platforms referenced as sources — not sites merely recommended in the answer.
       </CardDescription>
 
-      <PromptLocaleFilter
-        locales={filterLocales}
-        selectedKey={localeKey}
-        onChange={onLocaleChange}
-        hideIfSingle={false}
-        ctx={miniCtxFromCitations(payload)}
-      />
+      <div className="flex flex-wrap items-end gap-4">
+        <PromptLocaleFilter
+          locales={filterLocales}
+          selectedKey={localeKey}
+          onChange={onLocaleChange}
+          hideIfSingle={false}
+          ctx={miniCtxFromCitations(payload)}
+          className="mb-0"
+        />
+        <ReportFilterSelect
+          id="citations-topic-select"
+          label="Topic"
+          hint="Limit citations to prompts tagged with one product or service topic."
+          value={selectedTopic}
+          onChange={(event) => setSelectedTopic(event.target.value)}
+        >
+          <option>All topics</option>
+          {topics.map((topic) => (
+            <option key={topic}>{topic}</option>
+          ))}
+        </ReportFilterSelect>
+        <ReportFilterSelect
+          id="citations-surface-select"
+          label="Surface"
+          hint="Chatbots (Gemini, ChatGPT, Claude) or Google AI Overviews."
+          value={surfaceFilter}
+          onChange={(event) => setSurfaceFilter(event.target.value as SurfaceFilter)}
+        >
+          <option value="all">All surfaces</option>
+          <option value="chatbots">Chatbots</option>
+          <option value="overviews">AI Overviews</option>
+        </ReportFilterSelect>
+      </div>
       {loading ? (
         <div className="mt-2 mb-2">
           <PageLoading label="Loading citations…" />
@@ -988,6 +1145,10 @@ export function CitationsPage({ auditDirOrSlug }: { auditDirOrSlug: string }) {
       {localeKey !== OVERALL_LOCALE_KEY && !hasProbe ? (
         <div className="alert-info mt-4">
           No probe data for this market/language yet. Re-run failed markets from the Prompts section to fill it in.
+        </div>
+      ) : topicFilterPending ? (
+        <div className="mt-4">
+          <PageLoading label="Applying topic filter…" />
         </div>
       ) : !hasAnything ? (
         <div className="alert-info mt-4">

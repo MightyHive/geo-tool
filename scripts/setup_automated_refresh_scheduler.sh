@@ -1,74 +1,55 @@
 #!/usr/bin/env bash
-# Setup Cloud Scheduler to trigger scheduled audit refresh jobs.
+# Setup Cloud Scheduler + Pub/Sub launcher for automated audit refresh.
 #
-# Pub/Sub mode: Cloud Scheduler publishes messages to a topic and a Cloud Function
-# launches the Cloud Run scheduler runner job. This avoids IAP-protected HTTP.
+# Canonical flow:
+#   Cloud Scheduler → geo-audit-scheduler-topic → geo-audit-scheduler-launcher (CF)
+#     → geo-audit-scheduler-runner-dev | geo-audit-scheduler-runner-staging (Cloud Run Job)
+#       → prompt-probe / site-crawl Jobs for that environment
 #
+# Pub/Sub mode (default): avoids IAP-protected HTTP on the API service.
 # HTTP mode: legacy direct HTTP trigger of the Cloud Run service.
 #
 # Usage:
 #   bash scripts/setup_automated_refresh_scheduler.sh [dev|staging|both] [pubsub|http]
-
+#
+# Exclusion lists (comma-separated audit folder IDs; empty by default):
+#   DEV_EXCLUDED_AUDITS / STAGING_EXCLUDED_AUDITS
+#   or shared fallback SCHEDULE_EXCLUDED_AUDITS
+#
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENVIRONMENT="${1:-dev}"
 SCHEDULER_MODE="${2:-pubsub}"
-PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
+PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"
 REGION="${GCP_REGION:-europe-west1}"
 SCHEDULER_REGION="europe-west1"
 TOPIC_NAME="${SCHEDULER_TOPIC:-geo-audit-scheduler-topic}"
+LAUNCHER_FN="${SCHEDULER_LAUNCHER_FN:-geo-audit-scheduler-launcher}"
 
 DEV_SERVICE_URL="${DEV_SERVICE_URL:-https://geo-audit-dev-4sawlje3ya-ew.a.run.app}"
 STAGING_SERVICE_URL="${STAGING_SERVICE_URL:-https://geo-audit-staging-4sawlje3ya-ew.a.run.app}"
 SA_EMAIL="${CLOUD_RUN_SA:-geo-audit-tool@${PROJECT}.iam.gserviceaccount.com}"
 
-DEV_BUCKET="${DEV_GCS_BUCKET:-${PROJECT}-geo-audit-dev}"
-STAGING_BUCKET="${STAGING_GCS_BUCKET:-${PROJECT}-geo-audit-staging}"
-
-DEV_PROMPT_JOB="${DEV_PROMPT_PROBE_JOB_NAME:-geo-audit-prompt-probes}"
-DEV_CRAWL_JOB="${DEV_AUDIT_CRAWL_JOB_NAME:-geo-audit-site-crawls}"
-DEV_PDF_JOB="${DEV_PDF_EXPORT_JOB_NAME:-geo-audit-pdf-exports}"
-DEV_SENTIMENT_JOB="${DEV_PROMPT_SENTIMENT_JOB_NAME:-geo-audit-prompt-sentiment}"
-DEV_CONTENT_QUALITY_JOB="${DEV_CONTENT_QUALITY_JOB_NAME:-geo-audit-content-quality}"
-
-STAGING_PROMPT_JOB="${STAGING_PROMPT_PROBE_JOB_NAME:-geo-audit-staging-prompt-probes}"
-STAGING_CRAWL_JOB="${STAGING_AUDIT_CRAWL_JOB_NAME:-geo-audit-staging-site-crawls}"
-STAGING_PDF_JOB="${STAGING_PDF_EXPORT_JOB_NAME:-geo-audit-staging-pdf-exports}"
-STAGING_SENTIMENT_JOB="${STAGING_PROMPT_SENTIMENT_JOB_NAME:-geo-audit-staging-prompt-sentiment}"
-STAGING_CONTENT_QUALITY_JOB="${STAGING_CONTENT_QUALITY_JOB_NAME:-geo-audit-staging-content-quality}"
+DEV_RUNNER_JOB="${DEV_SCHEDULER_JOB_NAME:-geo-audit-scheduler-runner-dev}"
+STAGING_RUNNER_JOB="${STAGING_SCHEDULER_JOB_NAME:-geo-audit-scheduler-runner-staging}"
 
 DAILY_PATH="/api/scheduled/daily-rerun"
-WEEKLY_PATH="/api/scheduled/weekly-crawl"
+MONTHLY_PATH="/api/scheduled/monthly-crawl"
 DAILY_SCHEDULE="0 2 * * *"
-WEEKLY_SCHEDULE="0 1 * * 1"
+MONTHLY_SCHEDULE="0 1 1 * *"
+
+DEV_EXCLUDED="${DEV_EXCLUDED_AUDITS:-${SCHEDULE_EXCLUDED_AUDITS:-}}"
+STAGING_EXCLUDED="${STAGING_EXCLUDED_AUDITS:-${SCHEDULE_EXCLUDED_AUDITS:-}}"
 
 echo "==> Project: ${PROJECT}  Region: ${SCHEDULER_REGION}  Mode: ${SCHEDULER_MODE}"
 
 generate_pubsub_message() {
   local action="$1"
   local env="$2"
-  local bucket prompt_job crawl_job pdf_job sentiment_job content_job app_env
-
-  if [[ "${env}" == "staging" ]]; then
-    app_env="staging"
-    bucket="${STAGING_BUCKET}"
-    prompt_job="${STAGING_PROMPT_JOB}"
-    crawl_job="${STAGING_CRAWL_JOB}"
-    pdf_job="${STAGING_PDF_JOB}"
-    sentiment_job="${STAGING_SENTIMENT_JOB}"
-    content_job="${STAGING_CONTENT_QUALITY_JOB}"
-  else
-    app_env="development"
-    bucket="${DEV_BUCKET}"
-    prompt_job="${DEV_PROMPT_JOB}"
-    crawl_job="${DEV_CRAWL_JOB}"
-    pdf_job="${DEV_PDF_JOB}"
-    sentiment_job="${DEV_SENTIMENT_JOB}"
-    content_job="${DEV_CONTENT_QUALITY_JOB}"
-  fi
-
-  printf '{"action":"%s","environment":"%s","APP_ENV":"%s","BUCKET":"%s","GEO_DATA_ROOT":"/var/geo-data","PROMPT_PROBE_JOB_NAME":"%s","PROMPT_PROBE_JOB_REGION":"%s","PROMPT_PROBE_JOB_PROJECT":"%s","AUDIT_CRAWL_JOB_NAME":"%s","AUDIT_CRAWL_JOB_REGION":"%s","AUDIT_CRAWL_JOB_PROJECT":"%s","PDF_EXPORT_JOB_NAME":"%s","PDF_EXPORT_JOB_REGION":"%s","PDF_EXPORT_JOB_PROJECT":"%s","PROMPT_SENTIMENT_JOB_NAME":"%s","PROMPT_SENTIMENT_JOB_REGION":"%s","PROMPT_SENTIMENT_JOB_PROJECT":"%s","CONTENT_QUALITY_JOB_NAME":"%s","CONTENT_QUALITY_JOB_REGION":"%s","CONTENT_QUALITY_JOB_PROJECT":"%s"}' \
-    "${action}" "${env}" "${app_env}" "${bucket}" "${prompt_job}" "${REGION}" "${PROJECT}" "${crawl_job}" "${REGION}" "${PROJECT}" "${pdf_job}" "${REGION}" "${PROJECT}" "${sentiment_job}" "${REGION}" "${PROJECT}" "${content_job}" "${REGION}" "${PROJECT}"
+  local excluded_audits="$3"
+  python3 -c 'import json,sys; print(json.dumps({"action":sys.argv[1],"environment":sys.argv[2],"excluded_audits":sys.argv[3]}, separators=(",",":")))' \
+    "${action}" "${env}" "${excluded_audits}"
 }
 
 upsert_http_job() {
@@ -118,16 +99,18 @@ upsert_http_job() {
 upsert_pubsub_job() {
   local job_name="$1"
   local action="$2"
-  local env="$4"
   local schedule="$3"
+  local env="$4"
+  local excluded_audits="$5"
   local message
 
-  message=$(generate_pubsub_message "${action}" "${env}")
+  message=$(generate_pubsub_message "${action}" "${env}" "${excluded_audits}")
   echo ""
   echo "==> ${job_name}"
   echo "    Topic: ${TOPIC_NAME}"
   echo "    Action: ${action}"
   echo "    Environment: ${env}"
+  echo "    excluded_audits: ${excluded_audits:-<empty>}"
   echo "    Schedule: ${schedule} (UTC)"
 
   if gcloud scheduler jobs describe "${job_name}" --location="${SCHEDULER_REGION}" --project="${PROJECT}" >/dev/null 2>&1; then
@@ -138,7 +121,7 @@ upsert_pubsub_job() {
       --schedule="${schedule}" \
       --topic="${TOPIC_NAME}" \
       --message-body="${message}" \
-      --time-zone="UTC" 
+      --time-zone="UTC"
   else
     echo "    Creating job…"
     gcloud scheduler jobs create pubsub "${job_name}" \
@@ -155,13 +138,22 @@ upsert_pubsub_job() {
 setup_env() {
   local env="$1"
   local service_url="$2"
+  local excluded="$3"
 
   if [[ "${SCHEDULER_MODE}" == "pubsub" ]]; then
-    upsert_pubsub_job "geo-audit-daily-rerun-${env}" "daily-rerun" "${DAILY_SCHEDULE}" "${env}"
-    upsert_pubsub_job "geo-audit-weekly-crawl-${env}" "weekly-crawl" "${WEEKLY_SCHEDULE}" "${env}"
+    upsert_pubsub_job "geo-audit-daily-rerun-${env}" "daily-rerun" "${DAILY_SCHEDULE}" "${env}" "${excluded}"
+    upsert_pubsub_job "geo-audit-monthly-crawl-${env}" "monthly-crawl" "${MONTHLY_SCHEDULE}" "${env}" "${excluded}"
   else
-    upsert_http_job "geo-audit-daily-rerun-${env}" "${service_url}" "${DAILY_PATH}" "${DAILY_SCHEDULE}"
-    upsert_http_job "geo-audit-weekly-crawl-${env}" "${service_url}" "${WEEKLY_PATH}" "${WEEKLY_SCHEDULE}"
+    local daily_path="${DAILY_PATH}"
+    local monthly_path="${MONTHLY_PATH}"
+    if [[ -n "${excluded}" ]]; then
+      local qs
+      qs=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.urlencode({"excluded_audits": sys.argv[1]}))' "${excluded}")
+      daily_path="${DAILY_PATH}?${qs}"
+      monthly_path="${MONTHLY_PATH}?${qs}"
+    fi
+    upsert_http_job "geo-audit-daily-rerun-${env}" "${service_url}" "${daily_path}" "${DAILY_SCHEDULE}"
+    upsert_http_job "geo-audit-monthly-crawl-${env}" "${service_url}" "${monthly_path}" "${MONTHLY_SCHEDULE}"
   fi
 }
 
@@ -174,19 +166,67 @@ create_pubsub_topic() {
   fi
 }
 
+deploy_launcher_function() {
+  echo ""
+  echo "==> Deploying Pub/Sub launcher Function ${LAUNCHER_FN}…"
+  gcloud functions deploy "${LAUNCHER_FN}" \
+    --gen2 \
+    --runtime=python312 \
+    --region="${REGION}" \
+    --project="${PROJECT}" \
+    --source="${ROOT}/functions/scheduler_runner" \
+    --entry-point=pubsub_handler \
+    --trigger-topic="${TOPIC_NAME}" \
+    --service-account="${SA_EMAIL}" \
+    --set-env-vars="SCHEDULER_JOB_PROJECT=${PROJECT},SCHEDULER_JOB_REGION=${REGION},DEV_SCHEDULER_JOB_NAME=${DEV_RUNNER_JOB},STAGING_SCHEDULER_JOB_NAME=${STAGING_RUNNER_JOB}" \
+    --timeout=60s \
+    --memory=256Mi \
+    --max-instances=5 \
+    --quiet
+
+  for _job in "${DEV_RUNNER_JOB}" "${STAGING_RUNNER_JOB}"; do
+    if gcloud run jobs describe "${_job}" --project="${PROJECT}" --region="${REGION}" >/dev/null 2>&1; then
+      gcloud run jobs add-iam-policy-binding "${_job}" \
+        --project="${PROJECT}" \
+        --region="${REGION}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.invoker" \
+        --quiet >/dev/null || true
+      gcloud run jobs add-iam-policy-binding "${_job}" \
+        --project="${PROJECT}" \
+        --region="${REGION}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.jobsExecutorWithOverrides" \
+        --quiet >/dev/null || true
+    else
+      echo "    WARNING: runner Job ${_job} not found yet — deploy via deploy_cloud_run_{dev,staging}.sh first."
+    fi
+  done
+  echo "    Launcher deployed."
+}
+
 case "${ENVIRONMENT}" in
   dev)
-    [[ "${SCHEDULER_MODE}" == "pubsub" ]] && create_pubsub_topic
-    setup_env "dev" "${DEV_SERVICE_URL}"
+    if [[ "${SCHEDULER_MODE}" == "pubsub" ]]; then
+      create_pubsub_topic
+      deploy_launcher_function
+    fi
+    setup_env "dev" "${DEV_SERVICE_URL}" "${DEV_EXCLUDED}"
     ;;
   staging)
-    [[ "${SCHEDULER_MODE}" == "pubsub" ]] && create_pubsub_topic
-    setup_env "staging" "${STAGING_SERVICE_URL}"
+    if [[ "${SCHEDULER_MODE}" == "pubsub" ]]; then
+      create_pubsub_topic
+      deploy_launcher_function
+    fi
+    setup_env "staging" "${STAGING_SERVICE_URL}" "${STAGING_EXCLUDED}"
     ;;
   both)
-    [[ "${SCHEDULER_MODE}" == "pubsub" ]] && create_pubsub_topic
-    setup_env "dev" "${DEV_SERVICE_URL}"
-    setup_env "staging" "${STAGING_SERVICE_URL}"
+    if [[ "${SCHEDULER_MODE}" == "pubsub" ]]; then
+      create_pubsub_topic
+      deploy_launcher_function
+    fi
+    setup_env "dev" "${DEV_SERVICE_URL}" "${DEV_EXCLUDED}"
+    setup_env "staging" "${STAGING_SERVICE_URL}" "${STAGING_EXCLUDED}"
     ;;
   *)
     echo "Usage: $0 [dev|staging|both] [pubsub|http]" >&2
@@ -196,6 +236,9 @@ esac
 
 echo ""
 echo "==> Scheduler setup complete."
-echo "Test:"
-echo "  gcloud scheduler jobs run geo-audit-daily-rerun-${ENVIRONMENT} --location=${SCHEDULER_REGION} --project=${PROJECT}"
-echo "  gcloud scheduler jobs run geo-audit-weekly-crawl-${ENVIRONMENT} --location=${SCHEDULER_REGION} --project=${PROJECT}"
+echo "Canonical Pub/Sub path:"
+echo "  Scheduler → ${TOPIC_NAME} → ${LAUNCHER_FN}"
+echo "    → ${DEV_RUNNER_JOB} | ${STAGING_RUNNER_JOB}"
+echo "Test (does enqueue real work):"
+echo "  gcloud scheduler jobs run geo-audit-daily-rerun-dev --location=${SCHEDULER_REGION} --project=${PROJECT}"
+echo "  gcloud scheduler jobs run geo-audit-monthly-crawl-dev --location=${SCHEDULER_REGION} --project=${PROJECT}"

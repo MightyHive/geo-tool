@@ -26,6 +26,8 @@ export interface WizardDraft {
   wizardStep?: number;
   promptsReady?: boolean;
   crawlUrls?: string[];
+  /** From suggest-products: publisher | advertiser-retail | advertiser-services */
+  modelCategory?: string;
 }
 
 export interface AuditRunDraft {

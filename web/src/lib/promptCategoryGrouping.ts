@@ -368,3 +368,35 @@ export function promptGroupKey(productLabel: string, sourcePrompt: string): stri
 export function topicMarketKey(productLabel: string, localeKey: string): string {
   return `${norm(productLabel)}\u0000${localeKey.trim()}`;
 }
+
+/** Unique topic labels from PSS-mapped probe rows, sorted. */
+export function listProbeTopics(ctx: PromptPerformanceContext | null | undefined): string[] {
+  if (!ctx) return [];
+  return Array.from(new Set(
+    annotateProbeRowsWithCategory(ctx.live_probe, ctx)
+      .map(({ meta }) => meta.productLabel)
+      .filter(Boolean),
+  )).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Restrict live_probe.per_prompt to rows in the selected topic.
+ * Pass "All topics" (or empty) to leave the context unchanged.
+ */
+export function filterContextByTopic(
+  ctx: PromptPerformanceContext | null | undefined,
+  topic: string | null | undefined,
+): PromptPerformanceContext | null {
+  if (!ctx) return null;
+  const selected = (topic || "").trim();
+  if (!selected || selected === "All topics") return ctx;
+  const rows = annotateProbeRowsWithCategory(ctx.live_probe, ctx)
+    .filter(({ meta }) => meta.productLabel === selected)
+    .map(({ row }) => row);
+  return {
+    ...ctx,
+    live_probe: ctx.live_probe
+      ? { ...ctx.live_probe, per_prompt: rows }
+      : null,
+  };
+}

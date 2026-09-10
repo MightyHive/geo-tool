@@ -1,0 +1,19 @@
+# Build the NumPyro AI-impact site-refit job image (separate from the web image).
+substitutions:
+  _IMAGE: europe-west1-docker.pkg.dev/geo-tool-emea-ds/geo-audit/ai-impact-refit:dev
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - -f
+      - jobs/ai_impact_refit/Dockerfile
+      - .
+
+images:
+  - ${_IMAGE}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

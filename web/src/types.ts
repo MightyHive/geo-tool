@@ -19,6 +19,9 @@ export interface AppConfig {
   app_env: string;
   app_env_label: string;
   report_sections: { id: string; label: string; group?: string }[];
+  features?: {
+    workshop_dashboard_builder?: boolean;
+  };
   auth?: {
     enabled: boolean;
     redirect_uri?: string | null;
@@ -173,6 +176,59 @@ export interface LocalAudit {
   pipeline_phase?: string;
 }
 
+export interface PageAuditScores {
+  ai_visibility?: number | null;
+  technical_setup?: number | null;
+  content_quality?: number | null;
+  overall?: number | null;
+  details?: Record<string, unknown>;
+  prompt_metrics?: Record<string, unknown> | null;
+  surface_metrics?: Record<string, Record<string, unknown> | null> | null;
+  platform_metrics?: Record<string, Record<string, unknown> | null> | null;
+}
+
+export interface PageAuditListItem {
+  id: string;
+  url: string;
+  parent_audit_id?: string;
+  status: string;
+  stage?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  title?: string;
+  error?: string | null;
+  scores?: PageAuditScores | null;
+  parent_brand_name?: string;
+  parent_base_url?: string;
+  parent_competitors?: Array<{ competitor_brand: string; competitor_website: string }>;
+}
+
+export interface PageAuditDetail extends PageAuditListItem {
+  inherited?: string[];
+  page_specific?: string[];
+  citations?: Array<{ url?: string; platform?: string; prompt?: string }>;
+  snapshot?: Record<string, unknown> | null;
+  used_crawl_fallback?: boolean;
+  breakdown?: Record<string, unknown> | null;
+  component_scope?: Record<string, "inherited" | "page_specific">;
+  page_prompts?: {
+    prompts?: string[];
+    generated_at?: string;
+    updated_at?: string;
+    source?: string;
+  } | null;
+  page_probe?: Record<string, unknown> | null;
+  probe_status?: string | null;
+  probe_progress?: {
+    completed_calls?: number;
+    planned_calls?: number;
+    status?: string;
+    prompt_index?: number;
+    prompt_total?: number;
+  } | null;
+  probe_error?: string | null;
+}
+
 export interface AuditSummary {
   base_url?: string;
   overall_score?: number;
@@ -215,6 +271,14 @@ export interface OnboardingContext {
   ga4_property_id?: string;
   crawl_urls?: string[];
   additional_crawl_markets?: { country: string; country_code: string }[];
+  /** AI-impact business model: publisher | advertiser-retail | advertiser-services */
+  model_category?: string;
+  model_category_provenance?: {
+    classifier?: string;
+    provider?: string;
+    model?: string;
+    classified_at?: string;
+  };
 }
 
 export interface AuditDetail {
@@ -223,6 +287,85 @@ export interface AuditDetail {
   has_report_html: boolean;
   report_meta?: ReportMeta | null;
   onboarding_context?: OnboardingContext | null;
+}
+
+export type ContentOutlineJobStatus = "idle" | "queued" | "running" | "done" | "error";
+
+export interface ContentOutlineEvidenceOpportunity {
+  label?: string;
+  description: string;
+  source_url?: string;
+}
+
+export interface ContentOutlineSection {
+  heading: string;
+  level: 2 | 3;
+  instructions: string;
+  sample_copy?: string;
+  evidence_opportunities?: Array<ContentOutlineEvidenceOpportunity | string>;
+}
+
+export interface ContentOutlineFaq {
+  question: string;
+  answer?: string;
+  guidance?: string;
+}
+
+export interface ContentOutlineInternalLink {
+  anchor_text: string;
+  target_url: string;
+  rationale?: string;
+}
+
+export interface ContentOutlineProvenance {
+  title?: string;
+  url?: string;
+  source?: string;
+  detail?: string;
+}
+
+export interface ContentOutline {
+  title: string;
+  meta_description: string;
+  audience: string;
+  intent: string;
+  sections: ContentOutlineSection[];
+  faqs: ContentOutlineFaq[];
+  internal_links: ContentOutlineInternalLink[];
+  provenance: ContentOutlineProvenance[];
+}
+
+export interface TopicContentSample {
+  topic: string;
+  visibility: number | null;
+  /** True when visibility is OK or below — same band as Recommendations low-visibility topics. */
+  suggested?: boolean;
+  evidence_count: number;
+  response_count?: number;
+  mention_count?: number;
+  status: ContentOutlineJobStatus;
+  outline?: ContentOutline | null;
+  error?: string | null;
+  updated_at?: string | null;
+}
+
+export interface TopicContentSamplesResponse {
+  has_probe_data: boolean;
+  topics: TopicContentSample[];
+}
+
+export interface ContentOutlineStructure {
+  title?: string;
+  meta_description?: string;
+  audience?: string;
+  intent?: string;
+  sections: Array<Pick<ContentOutlineSection, "heading" | "level" | "instructions">>;
+}
+
+export interface GenerateContentOutlineRequest {
+  topic: string;
+  refresh: boolean;
+  structure?: ContentOutlineStructure;
 }
 
 export interface ArchiveRun {
@@ -499,6 +642,7 @@ export interface ProbeHistoryEntry {
     claude?: PlatformDailySummary;
     top_cited_domains?: { domain: string; frequency: number }[];
   };
+  topic_summaries?: Record<string, ProbeHistoryEntry["summary"]>;
 }
 
 export interface ProbeHistoryResponse {

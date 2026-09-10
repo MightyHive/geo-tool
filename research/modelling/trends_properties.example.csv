@@ -1,0 +1,3 @@
+property_id,ga4_property,property_display_name,query_term,geo,hl,review_status,notes
+property_0001,properties/123456789,Example UK Store,Example Brand,GB,en-GB,approved,
+property_0002,properties/987654321,Example Global Store,Example Brand,,en-US,approved,Empty geo means worldwide

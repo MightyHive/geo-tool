@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { PageLoading } from "./PageLoading";
 import { fetchScoreBreakdown } from "../api/client";
 import { scoreColor, scoreTone, formatReportScore } from "../lib/reportScore";
+import { TextWithSampleScriptsLink } from "./SampleScriptsLink";
 
 type Breakdown = Awaited<ReturnType<typeof fetchScoreBreakdown>>;
 type Component = NonNullable<Breakdown["details"]>[string]["components"][number];
@@ -45,17 +46,31 @@ function dedupeFindings(components: Component[]): Component[] {
   }));
 }
 
-export function CitabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
-  const [loading, setLoading] = useState(true);
+export function CitabilitySection({
+  auditDirOrSlug,
+  onNavigate,
+  breakdown: breakdownProp,
+}: {
+  auditDirOrSlug: string;
+  onNavigate?: (sectionId: string) => void;
+  breakdown?: Breakdown | null;
+}) {
+  const [fetched, setFetched] = useState<Breakdown | null>(null);
+  const [loading, setLoading] = useState(!breakdownProp);
 
   useEffect(() => {
+    if (breakdownProp) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetchScoreBreakdown(auditDirOrSlug)
-      .then(setBreakdown)
-      .catch(() => setBreakdown(null))
+      .then(setFetched)
+      .catch(() => setFetched(null))
       .finally(() => setLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, breakdownProp]);
+
+  const breakdown = breakdownProp ?? fetched;
 
   if (loading) {
     return <PageLoading />;
@@ -101,6 +116,8 @@ export function CitabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }
         <h2 className="text-xl font-bold text-[#0d0d0d]">Citability</h2>
         <p className="mt-1 text-sm text-gray-500">
           AI citability, nine AI Search Success criteria, and query coverage.
+          Findings that mention <code className="text-xs">llms.txt</code>,{" "}
+          <code className="text-xs">robots.txt</code>, or JSON-LD link to Sample scripts.
         </p>
       </div>
 
@@ -122,7 +139,9 @@ export function CitabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }
                   <tr key={row.key} className="border-b border-gray-100 align-top last:border-0">
                     <td className="px-5 py-4">
                       <div className="font-semibold text-[#0d0d0d]">{row.title}</div>
-                      <p className="mt-1 text-[11px] leading-relaxed text-gray-400">{row.detail}</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
+                        <TextWithSampleScriptsLink text={row.detail} onNavigate={onNavigate} />
+                      </p>
                     </td>
                     <td className="px-5 py-4">
                       {row.strengths.length ? (
@@ -130,7 +149,7 @@ export function CitabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }
                           {row.strengths.map((finding, index) => (
                             <li key={`${finding}-${index}`} className="flex gap-2 text-xs leading-relaxed text-gray-600">
                               <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                              <span>{finding}</span>
+                              <TextWithSampleScriptsLink text={finding} onNavigate={onNavigate} />
                             </li>
                           ))}
                         </ul>
@@ -142,7 +161,7 @@ export function CitabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }
                           {row.improvements.map((finding, index) => (
                             <li key={`${finding}-${index}`} className="flex gap-2 text-xs leading-relaxed text-gray-600">
                               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
-                              <span>{finding}</span>
+                              <TextWithSampleScriptsLink text={finding} onNavigate={onNavigate} />
                             </li>
                           ))}
                         </ul>

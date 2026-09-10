@@ -189,7 +189,12 @@ def infer_category_labels_from_top_pages(
     return [str(c.get("label") or "").strip() for c in rows if c.get("label")]
 
 
-def _gemini_generate(*, system_instruction: str, user_text: str) -> str:
+def _gemini_generate(
+    *,
+    system_instruction: str,
+    user_text: str,
+    max_output_tokens: int = 1024,
+) -> str:
     api_key = _gemini_api_key()
     use_vertex = _truthy_env("GEMINI_USE_VERTEX_AI")
     project = (_get_config("GOOGLE_CLOUD_PROJECT") or "").strip()
@@ -202,6 +207,7 @@ def _gemini_generate(*, system_instruction: str, user_text: str) -> str:
             model=model,
             system_instruction=system_instruction,
             user_text=user_text,
+            max_output_tokens=max_output_tokens,
         )
     if use_vertex and project:
         model = _default_model_vertex()
@@ -211,11 +217,51 @@ def _gemini_generate(*, system_instruction: str, user_text: str) -> str:
             model=model,
             system_instruction=system_instruction,
             user_text=user_text,
+            max_output_tokens=max_output_tokens,
         )
     raise ValueError(
         "Configure Gemini: **GEMINI_API_KEY** or **GOOGLE_API_KEY**, or **GEMINI_USE_VERTEX_AI=1** with "
         "**GOOGLE_CLOUD_PROJECT** and ADC."
     )
+
+
+def _prompt_token_budget(n: int) -> int:
+    """Output budget for a ``{"prompts": [...]}`` reply of ``n`` questions."""
+    return int(min(8192, max(1024, 420 + 150 * max(1, int(n)))))
+
+
+def _parse_prompt_list_reply(raw: str) -> list[Any]:
+    """Parse ``{"prompts": [...]}``, salvaging complete entries from a truncated reply."""
+    text = _strip_json_fence(str(raw or ""))
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        salvaged = _salvage_prompt_strings(text)
+        if salvaged:
+            return salvaged
+        raise
+    prompts_raw = obj.get("prompts") if isinstance(obj, dict) else None
+    if not isinstance(prompts_raw, list):
+        raise ValueError('Expected JSON with a "prompts" array.')
+    return prompts_raw
+
+
+def _salvage_prompt_strings(text: str) -> list[str]:
+    """Recover fully-quoted strings from a ``prompts`` array cut off mid-generation."""
+    start = text.find('"prompts"')
+    if start < 0:
+        return []
+    bracket = text.find("[", start)
+    if bracket < 0:
+        return []
+    tail = text[bracket + 1 :]
+    end = tail.find("]")
+    if end >= 0:
+        tail = tail[:end]
+    return [
+        json.loads(match.group(0))
+        for match in re.finditer(r'"(?:[^"\\]|\\.)*"', tail)
+    ]
 
 
 def suggest_ai_platform_prompts(
@@ -293,15 +339,15 @@ def suggest_ai_platform_prompts(
     }
     user = json.dumps(user_payload, ensure_ascii=False)
 
-    raw = _gemini_generate(system_instruction=system, user_text=user)
+    raw = _gemini_generate(
+        system_instruction=system,
+        user_text=user,
+        max_output_tokens=_prompt_token_budget(max_prompts),
+    )
     try:
-        obj = json.loads(_strip_json_fence(str(raw)))
+        prompts_raw = _parse_prompt_list_reply(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"Model did not return valid JSON: {raw[:600]!r}") from e
-
-    prompts_raw = obj.get("prompts")
-    if not isinstance(prompts_raw, list):
-        raise ValueError('Expected JSON with a "prompts" array.')
 
     out: list[str] = []
     seen: set[str] = set()
@@ -325,6 +371,125 @@ def suggest_ai_platform_prompts(
 
     if not out:
         raise ValueError("Gemini returned no usable prompts.")
+    return out
+
+
+def suggest_prompts_for_page(
+    *,
+    page_url: str,
+    brand_name: str,
+    site_url: str = "",
+    page_title: str = "",
+    meta_description: str = "",
+    headings: dict[str, list[str]] | None = None,
+    json_ld_types: list[str] | None = None,
+    template_hint: str = "",
+    excerpt: str = "",
+    industry: str = "",
+    market_country: str = "",
+    market_country_code: str = "",
+    max_prompts: int = 5,
+) -> list[str]:
+    """Shopper-style prompts a user would ask that this page should answer or be cited for."""
+    brand = (brand_name or "").strip()
+    if not brand:
+        raise ValueError("Brand name is required for page prompt suggestions.")
+    url = (page_url or "").strip()
+    if not url:
+        raise ValueError("Page URL is required for page prompt suggestions.")
+
+    n = max(1, min(int(max_prompts or 5), 25))
+    mc, mid = resolve_primary_market(market_country, market_country_code)
+    phrase = geo_locator_phrase_for_market(mc, mid)
+    heads = headings if isinstance(headings, dict) else {}
+    h1 = [str(x).strip() for x in (heads.get("h1") or []) if str(x).strip()][:3]
+    h2 = [str(x).strip() for x in (heads.get("h2") or []) if str(x).strip()][:8]
+    types = [str(x).strip() for x in (json_ld_types or []) if str(x).strip()][:12]
+    excerpt_s = re.sub(r"\s+", " ", (excerpt or "").strip())[:420]
+
+    market_rules = ""
+    if phrase:
+        phrase_js = json.dumps(phrase)
+        geo_ctx = (f"{mc}" + (f" (`{mid}`)" if mid else "")) if mc else (f"ISO `{mid}`" if mid else "primary market")
+        market_rules = (
+            f"Primary market: {geo_ctx}. "
+            f"Every string in `prompts` MUST contain the contiguous phrase {phrase_js} exactly "
+            "(match spacing and casing; case-insensitive match is acceptable). "
+            "Place it naturally, usually before the final question mark."
+        )
+
+    system = (
+        "You help with generative-engine marketing. Reply with a single JSON object only, no markdown fences. "
+        f'Schema: {{"prompts": ["plain user query", ...]}}. '
+        f"Exactly {n} distinct prompts. Each prompt should be a real question a shopper or DIY user would type "
+        "into ChatGPT, Gemini, or Perplexity — not keywords. Prompts must be ones this specific page could "
+        "plausibly answer or be cited for. Do not mention the brand name unless a user would naturally include it."
+    )
+    if market_rules:
+        system += " " + market_rules
+    elif mc or mid:
+        system += (
+            f" Primary audience geography: **{mc}**" + (f" (`{mid}`)" if mid else "") + ". "
+            "Use retailers, spelling, and buying context appropriate to that market."
+        )
+
+    user_payload: dict[str, Any] = {
+        "brand": brand,
+        "site": site_url or None,
+        "industry": (industry or "").strip() or None,
+        "page_url": url,
+        "page_title": (page_title or "").strip() or None,
+        "meta_description": (meta_description or "").strip() or None,
+        "h1": h1 or None,
+        "h2": h2 or None,
+        "json_ld_types": types or None,
+        "template_hint": (template_hint or "").strip() or None,
+        "excerpt": excerpt_s or None,
+        "primary_market_country": mc or None,
+        "primary_market_country_code": mid or None,
+        "required_geo_locator_phrase": phrase or None,
+        "task": (
+            f"Given this page, list {n} prompts a user would enter into an AI assistant where this URL "
+            "would be a plausible citation or answer source."
+            + (
+                f" When required_geo_locator_phrase is set, each prompt MUST include that exact substring verbatim."
+                if phrase
+                else ""
+            )
+        ),
+    }
+    user = json.dumps(user_payload, ensure_ascii=False)
+    raw = _gemini_generate(
+        system_instruction=system,
+        user_text=user,
+        max_output_tokens=_prompt_token_budget(n),
+    )
+    try:
+        prompts_raw = _parse_prompt_list_reply(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Model did not return valid JSON: {raw[:600]!r}") from e
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in prompts_raw:
+        if isinstance(p, dict) and "text" in p:
+            p = p.get("text")
+        if not isinstance(p, str):
+            continue
+        s = re.sub(r"\s+", " ", p.strip())
+        if phrase:
+            s = ensure_prompt_contains_geo_locator(s, phrase)
+        if len(s) < 8:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= n:
+            break
+    if not out:
+        raise ValueError("Gemini returned no usable page prompts.")
     return out
 
 

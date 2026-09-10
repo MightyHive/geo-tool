@@ -2,33 +2,52 @@ import { useEffect, useState } from "react";
 import { Check, Info, X } from "lucide-react";
 import { PageLoading } from "./PageLoading";
 import { fetchScoreBreakdown } from "../api/client";
+import { SampleScriptsLinkButton, TextWithSampleScriptsLink } from "./SampleScriptsLink";
 
 type Breakdown = Awaited<ReturnType<typeof fetchScoreBreakdown>>;
 
-export function CrawlerAccessSection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const [data, setData] = useState<Breakdown["crawler_access"] | null>(null);
-  const [loading, setLoading] = useState(true);
+export function CrawlerAccessSection({
+  auditDirOrSlug,
+  onNavigate,
+  breakdown: breakdownProp,
+}: {
+  auditDirOrSlug: string;
+  onNavigate?: (sectionId: string) => void;
+  breakdown?: Breakdown | null;
+}) {
+  const [fetched, setFetched] = useState<Breakdown["crawler_access"] | null>(null);
+  const [loading, setLoading] = useState(!breakdownProp);
 
   useEffect(() => {
+    if (breakdownProp) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetchScoreBreakdown(auditDirOrSlug)
-      .then((response) => setData(response.crawler_access ?? null))
-      .catch(() => setData(null))
+      .then((response) => setFetched(response.crawler_access ?? null))
+      .catch(() => setFetched(null))
       .finally(() => setLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, breakdownProp]);
+
+  const data = breakdownProp ? breakdownProp.crawler_access ?? null : fetched;
 
   if (loading) {
     return <PageLoading />;
   }
 
   const rows = data?.rows ?? [];
+  const hasMisaligned = rows.some((row) => row.aligned === false);
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold text-[#0d0d0d]">AI crawler access</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Which search and AI crawlers can access the site’s public pages under the current robots.txt rules.
+          <TextWithSampleScriptsLink
+            text="Which search and AI crawlers can access the site’s public pages under the current robots.txt rules."
+            onNavigate={onNavigate}
+          />
         </p>
       </div>
 
@@ -80,10 +99,26 @@ export function CrawlerAccessSection({ auditDirOrSlug }: { auditDirOrSlug: strin
         ) : (
           <div className="flex items-center gap-3 px-5 py-8 text-sm text-gray-400">
             <Info className="h-5 w-5 shrink-0" />
-            No robots.txt crawler data is available for this audit.
+            <span>
+              <TextWithSampleScriptsLink
+                text="No robots.txt crawler data is available for this audit."
+                onNavigate={onNavigate}
+              />
+            </span>
           </div>
         )}
       </div>
+
+      {onNavigate && (hasMisaligned || rows.length > 0) && (
+        <div className="rounded-2xl border border-violet-100 bg-violet-50 px-5 py-4 text-xs leading-relaxed text-violet-900">
+          <span className="font-semibold">Need a starter policy?</span>{" "}
+          Copy a merged <code className="text-[11px]">robots.txt</code> from{" "}
+          <SampleScriptsLinkButton onNavigate={onNavigate} className="text-xs" />
+          {hasMisaligned
+            ? " when crawler rules are out of line with the GEO recommendation."
+            : " to review allow/block rules for AI agents."}
+        </div>
+      )}
     </div>
   );
 }

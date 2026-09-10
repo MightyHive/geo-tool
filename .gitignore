@@ -48,6 +48,18 @@ audit_archive/
 
 # Research sandbox generated outputs
 research/*.csv
+research/modelling/anonymization_mapping.csv
+research/modelling/google_trends/
+research/modelling/plots/
+research/modelling/*.csv
+!research/modelling/trends_properties.example.csv
+research/modelling/*.ipynb
+research/modelling/*.pdf
+research/modelling/properties.csv
+research/modelling/properties_original.csv
+research/modelling/sessions/
+research/site_crawler/*.csv
+research/site_crawler/*.json
 research/ga4/exports/
 research/gsc/*.csv
 research/analysis/*.csv
@@ -64,6 +76,10 @@ research/trends_manual/config.env
 
 # Local sample audits and scratch HTML (reference templates live in assets/reference/)
 assets/samples/
+backend/ai_impact/model_artifacts/
+
+# Internal/generated presentation artifacts
+docs/*.pptx
 
 # Prompt development scratch
 prompt_dev/

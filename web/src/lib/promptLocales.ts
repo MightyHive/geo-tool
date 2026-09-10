@@ -153,17 +153,29 @@ export function makeLocale(input: {
   return locale;
 }
 
-/** Always starts with primary market + English. */
+/** Starts with the primary market and its configured language (English for legacy data). */
 export function normalizePromptLocales(
   raw: PromptLocale[] | undefined | null,
   marketCountry: string,
   marketCountryCode: string,
 ): PromptLocale[] {
+  const primaryCode = marketCountryCode.trim().toUpperCase();
+  const primaryCountry = marketCountry.trim().toLowerCase();
+  const configuredPrimary = !primaryCode && !primaryCountry
+    ? raw?.[0]
+    : (raw ?? []).find((item) => {
+        const itemCode = item?.country_code?.trim().toUpperCase();
+        const itemCountry = item?.country?.trim().toLowerCase();
+        return Boolean(
+          (primaryCode && itemCode === primaryCode)
+          || (!primaryCode && primaryCountry && itemCountry === primaryCountry),
+        );
+      });
   const primary = makeLocale({
     country: marketCountry,
     country_code: marketCountryCode,
-    language: "en",
-    language_name: "English",
+    language: configuredPrimary?.language || "en",
+    language_name: configuredPrimary?.language_name || "English",
   });
   const out: PromptLocale[] = [primary];
   const seen = new Set([primary.key]);

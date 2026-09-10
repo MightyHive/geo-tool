@@ -12,7 +12,8 @@ Channel rules (first match wins)::
             Paid Video / Display / Paid Other, OR sessionMedium == cpc
   3. SEO  — default channel group in Organic Search / Google Places / Organic Shopping,
             OR sessionSource == search.brave.com, OR sessionSource matches Google Places
-  4. Other Traffic — everything else
+  4. Direct — GA4 default channel group Direct
+  5. Other Traffic — everything else
 
 Auth: Google OAuth — same CLI flow as other research GA4 scripts
 (``research/.ga4_oauth_token.json``).
@@ -73,8 +74,15 @@ DEFAULT_END = "2026-05-31"
 CHANNEL_AI = "AI"
 CHANNEL_PPC = "PPC"
 CHANNEL_SEO = "SEO"
+CHANNEL_DIRECT = "Direct"
 CHANNEL_OTHER = "Other Traffic"
-CHANNEL_ORDER: tuple[str, ...] = (CHANNEL_AI, CHANNEL_PPC, CHANNEL_SEO, CHANNEL_OTHER)
+CHANNEL_ORDER: tuple[str, ...] = (
+    CHANNEL_AI,
+    CHANNEL_PPC,
+    CHANNEL_SEO,
+    CHANNEL_DIRECT,
+    CHANNEL_OTHER,
+)
 
 PPC_CHANNEL_GROUPS = frozenset(
     {
@@ -206,7 +214,7 @@ def classify_channel(
     session_medium: str,
     default_channel_group: str,
 ) -> str:
-    """Map a GA4 traffic row to AI / PPC / SEO / Other Traffic."""
+    """Map a GA4 traffic row to AI / PPC / SEO / Direct / Other Traffic."""
     source = (session_source or "").strip()
     medium = (session_medium or "").strip()
     group = (default_channel_group or "").strip()
@@ -223,6 +231,9 @@ def classify_channel(
         or _GOOGLE_PLACES_SOURCE_RE.search(source)
     ):
         return CHANNEL_SEO
+
+    if group == "Direct":
+        return CHANNEL_DIRECT
 
     return CHANNEL_OTHER
 
@@ -461,6 +472,7 @@ def build_wide_rows(
         CHANNEL_AI: "AI",
         CHANNEL_PPC: "PPC",
         CHANNEL_SEO: "SEO",
+        CHANNEL_DIRECT: "Direct",
         CHANNEL_OTHER: "Other_Traffic",
     }
     purchase_cols = [f"{prefix_map[ch]}_purchases" for ch in channels]
@@ -514,22 +526,22 @@ def build_weekly_rows(
         CHANNEL_AI: "ai",
         CHANNEL_PPC: "ppc",
         CHANNEL_SEO: "seo",
+        CHANNEL_DIRECT: "direct",
         CHANNEL_OTHER: "other_traffic",
     }
+    # Keep in sync with CHANNEL_ORDER / prefix_map (was missing direct_* and broke DictWriter).
+    channel_fields = [
+        col
+        for ch in CHANNEL_ORDER
+        for col in (f"{prefix_map[ch]}_sessions", f"{prefix_map[ch]}_purchases")
+    ]
     fieldnames = [
         "property_name",
         "property_id",
         "week",
         "sessions",
         "purchases",
-        "ai_sessions",
-        "ai_purchases",
-        "ppc_sessions",
-        "ppc_purchases",
-        "seo_sessions",
-        "seo_purchases",
-        "other_traffic_sessions",
-        "other_traffic_purchases",
+        *channel_fields,
     ]
 
     weekly_rows: list[dict[str, int | str]] = []
@@ -625,7 +637,7 @@ def run_export(
         totals[channel] += sessions
 
     print(f"Property: {property_name} ({pid})")
-    print("Channel rules: AI → PPC → SEO → Other Traffic")
+    print("Channel rules: AI → PPC → SEO → Direct → Other Traffic")
     print(f"Date range: {iso_start} → {iso_end}")
     print(f"Conversion event: {conversion_event_name}")
     print(f"Long CSV:    {long_path}")
@@ -644,7 +656,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Export daily/weekly GA4 sessions and purchases by AI/PPC/SEO/Other Traffic rules."
+            "Export daily/weekly GA4 sessions and purchases by AI/PPC/SEO/Direct/Other Traffic rules."
         )
     )
     parser.add_argument(

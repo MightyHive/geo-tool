@@ -10,6 +10,7 @@ import {
   fetchIndustries,
   startAuditBackground,
   probeSiteProtection,
+  suggestProductsServices,
   verifyBrandSite,
 } from "../api/client";
 import { AuditRunProgress } from "../components/AuditRunProgress";
@@ -27,7 +28,7 @@ import { WizardPagesStep } from "../components/WizardPagesStep";
 import { WizardCompetitorsStep } from "../components/WizardCompetitorsStep";
 import { WizardGeneratePromptsStep } from "../components/WizardGeneratePromptsStep";
 import { WizardPromptsStep } from "../components/WizardPromptsStep";
-import { WizardProductsStep } from "../components/WizardProductsStep";
+import { WizardProductsStep, type ProductsSuggestStatus } from "../components/WizardProductsStep";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
 import { normalizePromptLocales } from "../lib/promptLocales";
 import {
@@ -112,6 +113,12 @@ export function NewAuditPage() {
   const [additionalMarketInputCode, setAdditionalMarketInputCode] = useState("");
   const [productRows, setProductRows] = useState<ProductServiceRow[]>([]);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [modelCategory, setModelCategory] = useState<string | null>(null);
+  const [productsSuggestStatus, setProductsSuggestStatus] =
+    useState<ProductsSuggestStatus>("idle");
+  const [productsSuggestError, setProductsSuggestError] = useState<string | null>(null);
+  const productsSuggestGenRef = useRef(0);
+  const productsSuggestKeyRef = useRef("");
   const [competitorDetails, setCompetitorDetails] = useState<CompetitorDetail[]>([]);
   const [ga4PropertyId, setGa4PropertyId] = useState("");
   const [ga4AiChannels, setGa4AiChannels] = useState("");
@@ -142,8 +149,21 @@ export function NewAuditPage() {
           .map((row) => ({ country: row.country, country_code: row.country_code })),
       );
     }
-    if (draft.productRows?.length) setProductRows(draft.productRows);
+    if (draft.productRows?.length) {
+      setProductRows(draft.productRows);
+      setProductsSuggestStatus("ready");
+      const site =
+        draft.verifiedSite?.canonical_url?.trim() || draft.brandWebsite?.trim() || "";
+      if (site) {
+        productsSuggestKeyRef.current = `${site}|${(draft.marketCountry || "").trim()}|${(
+          draft.marketCountryCode || ""
+        )
+          .trim()
+          .toUpperCase()}`;
+      }
+    }
     if (draft.selectedProducts?.length) setSelectedProducts(draft.selectedProducts);
+    if (draft.modelCategory) setModelCategory(draft.modelCategory);
     if (draft.competitorDetails?.length) setCompetitorDetails(draft.competitorDetails);
     if (draft.ga4PropertyId) setGa4PropertyId(draft.ga4PropertyId);
     if (draft.ga4AiChannels) setGa4AiChannels(draft.ga4AiChannels);
@@ -171,11 +191,17 @@ export function NewAuditPage() {
     setIndustry(INDUSTRY_PLACEHOLDER);
     setMarketCountry("");
     setMarketCountryCode("");
+    setPromptLocales([]);
     setAdditionalCrawlMarkets([]);
     setAdditionalMarketInput("");
     setAdditionalMarketInputCode("");
     setProductRows([]);
     setSelectedProducts([]);
+    setModelCategory(null);
+    setProductsSuggestStatus("idle");
+    setProductsSuggestError(null);
+    productsSuggestGenRef.current += 1;
+    productsSuggestKeyRef.current = "";
     setCompetitorDetails([]);
     setGa4PropertyId("");
     setGa4AiChannels("");
@@ -355,6 +381,7 @@ export function NewAuditPage() {
       verifiedSite,
       productRows,
       selectedProducts,
+      modelCategory: modelCategory || undefined,
       competitorDetails,
       ga4PropertyId,
       ga4AiChannels,
@@ -376,6 +403,7 @@ export function NewAuditPage() {
     verifiedSite,
     productRows,
     selectedProducts,
+    modelCategory,
     competitorDetails,
     ga4PropertyId,
     ga4AiChannels,
@@ -426,6 +454,63 @@ export function NewAuditPage() {
     }
     return website;
   }
+
+  const startProductsSuggest = useCallback(
+    (website: string, market: string, code: string, opts?: { force?: boolean }) => {
+      const force = Boolean(opts?.force);
+      const url = website.trim();
+      if (!url) return;
+      const key = `${url}|${market.trim()}|${code.trim().toUpperCase()}`;
+      if (!force && productsSuggestKeyRef.current === key) return;
+      productsSuggestKeyRef.current = key;
+      const gen = ++productsSuggestGenRef.current;
+      setProductsSuggestStatus("loading");
+      setProductsSuggestError(null);
+      void suggestProductsServices({
+        brand_website: url,
+        market_country: market.trim(),
+        market_country_code: code.trim(),
+      })
+        .then(({ rows: next, model_category: category }) => {
+          if (gen !== productsSuggestGenRef.current) return;
+          const labels = next
+            .map((r) => r.product_or_service.trim())
+            .filter(Boolean);
+          setProductRows(next);
+          setSelectedProducts(labels);
+          setModelCategory(category?.trim() || null);
+          setProductsSuggestStatus("ready");
+          setProductsSuggestError(null);
+        })
+        .catch((err) => {
+          if (gen !== productsSuggestGenRef.current) return;
+          const raw = err instanceof Error ? err.message : "Gemini request failed";
+          setProductsSuggestStatus("error");
+          setProductsSuggestError(parseApiDetail(raw));
+        });
+    },
+    [],
+  );
+
+  // Resume Gemini products prefetch if draft restored a verified site without rows.
+  useEffect(() => {
+    if (productsSuggestStatus !== "idle") return;
+    if (productRows.length > 0) return;
+    if (sitePreviewPhase !== "confirmed") return;
+    const website =
+      verifiedSite?.canonical_url?.trim() || brandWebsite.trim() || "";
+    if (!website) return;
+    startProductsSuggest(website, marketCountry, marketCountryCode);
+  }, [
+    productsSuggestStatus,
+    productRows.length,
+    sitePreviewPhase,
+    verifiedSite,
+    brandWebsite,
+    marketCountry,
+    marketCountryCode,
+    startProductsSuggest,
+  ]);
 
   function goToStep(next: number) {
     if (next > 1) {
@@ -481,6 +566,10 @@ export function NewAuditPage() {
       setBrandWebsite(result.canonical_url);
       setVerifiedSite(result);
       setSitePreviewPhase("confirmed");
+      // Kick off Gemini products + model category as soon as the site is set.
+      startProductsSuggest(result.canonical_url, marketCountry, marketCountryCode, {
+        force: true,
+      });
     } catch (err) {
       setSitePreviewPhase("form");
       const raw = err instanceof Error ? err.message : "Could not verify that site";
@@ -497,6 +586,11 @@ export function NewAuditPage() {
   function handleMarketChange(name: string, code: string) {
     setMarketCountry(name);
     setMarketCountryCode(code);
+    const website =
+      verifiedSite?.canonical_url?.trim() || brandWebsite.trim() || resolveBrandWebsite();
+    if (website && sitePreviewPhase === "confirmed") {
+      startProductsSuggest(website, name, code, { force: true });
+    }
   }
 
   function handleAdditionalMarketInput(name: string, code: string) {
@@ -586,6 +680,7 @@ export function NewAuditPage() {
         ...(ga4Ch ? { ga4_ai_channels: ga4Ch } : {}),
         ...(ga4Prop ? { ga4_conversion_event_name: ga4Event } : {}),
         ...(crawlUrls && crawlUrls.length > 0 ? { crawl_urls: crawlUrls } : {}),
+        ...(modelCategory ? { model_category: modelCategory } : {}),
       });
       setActiveAuditDir(audit_dir);
       saveAuditRunDraft({
@@ -806,12 +901,21 @@ export function NewAuditPage() {
         <WizardProductsStep
           brandName={brandName.trim()}
           brandWebsite={resolveBrandWebsite()}
-          marketCountry={marketCountry}
-          marketCountryCode={marketCountryCode}
           rows={productRows}
           selected={selectedProducts}
+          suggestStatus={productsSuggestStatus}
+          suggestError={productsSuggestError}
+          modelCategory={modelCategory}
           onRowsChange={setProductRows}
           onSelectedChange={setSelectedProducts}
+          onRetrySuggest={() => {
+            const website = resolveBrandWebsite();
+            if (website) {
+              startProductsSuggest(website, marketCountry, marketCountryCode, {
+                force: true,
+              });
+            }
+          }}
           onBack={() => goToStep(3)}
           onContinue={() => {
             const byName = new Map(
@@ -846,6 +950,10 @@ export function NewAuditPage() {
           brandWebsite={resolveBrandWebsite()}
           marketCountry={marketCountry}
           marketCountryCode={marketCountryCode}
+          onMarketChange={(name, code) => {
+            setMarketCountry(name);
+            setMarketCountryCode(code);
+          }}
           promptLocales={promptLocales}
           onPromptLocalesChange={setPromptLocales}
           rows={productRows}

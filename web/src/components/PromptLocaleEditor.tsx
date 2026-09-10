@@ -35,8 +35,8 @@ export function PromptLocaleEditor({
   const normalized = normalizePromptLocales(locales, marketCountry, marketCountryCode);
   const extras = normalized.slice(1);
 
-  const sync = (nextExtras: PromptLocale[]) => {
-    onChange(normalizePromptLocales(nextExtras, marketCountry, marketCountryCode));
+  const sync = (nextLocales: PromptLocale[]) => {
+    onChange(normalizePromptLocales(nextLocales, marketCountry, marketCountryCode));
   };
 
   const addLocale = () => {
@@ -64,20 +64,20 @@ export function PromptLocaleEditor({
       setError(`${next.label} is already configured.`);
       return;
     }
-    sync([...extras, next]);
+    sync([normalized[0], ...extras, next]);
     setDraftCountry("");
     setDraftCountryCode("");
     setDraftLanguage(defaultLanguageForCountry(code).code);
   };
 
   const removeAt = (key: string) => {
-    sync(extras.filter((l) => l.key !== key));
+    sync([normalized[0], ...extras.filter((l) => l.key !== key)]);
   };
 
   const updateLanguage = (key: string, language: string) => {
     const meta = SUPPORTED_LANGUAGES.find((l) => l.code === language);
     sync(
-      extras.map((l) =>
+      [normalized[0], ...extras].map((l) =>
         l.key === key
           ? makeLocale({
               country: l.country,
@@ -90,6 +90,19 @@ export function PromptLocaleEditor({
     );
   };
 
+  const updateDefaultLanguage = (language: string) => {
+    const meta = SUPPORTED_LANGUAGES.find((l) => l.code === language);
+    sync([
+      makeLocale({
+        country: marketCountry,
+        country_code: marketCountryCode,
+        language,
+        language_name: meta?.name,
+      }),
+      ...extras,
+    ]);
+  };
+
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
       <div>
@@ -97,22 +110,31 @@ export function PromptLocaleEditor({
           Prompt markets &amp; languages
         </h4>
         <p className="text-xs text-gray-500 leading-relaxed">
-          Default is your primary market with English. Add more market + language pairs before
-          generating prompts — extra markets get market-specific prompt adaptations when probes run.
+          Choose the language used to generate and run prompts for your primary market. Add more
+          market + language pairs for additional probe variations.
         </p>
       </div>
 
       <ul className="space-y-2">
-        <li className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+        <li className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
           <div className="min-w-0">
             <p className="text-sm font-medium text-[#0d0d0d] truncate">
-              {normalized[0]?.label || "Primary market: English"}
+              {normalized[0]?.country || marketCountry || "Primary market"}
             </p>
             <p className="text-[11px] text-gray-400">Default · always included</p>
           </div>
-          <span className="text-[11px] font-medium uppercase tracking-wide text-gray-400 shrink-0">
-            Default
-          </span>
+          <select
+            className="ml-auto text-sm border border-gray-200 rounded-md px-2 py-1.5 bg-white"
+            value={normalized[0]?.language || "en"}
+            onChange={(e) => updateDefaultLanguage(e.target.value)}
+            aria-label="Default prompt language"
+          >
+            {SUPPORTED_LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </select>
         </li>
         {extras.map((loc) => (
           <li

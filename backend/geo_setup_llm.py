@@ -16,10 +16,14 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+from ai_impact.model_artifact import validate_category
+
 GEMINI_MODEL_DEFAULT = (os.environ.get("GEMINI_SETUP_MODEL") or "gemini-3.5-flash").strip()
 MAX_OUTPUT_TOKENS = 8192
 TEMPERATURE = 0.9
 TOP_P = 0.95
+SITE_CATEGORY_CLASSIFIER = "gemini-site-category-v1"
+SITE_CATEGORY_CLASSIFIER_WIZARD = "gemini-site-category-v1-wizard-suggest-products"
 
 # Wizard defaults: five lines × five prompts (matches structured schema).
 DEFAULT_MAX_PRODUCTS = 5
@@ -32,6 +36,18 @@ class ProductsAndServicesWithPrompts(BaseModel):
         description="Exactly five user-style questions for an AI assistant",
         min_length=5,
         max_length=5,
+    )
+
+
+class ProductsAndServicesSuggestion(BaseModel):
+    category: str = Field(
+        description=(
+            "Exactly one production model category: publisher, advertiser-retail, "
+            "or advertiser-services"
+        )
+    )
+    products: list[ProductsAndServicesWithPrompts] = Field(
+        description="Main product or service lines with exploratory AI prompts"
     )
 
 
@@ -48,6 +64,15 @@ class OtherBrandFromReplies(BaseModel):
     )
 
 
+class SiteModelCategory(BaseModel):
+    category: str = Field(
+        description=(
+            "Exactly one production model category: publisher, advertiser-retail, "
+            "or advertiser-services"
+        )
+    )
+
+
 def _market_context_lines(market_country: str, market_country_code: str) -> str:
     c = (market_country or "").strip()
     code = (market_country_code or "").strip().upper()
@@ -58,6 +83,15 @@ def _market_context_lines(market_country: str, market_country_code: str) -> str:
     if code:
         return f"The target market for all suggestions is the country/region with ISO code **{code}**."
     return "If the site clearly serves a single country, bias prompts and examples toward that country; otherwise keep prompts geographically neutral."
+
+
+def _language_context_lines(language: str, language_name: str) -> str:
+    code = (language or "en").strip().lower() or "en"
+    name = (language_name or "").strip() or ("English" if code == "en" else code)
+    return (
+        f"Write every generated consumer prompt in natural {name} ({code}). "
+        "Keep the product_or_service values exactly as supplied; only the prompts are localized."
+    )
 
 
 def products_and_services_user_prompt(
@@ -73,12 +107,26 @@ def products_and_services_user_prompt(
     mkt = _market_context_lines(market_country, market_country_code)
     return f"""
 You are the sales lead for {website_url}.
-You want to summarise the main products or services that {website_url} offers.
+You want to summarise the main products or services that {website_url} offers,
+and classify the site's primary business model for an AI-traffic impact model.
 
 {mkt}
 
-Return a JSON array of **exactly {mp}** products or services that {website_url} offers (prioritise the most important lines for revenue or traffic).
-For **each** line, suggest **exactly {pp}** prompts that a consumer would likely ask an AI assistant about that product or service.
+Return a JSON object with:
+1. ``category`` — exactly one of:
+   - publisher: primarily publishes editorial or informational content for an audience,
+     commonly monetised through advertising, subscriptions, sponsorship, or affiliate traffic.
+     No ecommerce or selling of goods/services as the primary model.
+   - advertiser-retail: primarily sells physical products or retail inventory to consumers or
+     businesses, including ecommerce and omnichannel retailers.
+   - advertiser-services: primarily sells services, software, financial products, travel,
+     bookings, appointments, banking, agencies, utilities, or other non-retail offerings.
+   Classify the site's primary business model, not an incidental blog, shop, or content section.
+2. ``products`` — an array of **exactly {mp}** products or services that {website_url} offers
+   (prioritise the most important lines for revenue or traffic). For publishers, use the main
+   content verticals or topics instead of ecommerce offerings.
+   For **each** line, suggest **exactly {pp}** prompts that a consumer would likely ask an AI
+   assistant about that product, service, or topic.
 Focus on general prompts that are exploratory and not specific to a single brand name (the assistant may still mention brands).
 Ensure prompts are concrete and market-appropriate per the target market above.
 
@@ -164,6 +212,85 @@ def _parse_json_list(raw: str) -> list[Any]:
     return data
 
 
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("Empty model response.")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+    return data
+
+
+def site_model_category_user_prompt(
+    website_url: str,
+    *,
+    brand_name: str = "",
+    industry: str = "",
+    products_and_services: list[str] | None = None,
+) -> str:
+    offerings = [
+        str(value).strip()
+        for value in (products_and_services or [])
+        if str(value).strip()
+    ]
+    offerings_text = "\n".join(f"- {value}" for value in offerings) or "(not supplied)"
+    return f"""
+Classify the primary business model of this website for an AI-traffic impact model.
+
+Website: {website_url.strip()}
+Brand: {(brand_name or "").strip() or "(not supplied)"}
+Industry: {(industry or "").strip() or "(not supplied)"}
+Products/services selected during setup:
+{offerings_text}
+
+Return exactly one category:
+- publisher: primarily publishes editorial or informational content for an audience, commonly
+  monetised through advertising, subscriptions, sponsorship, or affiliate traffic.
+- advertiser-retail: primarily sells physical products or retail inventory to consumers or
+  businesses, including ecommerce and omnichannel retailers.
+- advertiser-services: primarily sells services, software, financial products, travel,
+  bookings, utilities, or other non-retail offerings.
+
+Classify the site's primary business model, not an incidental blog, shop, or content section.
+The ``category`` value must exactly match one of the three labels above.
+""".strip()
+
+
+def classify_site_model_category(
+    website_url: str,
+    *,
+    brand_name: str = "",
+    industry: str = "",
+    products_and_services: list[str] | None = None,
+    model_id: str | None = None,
+) -> dict[str, str]:
+    """Return a validated model category and Gemini classifier provenance."""
+    client = build_genai_client()
+    model = (model_id or GEMINI_MODEL_DEFAULT).strip()
+    if not model:
+        raise ValueError("Gemini site-category model ID is empty")
+    prompt = site_model_category_user_prompt(
+        website_url,
+        brand_name=brand_name,
+        industry=industry,
+        products_and_services=products_and_services,
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=_generation_config(response_schema=SiteModelCategory),
+    )
+    parsed = SiteModelCategory.model_validate(_parse_json_object(response.text or ""))
+    category = validate_category(parsed.category)
+    return {
+        "category": category,
+        "classifier": SITE_CATEGORY_CLASSIFIER,
+        "provider": "google-gemini",
+        "model": model,
+    }
+
+
 def suggest_products_and_services(
     website_url: str,
     *,
@@ -172,11 +299,14 @@ def suggest_products_and_services(
     model_id: str | None = None,
     max_products: int = DEFAULT_MAX_PRODUCTS,
     prompts_per_product: int = DEFAULT_PROMPTS_PER_PRODUCT,
-) -> list[dict[str, Any]]:
-    """Return validated rows: ``product_or_service``, ``prompts`` (fixed length per ``prompts_per_product``)."""
+) -> dict[str, Any]:
+    """Return ``{"rows": [...], "category": "<validated model_category>"}``.
+
+    Each row has ``product_or_service`` and ``prompts`` (fixed length per ``prompts_per_product``).
+    """
     client = build_genai_client()
     model = (model_id or GEMINI_MODEL_DEFAULT).strip()
-    cfg = _generation_config(response_schema=list[ProductsAndServicesWithPrompts])
+    cfg = _generation_config(response_schema=ProductsAndServicesSuggestion)
     mp = max(1, min(int(max_products) or DEFAULT_MAX_PRODUCTS, 12))
     pp = max(1, min(int(prompts_per_product) or DEFAULT_PROMPTS_PER_PRODUCT, 8))
     up = products_and_services_user_prompt(
@@ -187,10 +317,11 @@ def suggest_products_and_services(
         prompts_per_product=pp,
     )
     resp = client.models.generate_content(model=model, contents=up, config=cfg)
-    items = _parse_json_list(resp.text or "")
-    rows = [ProductsAndServicesWithPrompts.model_validate(x).model_dump() for x in items[:mp]]
+    parsed = ProductsAndServicesSuggestion.model_validate(_parse_json_object(resp.text or ""))
+    category = validate_category(parsed.category)
+    items = [p.model_dump() for p in parsed.products[:mp]]
     out: list[dict[str, Any]] = []
-    for r in rows:
+    for r in items:
         prs = [str(p).strip() for p in (r.get("prompts") or []) if str(p).strip()]
         if len(prs) > pp:
             prs = prs[:pp]
@@ -200,7 +331,7 @@ def suggest_products_and_services(
         label = str(r.get("product_or_service") or "").strip()
         if label and any(prs):
             out.append({"product_or_service": label, "prompts": prs})
-    return out
+    return {"rows": out, "category": category}
 
 
 def prompts_for_product_lines_user_prompt(
@@ -209,10 +340,13 @@ def prompts_for_product_lines_user_prompt(
     *,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
     prompts_per_product: int = DEFAULT_PROMPTS_PER_PRODUCT,
 ) -> str:
     pp = max(1, min(int(prompts_per_product) or DEFAULT_PROMPTS_PER_PRODUCT, 8))
     mkt = _market_context_lines(market_country, market_country_code)
+    lang = _language_context_lines(language, language_name)
     lines = "\n".join(f"{i + 1}. {p}" for i, p in enumerate(product_lines) if str(p).strip())
     return f"""
 You are the sales lead for {website_url}.
@@ -221,6 +355,7 @@ The user has already chosen these products or services for {website_url} (do not
 {lines}
 
 {mkt}
+{lang}
 
 Return a JSON array with **exactly {len(product_lines)}** objects, in the **same order** as the numbered list above.
 Each object must use the **exact** ``product_or_service`` string from that line (copy verbatim).
@@ -235,6 +370,8 @@ def suggest_prompts_for_product_lines(
     *,
     market_country: str = "",
     market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
     model_id: str | None = None,
     prompts_per_product: int = DEFAULT_PROMPTS_PER_PRODUCT,
 ) -> list[dict[str, Any]]:
@@ -254,6 +391,8 @@ def suggest_prompts_for_product_lines(
         requested,
         market_country=market_country,
         market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
         prompts_per_product=pp,
     )
     resp = client.models.generate_content(model=model, contents=up, config=cfg)

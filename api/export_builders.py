@@ -334,6 +334,20 @@ body.geo-report.geo-export {{
   width: 48px; text-align: right; font-size: 12px; font-weight: 700;
   font-variant-numeric: tabular-nums;
 }}
+.platform-group {{ margin-bottom: 18px; }}
+.platform-group:last-child {{ margin-bottom: 0; }}
+.platform-group-label {{
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 12px; font-size: 12px; font-weight: 650; color: #6b7280;
+}}
+.platform-group-label .dot {{
+  width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0;
+}}
+.surface-note {{
+  margin-top: 12px; border-radius: 10px; border: 1px solid #ede9fe;
+  background: #f5f3ff; padding: 10px 12px; font-size: 12px;
+  line-height: 1.45; color: #374151;
+}}
 .findings-list {{ margin: 0; padding: 0; list-style: none; }}
 .findings-list li {{
   display: flex; gap: 10px; align-items: flex-start;
@@ -974,7 +988,7 @@ def build_summary_export(audit_dir: Path) -> str:
     platform_rows: list[tuple[str, float]] = []
     per_platform = prompt_metrics.get("per_platform") if isinstance(prompt_metrics.get("per_platform"), dict) else {}
     if per_platform:
-        for pk in ("gemini", "openai", "google_aio", "claude"):
+        for pk in ("gemini", "openai", "claude", "google_aio"):
             entry = per_platform.get(pk)
             if not isinstance(entry, dict):
                 continue
@@ -982,9 +996,11 @@ def build_summary_export(audit_dir: Path) -> str:
                 pct = float(entry.get("visibility_pct") or entry.get("brand_visibility_pct") or 0)
             except (TypeError, ValueError):
                 continue
-            if pct <= 0 and not entry.get("response_count"):
-                continue
-            if pk == "claude":
+            try:
+                response_count = int(entry.get("response_count") or 0)
+            except (TypeError, ValueError):
+                response_count = 0
+            if pct <= 0 and response_count <= 0:
                 continue
             platform_rows.append((pk, pct))
     if not platform_rows:
@@ -995,8 +1011,6 @@ def build_summary_export(audit_dir: Path) -> str:
             live = ctx.get("live_probe") if isinstance(ctx.get("live_probe"), dict) else {}
             agg = live.get("aggregate") if isinstance(live.get("aggregate"), dict) else {}
             for pk in _active_platforms(live if isinstance(live, dict) else {}):
-                if pk == "claude":
-                    continue
                 plat = agg.get(pk) if isinstance(agg.get(pk), dict) else {}
                 try:
                     pct = float(
@@ -1087,21 +1101,42 @@ def build_summary_export(audit_dir: Path) -> str:
 
     platforms_html = ""
     if platform_rows:
-        rows = []
-        for pk, pct in platform_rows:
-            color = _platform_bar_color(pct)
-            rows.append(
-                f"<div class='platform-mini'>"
-                f"<span class='plat-name'>{ESC(PLATFORM_LABELS.get(pk, pk))}</span>"
-                f"<div class='plat-track'><span style='width:{max(0, min(100, pct)):.1f}%;background:{color}'></span></div>"
-                f"<span class='plat-pct' style='color:{color}'>{pct:.0f}%</span>"
-                f"</div>"
+        by_key = {pk: pct for pk, pct in platform_rows}
+
+        def _platform_group_html(label: str, color: str, keys: tuple[str, ...]) -> str:
+            rows = []
+            for pk in keys:
+                if pk not in by_key:
+                    continue
+                pct = by_key[pk]
+                bar_color = _platform_bar_color(pct)
+                rows.append(
+                    f"<div class='platform-mini'>"
+                    f"<span class='plat-name'>{ESC(PLATFORM_LABELS.get(pk, pk))}</span>"
+                    f"<div class='plat-track'><span style='width:{max(0, min(100, pct)):.1f}%;background:{bar_color}'></span></div>"
+                    f"<span class='plat-pct' style='color:{bar_color}'>{pct:.0f}%</span>"
+                    f"</div>"
+                )
+            if not rows:
+                return ""
+            return (
+                f"<div class='platform-group'>"
+                f"<p class='platform-group-label'><span class='dot' style='background:{color}'></span>"
+                f"{ESC(label)}</p>"
+                + "".join(rows)
+                + "</div>"
             )
-        platforms_html = (
-            "<div class='summary-block'><h3>Brand visibility by AI platform</h3>"
-            + "".join(rows)
-            + "</div>"
+
+        groups_html = (
+            _platform_group_html("Chatbots", "#8B5CF6", ("gemini", "openai", "claude"))
+            + _platform_group_html("AI Overviews", "#EA4335", ("google_aio",))
         )
+        if groups_html:
+            platforms_html = (
+                "<div class='summary-block'><h3>Brand visibility by AI platform</h3>"
+                + groups_html
+                + "</div>"
+            )
 
     findings_html = ""
     if key_findings:

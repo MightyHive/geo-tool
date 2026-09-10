@@ -23,6 +23,46 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _persist_model_category_metadata(
+    audit_dir: Path,
+    classification: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and add AI-impact category metadata to onboarding context."""
+    from ai_impact.model_artifact import validate_category
+    from api.prompt_jobs import _write_json
+
+    category = validate_category(str(classification.get("category") or ""))
+    provenance = {
+        "classifier": str(classification.get("classifier") or "").strip(),
+        "provider": str(classification.get("provider") or "").strip(),
+        "model": str(classification.get("model") or "").strip(),
+        "classified_at": _utc_now(),
+    }
+    missing = [key for key in ("classifier", "provider", "model") if not provenance[key]]
+    if missing:
+        raise ValueError(
+            f"Site-category classifier provenance is missing: {', '.join(missing)}"
+        )
+
+    path = audit_dir / "onboarding_context.json"
+    onboarding: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read audit onboarding metadata: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("Audit onboarding metadata must be a JSON object")
+        onboarding = raw
+    onboarding["model_category"] = category
+    onboarding["model_category_provenance"] = provenance
+    _write_json(path, onboarding)
+    return {
+        "model_category": category,
+        "model_category_provenance": provenance,
+    }
+
+
 def _write_run_status(audit_dir: Path, payload: dict[str, Any]) -> None:
     payload = {**payload, "updated_at": _utc_now()}
     audit_dir.mkdir(parents=True, exist_ok=True)
@@ -543,7 +583,13 @@ def start_background_audit(
     Seed audit folder, enqueue crawl Job (or local daemon thread), return immediately.
     Client polls :func:`read_run_status` via GET ``/api/audits/{id}/run-status``.
     """
-    from geo_setup_llm import normalize_competitor_url
+    from ai_impact.model_artifact import validate_category
+    from geo_setup_llm import (
+        GEMINI_MODEL_DEFAULT,
+        SITE_CATEGORY_CLASSIFIER_WIZARD,
+        classify_site_model_category,
+        normalize_competitor_url,
+    )
 
     from api.ga4 import resolve_ga4_for_audit_run
 
@@ -552,6 +598,36 @@ def start_background_audit(
         raise ValueError("Invalid brand website URL")
 
     competitors = [c.strip() for c in body.competitors if c.strip()][:10]
+    product_names = [
+        str(getattr(product, "product_or_service", "") or "").strip()
+        for product in body.wizard_products
+        if str(getattr(product, "product_or_service", "") or "").strip()
+    ]
+
+    wizard_category = str(getattr(body, "model_category", None) or "").strip()
+    if wizard_category:
+        try:
+            category = validate_category(wizard_category)
+            classification = {
+                "category": category,
+                "classifier": SITE_CATEGORY_CLASSIFIER_WIZARD,
+                "provider": "google-gemini",
+                "model": GEMINI_MODEL_DEFAULT,
+            }
+        except ValueError:
+            classification = classify_site_model_category(
+                primary,
+                brand_name=body.brand_name.strip(),
+                industry=body.industry.strip(),
+                products_and_services=product_names,
+            )
+    else:
+        classification = classify_site_model_category(
+            primary,
+            brand_name=body.brand_name.strip(),
+            industry=body.industry.strip(),
+            products_and_services=product_names,
+        )
     ga4_prop, ga4_ch, ga4_cred_temp = resolve_ga4_for_audit_run(
         request,
         ga4_property_id=body.ga4_property_id,
@@ -583,6 +659,7 @@ def start_background_audit(
         prompt_locales=list(getattr(body, "wizard_prompt_locales", None) or []),
         notification_email=notify,
     )
+    category_metadata = _persist_model_category_metadata(adir, classification)
 
     rel = geo.audit_dir_api_rel(adir)
     status_seed: dict[str, Any] = {
@@ -652,6 +729,7 @@ def start_background_audit(
             "ok": True,
             "audit_dir": rel,
             "status": "running",
+            **category_metadata,
             "execution": queued.get("execution"),
             "request_id": queued.get("request_id"),
             "job": "cloud_run",
@@ -674,7 +752,13 @@ def start_background_audit(
         daemon=True,
     ).start()
 
-    return {"ok": True, "audit_dir": rel, "status": "running", "job": "local_thread"}
+    return {
+        "ok": True,
+        "audit_dir": rel,
+        "status": "running",
+        **category_metadata,
+        "job": "local_thread",
+    }
 
 
 def run_competitor_crawl_job(audit_dir: Path) -> dict[str, Any]:

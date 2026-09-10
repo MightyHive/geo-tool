@@ -33,6 +33,8 @@ export interface BrandVisibilityHitRow {
   globalPlatformTotal: Record<VisibilityPlatform, number>;
   promptMentionCount: number;
   totalPrompts: number;
+  platformResponseCounts: Record<VisibilityPlatform, number>;
+  platformMentionCounts: Record<VisibilityPlatform, number>;
 }
 
 export function completedPlatformRuns(
@@ -243,13 +245,21 @@ export function accumulateBrandVisibilityHits(
   }
 
   const promptMentionCounts: Map<string, number> = new Map();
+  const platformResponseCounts: Record<VisibilityPlatform, number> = emptyPlatformHits();
+  const platformMentionCounts: Map<string, Record<VisibilityPlatform, number>> = new Map();
+  const getMentionCounts = (name: string) => {
+    if (!platformMentionCounts.has(name)) platformMentionCounts.set(name, emptyPlatformHits());
+    return platformMentionCounts.get(name)!;
+  };
   for (const row of perPrompt) {
     for (const platform of VISIBILITY_PLATFORMS) {
       for (const run of completedPlatformRuns(row, platform)) {
+        platformResponseCounts[platform] += 1;
         const brandMentioned = Number(run.scores.brand_signal ?? 0) > 0
           || textMentionsBrand(run.response ?? "", brandName, brandTokens);
         if (brandMentioned) {
           promptMentionCounts.set(brandName, (promptMentionCounts.get(brandName) ?? 0) + 1);
+          getMentionCounts(brandName)[platform] += 1;
         }
         const competitorsMentionedThisResponse = new Set<string>();
         for (const [cName, hits] of Object.entries(run.scores.competitor_detail ?? {})) {
@@ -259,6 +269,7 @@ export function accumulateBrandVisibilityHits(
         }
         for (const cName of competitorsMentionedThisResponse) {
           promptMentionCounts.set(cName, (promptMentionCounts.get(cName) ?? 0) + 1);
+          getMentionCounts(cName)[platform] += 1;
         }
       }
     }
@@ -272,6 +283,8 @@ export function accumulateBrandVisibilityHits(
     globalPlatformTotal,
     promptMentionCount: promptMentionCounts.get(name) ?? 0,
     totalPrompts,
+    platformResponseCounts,
+    platformMentionCounts: platformMentionCounts.get(name) ?? emptyPlatformHits(),
   });
 
   const rows: BrandVisibilityHitRow[] = [makeRow(brandName, true)];

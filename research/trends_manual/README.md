@@ -81,7 +81,7 @@ cp terms.example.txt terms.txt
 
 ## BigQuery (optional)
 
-Set `BQ_TRENDS_WEEKLY_TABLE` or use defaults from `shared.env` (`emea-ds-sandbox.geo_tool.google_trends_weekly_{slug}`).
+Set `BQ_TRENDS_WEEKLY_TABLE` or use defaults from `shared.env` (`geo-tool-emea-ds.geo_tool.google_trends_weekly_{slug}`).
 
 Requires `google-cloud-bigquery` and Application Default Credentials.
 

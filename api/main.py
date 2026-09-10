@@ -27,6 +27,7 @@ from api.ga4 import create_ga4_router
 from api.iap_middleware import IAPMiddleware
 from api.executive_summary import router as executive_summary_router
 from api.prompt_performance import router as prompt_performance_router
+from api.topic_content_samples import router as topic_content_samples_router
 from api.recommendations import router as recommendations_router
 from api.probe_history import router as probe_history_router, scheduled_router as probe_scheduled_router
 from api.score_history import router as score_history_router
@@ -35,6 +36,8 @@ from api.wizard import router as wizard_router
 from api.youtube_insights import router as youtube_insights_router
 from api.ai_impact import router as ai_impact_router
 from api.gsc import router as gsc_router
+from api.workshop_dashboards import router as workshop_dashboards_router
+from api.page_audits import router as page_audits_router
 from geo_app_env import current_app_env, load_app_environment
 
 load_app_environment()
@@ -72,6 +75,7 @@ app.include_router(gsc_router)
 app.include_router(ai_impact_router)
 app.include_router(wizard_router)
 app.include_router(prompt_performance_router)
+app.include_router(topic_content_samples_router)
 app.include_router(executive_summary_router)
 app.include_router(recommendations_router)
 app.include_router(probe_history_router)
@@ -79,6 +83,8 @@ app.include_router(probe_scheduled_router)
 app.include_router(score_history_router)
 app.include_router(reddit_insights_router)
 app.include_router(youtube_insights_router)
+app.include_router(workshop_dashboards_router)
+app.include_router(page_audits_router)
 
 
 class WizardProductRow(BaseModel):
@@ -126,6 +132,8 @@ class RunAuditRequest(BaseModel):
     skip_prompt_probes: bool = False
     # Always-on when competitors are configured; client values are overridden in the runner.
     follow_on_competitor_crawl: bool = True
+    # From wizard suggest-products; validated again at run start. Empty → Gemini fallback classify.
+    model_category: str | None = None
 
     @field_validator("ga4_conversion_event_name")
     @classmethod
@@ -409,18 +417,128 @@ class AiImpactEstimateBody(BaseModel):
     run_id: str | None = None
 
 
-@app.put("/api/audits/{audit_id}/ai-impact-estimate")
-def save_ai_impact_estimate(audit_id: str, body: AiImpactEstimateBody) -> dict[str, Any]:
-    """Persist the latest Estimated AI impact payload for PDF/HTML exports."""
+@app.get("/api/audits/{audit_id}/ai-impact-estimate")
+def get_ai_impact_estimate(audit_id: str) -> dict[str, Any]:
+    """Return the estimate persisted on this audit for dashboard restore and exports."""
+    from api.ai_impact import load_ai_impact_estimate
+
     audit_dir = geo.resolve_audit_dir(audit_id)
     if not (audit_dir / "audit_summary.json").is_file():
         raise HTTPException(404, "Audit not found")
-    payload = dict(body.estimate)
-    if body.run_id:
-        payload["_run_id"] = body.run_id
-    path = audit_dir / "ai_impact_estimate.json"
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return {"ok": True, "path": str(path.name)}
+    estimate = load_ai_impact_estimate(audit_dir)
+    if estimate is None:
+        raise HTTPException(404, "No saved AI impact estimate for this audit.")
+    return estimate
+
+
+@app.put("/api/audits/{audit_id}/ai-impact-estimate")
+def save_ai_impact_estimate(audit_id: str, body: AiImpactEstimateBody) -> dict[str, Any]:
+    """Persist the latest Estimated AI impact payload for PDF/HTML exports."""
+    from api.ai_impact import persist_completed_estimate_for_audit
+
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file():
+        raise HTTPException(404, "Audit not found")
+    try:
+        model = persist_completed_estimate_for_audit(
+            audit_dir,
+            estimate=dict(body.estimate),
+            run_id=body.run_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "path": "ai_impact/latest.json",
+        "run_id": model["run_id"],
+    }
+
+
+class ModelCategoryBody(BaseModel):
+    """Set or classify the AI-impact site model category on an existing audit."""
+
+    category: str | None = None  # advertiser-retail | advertiser-services | publisher
+    classify: bool = False  # if true (and category omitted), run Gemini classifier
+
+
+@app.post("/api/audits/{audit_id}/model-category")
+def set_audit_model_category(audit_id: str, body: ModelCategoryBody) -> dict[str, Any]:
+    """Backfill ``model_category`` on an existing audit so AI Impact can run.
+
+    Pass an explicit ``category``, or set ``classify=true`` to ask Gemini.
+    Does not re-run the full audit crawl.
+    """
+    from ai_impact.model_artifact import MODEL_CATEGORIES, validate_category
+    from api.audit_runner import _persist_model_category_metadata
+    from geo_setup_llm import classify_site_model_category
+
+    audit_dir = geo.resolve_audit_dir(audit_id)
+    if not (audit_dir / "audit_summary.json").is_file() and not (
+        audit_dir / "onboarding_context.json"
+    ).is_file():
+        raise HTTPException(404, "Audit not found")
+
+    ob_path = audit_dir / "onboarding_context.json"
+    onboarding: dict[str, Any] = {}
+    if ob_path.is_file():
+        try:
+            raw = json.loads(ob_path.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(raw, dict):
+                onboarding = raw
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(422, f"Could not read onboarding_context.json: {exc}") from exc
+
+    explicit = (body.category or "").strip()
+    if explicit:
+        try:
+            category = validate_category(explicit)
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                f"{exc}. Allowed: {', '.join(MODEL_CATEGORIES)}",
+            ) from exc
+        classification = {
+            "category": category,
+            "classifier": "manual",
+            "provider": "operator",
+            "model": "manual",
+        }
+    elif body.classify:
+        website = str(
+            onboarding.get("brand_website_used")
+            or onboarding.get("brand_website")
+            or ""
+        ).strip()
+        if not website:
+            raise HTTPException(
+                422,
+                "No brand website on this audit — pass category explicitly "
+                f"({', '.join(MODEL_CATEGORIES)}).",
+            )
+        products = onboarding.get("products_and_services") or []
+        if not isinstance(products, list):
+            products = []
+        try:
+            classification = classify_site_model_category(
+                website,
+                brand_name=str(onboarding.get("brand_name_used") or "").strip(),
+                industry=str(onboarding.get("industry_used") or "").strip(),
+                products_and_services=[str(p) for p in products if str(p).strip()],
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Gemini classification failed: {exc}") from exc
+    else:
+        raise HTTPException(
+            422,
+            "Provide category "
+            f"({', '.join(MODEL_CATEGORIES)}) or set classify=true.",
+        )
+
+    try:
+        result = _persist_model_category_metadata(audit_dir, classification)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"audit_dir": geo.audit_dir_api_rel(audit_dir), **result}
 
 
 class TrackCompetitorBody(BaseModel):

@@ -56,12 +56,15 @@ def sentiment_job_region() -> str:
 
 
 def sentiment_job_project() -> str:
-    return (
+    project = (
         os.getenv("PROMPT_SENTIMENT_JOB_PROJECT")
         or os.getenv("GOOGLE_CLOUD_PROJECT")
         or os.getenv("GCP_PROJECT")
-        or "emea-ds-sandbox"
+        or ""
     ).strip()
+    if not project:
+        raise RuntimeError("PROMPT_SENTIMENT_JOB_PROJECT is not configured")
+    return project
 
 
 def sentiment_jobs_enabled() -> bool:

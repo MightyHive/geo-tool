@@ -25,6 +25,7 @@ export const DEFAULT_REPORT_SECTIONS: ReportSectionDef[] = [
   { id: "competitor-comparison", label: "Competitor comparison", group: "Overview" },
   { id: "ai-visibility-overview", label: "Overview", group: "AI visibility" },
   { id: "prompts", label: "Prompts", group: "AI visibility" },
+  { id: "topics", label: "Topics", group: "AI visibility" },
   { id: "competitor-visibility", label: "Competitor visibility", group: "AI visibility" },
   { id: "citations", label: "Citations", group: "AI visibility" },
   { id: "reddit-citations", label: "Reddit Citations", group: "AI visibility" },
@@ -40,6 +41,7 @@ export const DEFAULT_REPORT_SECTIONS: ReportSectionDef[] = [
   { id: "brand-visibility-authority", label: "Brand Visibility & Authority", group: "Content quality" },
   { id: "sample-scripts", label: "Sample scripts", group: "Workshop" },
   { id: "content-outline-generator", label: "Content outline generator", group: "Workshop" },
+  { id: "single-page-audits", label: "Single-page audit", group: "Workshop" },
 ];
 
 /**
@@ -69,6 +71,7 @@ export const REPORT_SECTION_ALIASES: Record<string, string> = {
   // Workshop
   samples: "sample-scripts",
   "content-outline": "content-outline-generator",
+  "single-page-audit": "single-page-audits",
 };
 
 /** Resolve a URL/API section id to the canonical sidebar id. */

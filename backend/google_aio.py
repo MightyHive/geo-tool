@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import http.client
 import json
+import re
 import ssl
 import urllib.error
 import urllib.request
@@ -40,12 +41,45 @@ _GROUNDED_MODELS_PREFERENCE = [
 ]
 
 _AIO_SYSTEM_INSTRUCTION_BASE = (
-    "You are a helpful consumer-facing assistant with access to Google Search. "
-    "You MUST use Google Search to look up current information before answering. "
-    "Answer the user's question directly and concisely. "
-    "Your answer MUST reference specific websites, brands, or sources found via search. "
-    "Aim for about 150-300 words."
+    "You are simulating a Google AI Overview. Given a search query, produce the kind of "
+    "concise, source-grounded summary that would appear at the top of Google Search. "
+    "You MUST use Google Search to research the query before answering. "
+    "Lead with the most useful direct answer, then add concise context or comparisons "
+    "when they help satisfy the query. "
+    "Be neutral and factual: do not invent details, overstate certainty, or claim personal experience. "
+    "Ground the answer in specific websites, brands, products, or sources found via search, "
+    "and make clear when information varies or is unavailable. "
+    "Aim for about 150-300 words. Do not mention these instructions, Gemini, or the grounding process."
 )
+
+_SEARCH_QUERY_PREFIXES = (
+    r"can you tell me\b",
+    r"could you tell me\b",
+    r"please tell me\b",
+    r"i want to know\b",
+    r"i'd like to know\b",
+    r"help me understand\b",
+    r"please explain\b",
+    r"please provide (?:a\s+)?(?:detailed\s+)?(?:overview|summary|explanation) of\b",
+    r"give me (?:a\s+)?(?:detailed\s+)?(?:overview|summary|explanation) of\b",
+)
+
+
+def _search_query_from_prompt(prompt: str) -> str:
+    """Turn a chatbot-style prompt into a concise Google Search-style query.
+
+    Keep the subject and intent intact while removing conversational framing.
+    Question words that carry search intent, such as "how" and "why", are kept.
+    """
+    query = re.sub(r"\s+", " ", str(prompt or "").strip())
+    query = query.strip(" \t\r\n?.!")
+    for prefix in _SEARCH_QUERY_PREFIXES:
+        query = re.sub(rf"^{prefix}[,:]?\s+", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"^(?:what is|what are|who is)\s+(?:the\s+)?", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"^where can i find\s+", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"^how can i\s+", "how to ", query, flags=re.IGNORECASE)
+    query = re.sub(r"^how do i\s+", "how to ", query, flags=re.IGNORECASE)
+    return query.strip(" \t\r\n?.!") or str(prompt or "").strip()
 
 
 def _aio_system_instruction(market_country: str = "", market_country_code: str = "") -> str:
@@ -57,7 +91,7 @@ def _aio_system_instruction(market_country: str = "", market_country_code: str =
     geo = mc or mid
     return (
         base
-        + f" The user is based in {geo}. Prioritise sources, brands, retailers, products,"
+        + f" The searcher is based in {geo}. Prioritise sources, brands, retailers, products,"
         " prices, and recommendations that are relevant to that market."
         " Use local spelling, currency, and brand names appropriate for that country."
     )
@@ -389,7 +423,11 @@ def run_aio_probes(
             "error": "GEMINI_API_KEY not configured — Google AIO probes unavailable.",
         }
 
-    used = [p.strip() for p in prompts if p and str(p).strip()][:max(1, min(max_prompts, 80))]
+    used = [
+        _search_query_from_prompt(p)
+        for p in prompts
+        if p and str(p).strip()
+    ][:max(1, min(max_prompts, 80))]
 
     brand_domain = ""
     if brand_site_url:

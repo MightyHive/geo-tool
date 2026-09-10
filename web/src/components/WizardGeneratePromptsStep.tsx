@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { suggestPromptsForProducts } from "../api/client";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
-import type { PromptLocale } from "../lib/promptLocales";
+import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales";
 import type { ProductServiceRow } from "../types";
+import { CountryCombobox } from "./CountryCombobox";
 import { PromptLocaleEditor } from "./PromptLocaleEditor";
 import { WizardStepProgress, type WizardStepProgressItem } from "./WizardStepProgress";
 
@@ -10,6 +11,7 @@ interface WizardGeneratePromptsStepProps {
   brandWebsite: string;
   marketCountry: string;
   marketCountryCode: string;
+  onMarketChange?: (countryName: string, isoCode: string) => void;
   promptLocales: PromptLocale[];
   onPromptLocalesChange: (locales: PromptLocale[]) => void;
   rows: ProductServiceRow[];
@@ -28,10 +30,6 @@ function parseApiError(raw: string): string {
   return raw || "Request failed";
 }
 
-function rowHasPrompts(row: ProductServiceRow): boolean {
-  return row.prompts.some((p) => String(p).trim());
-}
-
 function mergeGeneratedPrompts(
   existing: ProductServiceRow[],
   generated: ProductServiceRow[],
@@ -41,7 +39,7 @@ function mergeGeneratedPrompts(
   );
   return existing.map((row) => {
     const label = row.product_or_service.trim();
-    if (!label || rowHasPrompts(row)) return row;
+    if (!label) return row;
     const gen = byLabel.get(label.toLowerCase());
     if (gen?.prompts?.length) {
       return {
@@ -60,6 +58,7 @@ export function WizardGeneratePromptsStep({
   brandWebsite,
   marketCountry,
   marketCountryCode,
+  onMarketChange,
   promptLocales,
   onPromptLocalesChange,
   rows,
@@ -83,18 +82,23 @@ export function WizardGeneratePromptsStep({
     };
   }, []);
 
+  const normalizedLocales = useMemo(
+    () => normalizePromptLocales(promptLocales, marketCountry, marketCountryCode),
+    [promptLocales, marketCountry, marketCountryCode],
+  );
+  const primaryLocale = normalizedLocales[0];
   const linesNeedingPrompts = useMemo(
     () =>
       rows
         .filter((r) => {
           const label = r.product_or_service.trim();
-          return label && !isCustomPromptsCategory(label) && !rowHasPrompts(r);
+          return label && !isCustomPromptsCategory(label);
         })
         .map((r) => r.product_or_service.trim()),
     [rows],
   );
 
-  const extraLocaleCount = Math.max(0, promptLocales.length - 1);
+  const extraLocaleCount = Math.max(0, normalizedLocales.length - 1);
 
   async function runGeneration() {
     setError(null);
@@ -109,12 +113,6 @@ export function WizardGeneratePromptsStep({
     if (cancelledRef.current) return;
 
     if (linesNeedingPrompts.length === 0) {
-  useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      setReady(false);
-      setError(null);
       setProgressSteps([
         { id: "check", label: "Checking product lines", status: "done" },
         {
@@ -144,6 +142,8 @@ export function WizardGeneratePromptsStep({
         products: linesNeedingPrompts,
         market_country: marketCountry.trim(),
         market_country_code: marketCountryCode.trim(),
+        language: primaryLocale?.language || "en",
+        language_name: primaryLocale?.language_name || "English",
       });
       if (cancelledRef.current) return;
       onRowsChange(mergeGeneratedPrompts(rows, generated));
@@ -170,50 +170,11 @@ export function WizardGeneratePromptsStep({
         ),
       );
       setPhase("error");
-
-      try {
-        const { rows: generated } = await suggestPromptsForProducts({
-          brand_website: brandWebsite.trim(),
-          products: linesNeedingPrompts,
-          market_country: marketCountry.trim(),
-          market_country_code: marketCountryCode.trim(),
-        });
-        if (cancelled) return;
-        onRowsChange(mergeGeneratedPrompts(rows, generated));
-        setProgressSteps([
-          { id: "check", label: "Checking product lines", status: "done" },
-          { id: "generate", label: "AI prompts generated", status: "done" },
-          { id: "ready", label: "Prompts ready to review", status: "done" },
-        ]);
-        setReady(true);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof Error ? e.message : "Gemini request failed");
-        setProgressSteps((prev) =>
-          prev.map((s) =>
-            s.id === "generate"
-              ? { ...s, label: "Prompt generation failed", status: "done" }
-              : s,
-          ),
-        );
-      }
     }
   }
 
   const busy = phase === "generating";
   const ready = phase === "ready";
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    brandWebsite,
-    linesNeedingPrompts.join("|"),
-    marketCountry,
-    marketCountryCode,
-    onRowsChange,
-    rows,
-  ]);
 
   return (
     <div className="card-surface p-6 mb-6 space-y-6">
@@ -226,11 +187,30 @@ export function WizardGeneratePromptsStep({
         </p>
       </div>
 
+      {onMarketChange && (
+        <CountryCombobox
+          id="generate-prompts-primary-market"
+          label="Primary market"
+          value={marketCountry}
+          countryCode={marketCountryCode}
+          onChange={(country, code) => {
+            setPhase("configure");
+            setError(null);
+            onMarketChange(country, code);
+          }}
+          help="Used in prompt wording (for example “in the United Kingdom”). Optional, but recommended."
+        />
+      )}
+
       <PromptLocaleEditor
         marketCountry={marketCountry}
         marketCountryCode={marketCountryCode}
         locales={promptLocales}
-        onChange={onPromptLocalesChange}
+        onChange={(locales) => {
+          setPhase("configure");
+          setError(null);
+          onPromptLocalesChange(locales);
+        }}
       />
 
       {(phase === "generating" || phase === "ready" || phase === "error") && (
@@ -238,7 +218,7 @@ export function WizardGeneratePromptsStep({
           title="Progress"
           detail={
             linesNeedingPrompts.length > 0
-              ? `Generating prompts for: ${linesNeedingPrompts.join(", ")}`
+              ? `Generating ${primaryLocale?.language_name || "English"} prompts for: ${linesNeedingPrompts.join(", ")}`
               : "Every selected line already has prompts."
           }
           steps={progressSteps}
@@ -255,8 +235,8 @@ export function WizardGeneratePromptsStep({
           {!ready && (
             <button
               type="button"
-              className="btn-primary"
-              disabled={busy || !marketCountry.trim()}
+              className="btn-primary relative z-10"
+              disabled={busy}
               onClick={() => void runGeneration()}
             >
               {phase === "error" ? "Retry generate prompts" : "Generate prompts"}

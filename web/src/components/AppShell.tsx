@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Database,
   FileBarChart,
+  FileSearch,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -19,6 +20,7 @@ const navLinks = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true as const },
   { to: "/audit/new?fresh=1", label: "New audit", icon: Plus },
   { to: "/audits", label: "Existing audits", icon: Database },
+  { to: "/page-audits", label: "Single-page audits", icon: FileSearch },
 ];
 
 function Logo({ compact }: { compact?: boolean }) {

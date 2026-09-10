@@ -25,7 +25,7 @@ from api import geo_services as geo
 
 log = logging.getLogger(__name__)
 
-PromptJobMode = Literal["post_audit", "live", "history", "aio"]
+PromptJobMode = Literal["post_audit", "live", "history", "aio", "page"]
 PROMPT_JOB_REQUESTS_DIR = "prompt_job_requests"
 PROMPT_PENDING_FILE = "prompt_performance_probe_pending.json"
 AIO_PENDING_FILE = "prompt_performance_aio_pending.json"
@@ -258,12 +258,15 @@ def prompt_job_region() -> str:
 
 
 def prompt_job_project() -> str:
-    return (
+    project = (
         os.getenv("PROMPT_PROBE_JOB_PROJECT")
         or os.getenv("GOOGLE_CLOUD_PROJECT")
         or os.getenv("GCP_PROJECT")
-        or "emea-ds-sandbox"
+        or ""
     ).strip()
+    if not project:
+        raise RuntimeError("PROMPT_PROBE_JOB_PROJECT is not configured")
+    return project
 
 
 def locale_key_filename(locale_key: str) -> str:
@@ -440,6 +443,8 @@ def enqueue_prompt_job(
     locale_keys: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persist request manifest(s), launch Job execution(s), and return immediately."""
+    if mode == "page":
+        raise ValueError("Use enqueue_page_prompt_job for page probes")
     audit_dir = audit_dir.resolve()
     audit_id = geo.audit_dir_api_rel(audit_dir)
     pending = _pending_path(audit_dir, mode)
@@ -554,6 +559,95 @@ def _enqueue_single_prompt_job(
     return {
         "status": "queued",
         "audit_id": audit_id,
+        "request_id": request_id,
+        "execution": execution,
+        "already_running": False,
+        "fanout": False,
+        "locale_count": 1,
+    }
+
+
+def enqueue_page_prompt_job(
+    audit_dir: Path,
+    *,
+    page_id: str,
+    prompts: list[str],
+    report_mode: bool = True,
+) -> dict[str, Any]:
+    """Single Cloud Run execution for page-scoped prompts. Pending lives under the page dir."""
+    page_id = str(page_id or "").strip()
+    if not page_id or page_id in {".", ".."} or "/" in page_id or "\\" in page_id:
+        raise ValueError("page_id is required for page prompt jobs")
+    from api.page_audits import MAX_PAGE_PROMPTS
+
+    used = [str(p).strip() for p in (prompts or []) if str(p).strip()]
+    if not used:
+        raise ValueError("At least one prompt is required")
+    if len(used) > MAX_PAGE_PROMPTS:
+        used = used[:MAX_PAGE_PROMPTS]
+
+    audit_dir = audit_dir.resolve()
+    audit_id = geo.audit_dir_api_rel(audit_dir)
+    page_dir = audit_dir / "page_audits" / page_id
+    page_dir.mkdir(parents=True, exist_ok=True)
+    pending = page_dir / "page_probe_pending.json"
+    active = _active_request(pending)
+    if active:
+        return {
+            "status": str(active.get("status") or "queued"),
+            "audit_id": audit_id,
+            "page_id": page_id,
+            "request_id": str(active.get("request_id") or ""),
+            "execution": str(active.get("execution") or ""),
+            "already_running": True,
+            "fanout": False,
+            "locale_count": 1,
+        }
+
+    request_id = uuid.uuid4().hex
+    manifest_path = audit_dir / PROMPT_JOB_REQUESTS_DIR / f"{request_id}.json"
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "request_id": request_id,
+        "audit_id": audit_id,
+        "mode": "page",
+        "page_id": page_id,
+        "prompts": used,
+        "report_mode": bool(report_mode),
+        "max_prompts": len(used),
+        "num_runs": 1,
+        "status": "queued",
+        "created_at": _utc_now(),
+    }
+    _write_json(manifest_path, manifest)
+    _write_json(
+        pending,
+        {
+            "status": "starting",
+            "request_id": request_id,
+            "mode": "page",
+            "page_id": page_id,
+            "created_at": manifest["created_at"],
+        },
+    )
+    try:
+        execution = _execute_prompt_job(audit_id=audit_id, request_id=request_id)
+    except Exception as exc:
+        manifest.update({"status": "launch_failed", "error": str(exc), "updated_at": _utc_now()})
+        _write_json(manifest_path, manifest)
+        pending.unlink(missing_ok=True)
+        raise
+
+    manifest.update({"status": "started", "execution": execution, "updated_at": _utc_now()})
+    _write_json(manifest_path, manifest)
+    current = _read_json(pending) or {}
+    if str(current.get("request_id") or "") == request_id:
+        current.update({"status": current.get("status") or "queued", "execution": execution})
+        _write_json(pending, current)
+    return {
+        "status": "queued",
+        "audit_id": audit_id,
+        "page_id": page_id,
         "request_id": request_id,
         "execution": execution,
         "already_running": False,

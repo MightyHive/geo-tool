@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 
 from .panel import filter_completed_weeks
+from .model_artifact import HierarchicalArtifact
+from .scoring import CategoryPosteriorResult, score_category_posterior
 
 GSC_IMPRESSION_BREAK = pd.Timestamp("2025-09-01")
 
@@ -207,18 +209,29 @@ def estimate_ai_impact(
     window_weeks: int = 13,
     end_week: str | None = None,
     drop_terminal_partial: bool = True,
-) -> EstimateResult:
+    category: str | None = None,
+    artifact: HierarchicalArtifact | None = None,
+) -> EstimateResult | CategoryPosteriorResult:
     """
-    Broad ranges for AI-influenced sessions/purchases over the last ``window_weeks``.
+    Score the approved hierarchical baseline for new runs.
 
-    Methods (combined into min / median / max):
-      - Direct measured AI channel
-      - Detrended association (AI sessions → SEO / non-AI / purchases)
-      - Simple baseline: AI uplift vs prior 8-week mean × betas
-
-    Full OLS exposure models can be added later; this keeps the Cloud Run service
-    free of statsmodels as a hard dependency for phase 0–1.
+    ``category`` is mandatory for production calls. The no-category path is
+    retained solely to deserialize/reproduce legacy runs created before the
+    hierarchical artifact existed.
     """
+    if category is not None:
+        hierarchical_panel = panel
+        if end_week:
+            hierarchical_panel = panel[
+                pd.to_datetime(panel["week"]) <= pd.Timestamp(end_week)
+            ]
+        return score_category_posterior(
+            hierarchical_panel,
+            category=category,
+            window_weeks=window_weeks,
+            artifact=artifact,
+        )
+
     df = panel.copy()
     df["week"] = pd.to_datetime(df["week"])
     df = df.sort_values("week").reset_index(drop=True)

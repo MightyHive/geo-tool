@@ -280,6 +280,7 @@ class ProductServiceRow(BaseModel):
 
 class SuggestProductsResponse(BaseModel):
     rows: list[ProductServiceRow]
+    model_category: str | None = None
 
 
 @router.post("/suggest-products", response_model=SuggestProductsResponse)
@@ -293,16 +294,20 @@ def suggest_products(body: SuggestProductsBody) -> SuggestProductsResponse:
             "Add your brand website on step 1 before Gemini can suggest product or service lines.",
         )
     try:
-        rows = suggest_products_and_services(
+        result = suggest_products_and_services(
             url,
             market_country=body.market_country.strip(),
             market_country_code=body.market_country_code.strip(),
         )
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
+    rows = result.get("rows") or []
     if not rows:
         raise HTTPException(502, "Gemini returned no product or service lines.")
-    return SuggestProductsResponse(rows=[ProductServiceRow.model_validate(r) for r in rows])
+    return SuggestProductsResponse(
+        rows=[ProductServiceRow.model_validate(r) for r in rows],
+        model_category=str(result.get("category") or "").strip() or None,
+    )
 
 
 class SuggestPromptsForProductsBody(BaseModel):
@@ -310,6 +315,8 @@ class SuggestPromptsForProductsBody(BaseModel):
     products: list[str] = Field(..., min_length=1, max_length=12)
     market_country: str = ""
     market_country_code: str = ""
+    language: str = "en"
+    language_name: str = "English"
 
 
 @router.post("/suggest-prompts-for-products", response_model=SuggestProductsResponse)
@@ -329,6 +336,8 @@ def suggest_prompts_for_products(body: SuggestPromptsForProductsBody) -> Suggest
             names,
             market_country=body.market_country.strip(),
             market_country_code=body.market_country_code.strip(),
+            language=body.language.strip(),
+            language_name=body.language_name.strip(),
         )
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc

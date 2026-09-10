@@ -23,7 +23,9 @@ CITATIONS_VIEW_FILE = "prompt_performance_citations.json"
 CITATIONS_VIEW_VERSION = 1
 # Slim runs omit per-run citations (row-level citations_* is enough). Older v1
 # blobs are sanitized at response time via sanitize_context_runs_inplace.
-METRICS_VERSION = 1
+# Bump whenever the persisted slim shape changes. This invalidates Redis/GCS
+# slim caches and forces a one-time rebuild from the stored full probe.
+METRICS_VERSION = 2
 LIVE_PROBE_FILE = "prompt_performance_live_probe.json"
 # Per-prompt full reply bodies (one small JSON per prompt×locale) for fast overlay GETs.
 REPLIES_DIR = "prompt_performance_replies"
@@ -187,12 +189,17 @@ def compute_row_list_metrics(
     competitors: set[str] = set()
     citation_domains: list[str] = []
     seen_domains: set[str] = set()
+    platform_metrics: dict[str, dict[str, Any]] = {}
 
     for platform in platforms:
         responses = _platform_responses(row, platform)
         scores = row.get(f"mention_scores_{platform}") or {}
         if not isinstance(scores, dict):
             scores = {}
+        platform_votes: dict[str, int] = {"positive": 0, "negative": 0, "neutral": 0}
+        platform_mentions = 0
+        platform_position_acc = 0.0
+        platform_position_n = 0
         if responses:
             platforms_responded.append(platform)
         for resp in responses:
@@ -203,14 +210,19 @@ def compute_row_list_metrics(
             )
             if brand_mentioned:
                 mention_count += 1
+                platform_mentions += 1
                 label = _response_sentiment(resp, tokens)
                 sentiment_votes[label] = sentiment_votes.get(label, 0) + 1
+                platform_votes[label] = platform_votes.get(label, 0) + 1
             if tokens:
                 for tok in token_lower:
                     idx = lower.find(tok)
                     if idx >= 0 and len(resp) > 0:
-                        avg_position_acc += (idx / len(resp)) * 10 + 1
+                        position = (idx / len(resp)) * 10 + 1
+                        avg_position_acc += position
                         avg_position_n += 1
+                        platform_position_acc += position
+                        platform_position_n += 1
                         break
         for name, hits in (scores.get("competitor_detail") or {}).items():
             if float(hits or 0) > 0 and str(name).strip():
@@ -222,6 +234,13 @@ def compute_row_list_metrics(
             if domain and domain not in seen_domains:
                 seen_domains.add(domain)
                 citation_domains.append(domain)
+        platform_metrics[platform] = {
+            "response_count": len(responses),
+            "brand_mention_count": platform_mentions,
+            "sentiment_votes": platform_votes,
+            "avg_position": round(platform_position_acc / platform_position_n, 2) if platform_position_n else None,
+            "position_count": platform_position_n,
+        }
 
     if sentiment_votes["positive"] >= sentiment_votes["negative"] and (
         sentiment_votes["positive"] > 0 or sentiment_votes["neutral"] > 0
@@ -246,6 +265,7 @@ def compute_row_list_metrics(
         "citation_domains": citation_domains[:20],
         "response_count": response_count,
         "brand_mention_count": mention_count,
+        "platform_metrics": platform_metrics,
     }
 
 

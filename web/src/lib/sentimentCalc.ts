@@ -130,7 +130,7 @@ function platformResponses(row: Record<string, unknown>, platform: string): stri
   const completed = runs
     .filter((run) => run.response && !run.error)
     .map((run) => String(run.response));
-  if (completed.length) return completed;
+  if (completed.length) return Array.from(new Set(completed));
   const response = String(row[`${platform}_response`] ?? "");
   const error = String(row[`error_${platform}`] ?? "");
   return response && !error ? [response] : [];
@@ -155,10 +155,19 @@ export function computeOverallSentiment(
 
   for (const row of perPrompt) {
     const lm = row.list_metrics as
-      | { sentiment_votes?: Record<string, number>; brand_mention_count?: number }
+      | {
+        sentiment_votes?: Record<string, number>;
+        brand_mention_count?: number;
+        platform_metrics?: Record<string, {
+          sentiment_votes?: Record<string, number>;
+          brand_mention_count?: number;
+        }>;
+      }
       | undefined;
     const repliesOmitted = Boolean(row.replies_omitted);
-    if (repliesOmitted && lm?.sentiment_votes) {
+    // The slim row sentiment aggregate has no platform dimension. It is safe
+    // only for the full four-platform view, never for Chatbot/AIO subsets.
+    if (repliesOmitted && lm?.sentiment_votes && platforms.length === 4) {
       usedPrecomputed = true;
       const votes = lm.sentiment_votes;
       positive += Number(votes.positive || 0);
@@ -167,6 +176,19 @@ export function computeOverallSentiment(
       continue;
     }
     for (const p of platforms) {
+      // Prefer platform-specific aggregates whenever present. Some API/cache
+      // paths omit the replies_omitted marker even though response bodies are
+      // still unavailable.
+      const platformMetrics = lm?.platform_metrics?.[p];
+      if (platformMetrics?.sentiment_votes) {
+        const votes = platformMetrics.sentiment_votes;
+        positive += Number(votes.positive || 0);
+        negative += Number(votes.negative || 0);
+        mentioned += Number(platformMetrics.brand_mention_count ?? (
+          Number(votes.positive || 0) + Number(votes.negative || 0) + Number(votes.neutral || 0)
+        ));
+        continue;
+      }
       for (const resp of platformResponses(row, p)) {
         const lower = resp.toLowerCase();
         const brandMentioned = brandTokens.some((tok) => lower.includes(tok.toLowerCase()));

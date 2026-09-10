@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
+PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"
 REGION="${GCP_REGION:-europe-west1}"
 SERVICE="${CLOUD_RUN_SERVICE:-geo-audit-staging}"
 SECRETS_FILE="${ROOT}/.streamlit/secrets.toml"
@@ -59,17 +59,19 @@ SERVICE_URL="$(gcloud run services describe "${SERVICE}" \
   --format='value(status.url)')"
 
 GA4_REDIRECT="${SERVICE_URL}/api/ga4/callback"
+AUTH_REDIRECT="${SERVICE_URL}/api/auth/callback"
+GSC_REDIRECT="${SERVICE_URL}/api/gsc/callback"
 
-ENV_UPDATE="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},GA4_OAUTH_REDIRECT_URI=${GA4_REDIRECT}"
+ENV_UPDATE="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${AUTH_REDIRECT},GA4_OAUTH_REDIRECT_URI=${GA4_REDIRECT},GSC_OAUTH_REDIRECT_URI=${GSC_REDIRECT}"
 if [[ -n "${COOKIE_SECRET}" ]]; then
   if ! gcloud secrets describe auth-cookie-secret-geo-tool --project="${PROJECT}" >/dev/null 2>&1; then
     gcloud secrets create auth-cookie-secret-geo-tool --project="${PROJECT}" --replication-policy=automatic
   fi
   printf '%s' "${COOKIE_SECRET}" | gcloud secrets versions add auth-cookie-secret-geo-tool \
     --project="${PROJECT}" --data-file=-
-  SECRETS_FLAGS="GA4_OAUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,GA4_OAUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest,AUTH_COOKIE_SECRET=auth-cookie-secret-geo-tool:latest"
+  SECRETS_FLAGS="GA4_OAUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,GA4_OAUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest,AUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,AUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest,AUTH_COOKIE_SECRET=auth-cookie-secret-geo-tool:latest"
 else
-  SECRETS_FLAGS="GA4_OAUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,GA4_OAUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest"
+  SECRETS_FLAGS="GA4_OAUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,GA4_OAUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest,AUTH_CLIENT_ID=google-oauth-client-id-geo-tool:latest,AUTH_CLIENT_SECRET=google-oauth-client-secret-geo-tool:latest"
 fi
 
 SA_EMAIL="${CLOUD_RUN_SA:-geo-audit-tool@${PROJECT}.iam.gserviceaccount.com}"
@@ -87,9 +89,11 @@ gcloud run services update "${SERVICE}" \
   --project="${PROJECT}" \
   --region="${REGION}" \
   --update-env-vars="${ENV_UPDATE}" \
-  --set-secrets="${SECRETS_FLAGS}"
+  --update-secrets="${SECRETS_FLAGS}"
 
 echo ""
 echo "GA4 OAuth configured on ${SERVICE}"
+echo "  App sign-in redirect URI: ${AUTH_REDIRECT}"
 echo "  Redirect URI (add in Google Cloud Console): ${GA4_REDIRECT}"
+echo "  GSC redirect URI: ${GSC_REDIRECT}"
 echo "  Scopes: analytics.readonly, openid, email, profile"

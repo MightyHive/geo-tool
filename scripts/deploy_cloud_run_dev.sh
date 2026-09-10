@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build and deploy GEO audit web + API + audit runner to Cloud Run (dev).
-# Project: emea-ds-sandbox | Region: europe-west1 | SA: geo-audit-tool@...
+# Project: geo-tool-emea-ds | Region: europe-west1 | SA: geo-audit-tool@...
 # Mirrors geo-audit-staging config; adds ANTHROPIC_API_KEY for Claude probes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PROJECT="${GCP_PROJECT:-emea-ds-sandbox}"
+PROJECT="${GCP_PROJECT:-geo-tool-emea-ds}"
 REGION="${GCP_REGION:-europe-west1}"
 SERVICE="${CLOUD_RUN_SERVICE:-geo-audit-dev}"
 PROMPT_JOB="${PROMPT_PROBE_JOB_NAME:-geo-audit-prompt-probes}"
@@ -15,12 +15,18 @@ CRAWL_JOB="${AUDIT_CRAWL_JOB_NAME:-geo-audit-site-crawls}"
 PDF_JOB="${PDF_EXPORT_JOB_NAME:-geo-audit-pdf-exports}"
 SENTIMENT_JOB="${PROMPT_SENTIMENT_JOB_NAME:-geo-audit-prompt-sentiment}"
 CONTENT_QUALITY_JOB="${CONTENT_QUALITY_JOB_NAME:-geo-audit-content-quality}"
+TOPIC_CONTENT_JOB="${TOPIC_CONTENT_JOB_NAME:-geo-audit-topic-content}"
+SCHEDULER_JOB="${SCHEDULER_JOB_NAME:-geo-audit-scheduler-runner-dev}"
+TRENDS_JOB="${GOOGLE_TRENDS_JOB_NAME:-geo-audit-google-trends-weekly}"
+AI_IMPACT_REFIT_JOB="${AI_IMPACT_REFIT_JOB_NAME:-geo-audit-ai-impact-refit}"
 SA_EMAIL="${CLOUD_RUN_SA:-geo-audit-tool@${PROJECT}.iam.gserviceaccount.com}"
 AR_REPO="${ARTIFACT_REGISTRY_REPO:-geo-audit}"
 IMAGE_NAME="${IMAGE_NAME:-web}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
 BUCKET="${GCS_BUCKET:-${PROJECT}-geo-audit-dev}"
+MODEL_BUCKET="${AI_IMPACT_MODEL_BUCKET:-${PROJECT}-ai-impact-models}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+BUILD_SOURCE="${CLOUD_BUILD_SOURCE:-.}"
 
 echo "==> Project: ${PROJECT}  Region: ${REGION}  Service: ${SERVICE}"
 echo "==> Image:   ${IMAGE}"
@@ -103,7 +109,7 @@ BUILD_ID="$(gcloud builds submit \
   --substitutions="_IMAGE=${IMAGE}" \
   --async \
   --format='value(id)' \
-  .)"
+  "${BUILD_SOURCE}")"
 echo "==> Cloud Build started: ${BUILD_ID}"
 echo "    Logs: https://console.cloud.google.com/cloud-build/builds;region=${REGION}/${BUILD_ID}?project=${PROJECT}"
 
@@ -129,16 +135,31 @@ while true; do
   esac
 done
 
-ENV_VARS="APP_ENV=dev,GEO_DATA_ROOT=/var/geo-data,CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT},SCHEDULER_JOB_NAME=${SCHEDULER_JOB:-geo-audit-scheduler-runner},SCHEDULER_JOB_REGION=${REGION},SCHEDULER_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB}, AUDIT_CRAWL_JOB_REGION=${REGION}, AUDIT_CRAWL_JOB_PROJECT=${PROJECT}"
+ENV_VARS="APP_ENV=dev,GEO_DATA_ROOT=/var/geo-data,GCS_BUCKET=${BUCKET},CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT},TOPIC_CONTENT_JOB_NAME=${TOPIC_CONTENT_JOB},TOPIC_CONTENT_JOB_REGION=${REGION},TOPIC_CONTENT_JOB_PROJECT=${PROJECT},GEMINI_TOPIC_CONTENT_MODEL=gemini-3.5-flash,SCHEDULER_JOB_NAME=${SCHEDULER_JOB},SCHEDULER_JOB_REGION=${REGION},SCHEDULER_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_JOB_NAME=${TRENDS_JOB},GOOGLE_TRENDS_JOB_REGION=${REGION},GOOGLE_TRENDS_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_GCS_BUCKET=${BUCKET},AI_IMPACT_MODEL_ARTIFACT_ROOT=gs://${MODEL_BUCKET}/models/dev,AI_IMPACT_REFIT_MODE=cloud_run,AI_IMPACT_REFIT_JOB_NAME=${AI_IMPACT_REFIT_JOB},AI_IMPACT_REFIT_JOB_PROJECT=${PROJECT},AI_IMPACT_REFIT_JOB_REGION=${REGION},AI_IMPACT_REFIT_GCS_ROOT=gs://${BUCKET}/ai_impact_runs"
 
 # Load dev env overrides if present (API keys, IAP config, etc.)
-SECRETS_FILE="${ROOT}/env/.env.dev"
+SECRETS_FILE="${ROOT}/env/.env.development"
+if [[ -f "${ROOT}/env/.env.dev" ]]; then
+  SECRETS_FILE="${ROOT}/env/.env.dev"
+fi
 if [[ -f "${SECRETS_FILE}" ]]; then
   # shellcheck disable=SC1090
   set -a
   source "${SECRETS_FILE}"
   set +a
 fi
+
+# Pass non-secret app authentication settings from the dev env file. OAuth client
+# credentials and the cookie key are mounted from Secret Manager below.
+_append_env_if_set() {
+  local name="$1" value="${!1:-}"
+  if [[ -n "${value}" ]]; then
+    ENV_VARS="${ENV_VARS},${name}=${value}"
+  fi
+}
+for _name in AUTH_SERVER_METADATA_URL GOOGLE_OAUTH_DOMAIN IAP_HOSTED_DOMAIN IAP_ENABLED IAP_ENFORCE IAP_AUDIENCE IAP_OAUTH_CLIENT_ID; do
+  _append_env_if_set "${_name}"
+done
 
 # Resolve secrets to mount. Prefer hard-coded geo-tool secret names (deploy SA
 # often cannot ``secrets describe``); fall back to probing when names may vary.
@@ -160,6 +181,8 @@ _add_secret() {
 # Always remount known geo-audit-dev secrets (do not rely on secrets.describe).
 _add_secret GA4_OAUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
 _add_secret GA4_OAUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
+_add_secret AUTH_CLIENT_ID google-oauth-client-id-geo-tool 1
+_add_secret AUTH_CLIENT_SECRET google-oauth-client-secret-geo-tool 1
 _add_secret AUTH_COOKIE_SECRET auth-cookie-secret-geo-tool 1
 _add_secret GEMINI_API_KEY gemini-api-key-geo-tool 1
 _add_secret OPENAI_API_KEY openai-api-key-geo-tool 1
@@ -333,6 +356,70 @@ gcloud run jobs add-iam-policy-binding "${CONTENT_QUALITY_JOB}" \
   --role="roles/run.jobsExecutorWithOverrides" \
   --quiet >/dev/null
 
+echo "==> Deploying Cloud Run topic-content Job ${TOPIC_CONTENT_JOB}…"
+gcloud run jobs deploy "${TOPIC_CONTENT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --image="${IMAGE}" \
+  --service-account="${SA_EMAIL}" \
+  --cpu=1 \
+  --memory=2Gi \
+  --tasks=1 \
+  --parallelism=1 \
+  --max-retries=1 \
+  --task-timeout=1200s \
+  --command=python \
+  --args=-m,jobs.topic_content_generator.run_job \
+  --set-env-vars="${ENV_VARS}" \
+  --set-secrets="${SET_SECRETS}" \
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}" \
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+
+gcloud run jobs add-iam-policy-binding "${TOPIC_CONTENT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${TOPIC_CONTENT_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
+echo "==> Deploying Cloud Run scheduler runner Job ${SCHEDULER_JOB}…"
+gcloud run jobs deploy "${SCHEDULER_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --image="${IMAGE}" \
+  --service-account="${SA_EMAIL}" \
+  --cpu=1 \
+  --memory=2Gi \
+  --tasks=1 \
+  --parallelism=1 \
+  --max-retries=0 \
+  --task-timeout=3600s \
+  --command=python \
+  --args=-m,jobs.scheduler_runner.run_job \
+  --set-env-vars="${ENV_VARS}" \
+  --set-secrets="${SET_SECRETS}" \
+  --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}" \
+  --add-volume-mount=volume=geo-data,mount-path=/var/geo-data
+
+gcloud run jobs add-iam-policy-binding "${SCHEDULER_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.invoker" \
+  --quiet >/dev/null
+gcloud run jobs add-iam-policy-binding "${SCHEDULER_JOB}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/run.jobsExecutorWithOverrides" \
+  --quiet >/dev/null
+
 echo "==> Deploying Cloud Run service ${SERVICE}…"
 DEPLOY_CMD=(
   gcloud run deploy "${SERVICE}"
@@ -373,7 +460,7 @@ gcloud run services update "${SERVICE}" \
   --region="${REGION}" \
   --update-env-vars="WEB_PUBLIC_ORIGIN=${SERVICE_URL},DEPLOY_PUBLIC_ORIGIN=${SERVICE_URL},AUTH_REDIRECT_URI=${SERVICE_URL}/api/auth/callback,GA4_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/ga4/callback,GSC_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/gsc/callback"
 
-for _job in "${PROMPT_JOB}" "${CRAWL_JOB}" "${SENTIMENT_JOB}" "${CONTENT_QUALITY_JOB}"; do
+for _job in "${PROMPT_JOB}" "${CRAWL_JOB}" "${SENTIMENT_JOB}" "${CONTENT_QUALITY_JOB}" "${TOPIC_CONTENT_JOB}" "${SCHEDULER_JOB}"; do
   gcloud run jobs update "${_job}" \
     --project="${PROJECT}" \
     --region="${REGION}" \
@@ -388,9 +475,15 @@ echo "Site crawls → Cloud Run Job ${CRAWL_JOB} (${REGION})."
 echo "PDF exports → Cloud Run Job ${PDF_JOB} (${REGION})."
 echo "Prompt sentiment → Cloud Run Job ${SENTIMENT_JOB} (${REGION})."
 echo "Content quality → Cloud Run Job ${CONTENT_QUALITY_JOB} (${REGION})."
+echo "Scheduler runner → Cloud Run Job ${SCHEDULER_JOB} (${REGION})."
+echo "Google Trends weekly → Cloud Run Job ${TRENDS_JOB} (${REGION}) — deploy separately via"
+echo "  cloud-run-google-trends-scraper/deploy_cloud_run_job_weekly_sandbox.sh"
+echo "AI Impact site refit → Cloud Run Job ${AI_IMPACT_REFIT_JOB} (${REGION}) — deploy separately via"
+echo "  scripts/deploy_ai_impact_refit_job.sh dev"
 echo "Audits write to gs://${BUCKET} (mounted at /var/geo-data)."
 echo ""
 echo "Next steps:"
 echo "  1. Verify ANTHROPIC_API_KEY / Gemini / OpenAI secrets mount (project ${PROJECT})."
 echo "  2. Open ${SERVICE_URL} → report → AI Impact Estimates."
 echo "  3. GA4 OAuth redirect URI should include ${SERVICE_URL}/api/ga4/callback"
+echo "  4. Ensure ${AI_IMPACT_REFIT_JOB} is deployed (NumPyro image) before site refits queue."

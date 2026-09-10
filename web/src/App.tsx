@@ -6,6 +6,8 @@ import { ExistingAuditsPage } from "./pages/ExistingAuditsPage";
 import { LandingPage } from "./pages/LandingPage";
 import { NewAuditPage } from "./pages/NewAuditPage";
 import { ReportPage } from "./pages/ReportPage";
+import { SinglePageAuditsPage } from "./pages/SinglePageAuditsPage";
+import { SinglePageAuditDetailPage } from "./pages/SinglePageAuditDetailPage";
 
 export default function App() {
   return (
@@ -16,6 +18,8 @@ export default function App() {
             <Route index element={<LandingPage />} />
             <Route path="audit/new" element={<NewAuditPage />} />
             <Route path="audits" element={<ExistingAuditsPage />} />
+            <Route path="page-audits" element={<SinglePageAuditsPage />} />
+            <Route path="page-audits/:parentId/:pageId" element={<SinglePageAuditDetailPage />} />
             <Route path="report/:auditId" element={<ReportPage />} />
             <Route path="report/:auditId/:section" element={<ReportPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

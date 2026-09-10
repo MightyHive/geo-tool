@@ -18,6 +18,7 @@ import {
 import { scoreLabel, scoreTone, scoreColor, formatReportScore } from "../lib/reportScore";
 import { usePromptPerformanceContext } from "../lib/promptPerformanceStore";
 import ScoreOverTime from "./ScoreOverTime";
+import { SampleScriptsLinkButton, TextWithSampleScriptsLink } from "./SampleScriptsLink";
 
 function Tooltip({ text }: { text: string }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -90,24 +91,34 @@ function ScoreBandDescription({ score }: { score: number }) {
 export function TechnicalOverview({
   auditDirOrSlug,
   onNavigate,
+  breakdown: breakdownProp,
+  hideScoreHistory = false,
 }: {
   auditDirOrSlug: string;
   onNavigate?: (sectionId: string) => void;
+  breakdown?: Awaited<ReturnType<typeof fetchScoreBreakdown>> | null;
+  hideScoreHistory?: boolean;
 }) {
-  const [breakdown, setBreakdown] = useState<Awaited<ReturnType<typeof fetchScoreBreakdown>> | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [fetched, setFetched] = useState<Awaited<ReturnType<typeof fetchScoreBreakdown>> | null>(null);
+  const [loading, setLoading] = useState(!breakdownProp);
   const { ctx } = usePromptPerformanceContext(auditDirOrSlug);
   const brandName = ctx?.brand_name?.trim() || "Your Brand";
 
   const load = useCallback(() => {
+    if (breakdownProp) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetchScoreBreakdown(auditDirOrSlug)
-      .then((b) => setBreakdown(b))
-      .catch(() => setBreakdown(null))
+      .then((b) => setFetched(b))
+      .catch(() => setFetched(null))
       .finally(() => setLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, breakdownProp]);
 
   useEffect(() => { load(); }, [load]);
+
+  const breakdown = breakdownProp ?? fetched;
 
   if (loading) {
     return <PageLoading />;
@@ -168,6 +179,7 @@ export function TechnicalOverview({
         )}
       </div>
 
+      {hideScoreHistory ? null : (
       <ScoreOverTime
         auditId={auditDirOrSlug}
         brandLabel={brandName}
@@ -175,6 +187,7 @@ export function TechnicalOverview({
         title="Technical Setup over time"
         description="Brand technical score trend, with competitor lines when competitor crawls have run."
       />
+      )}
 
       <div className="rounded-2xl border border-gray-200 bg-white p-5">
         <h3 className="mb-4 text-sm font-bold text-[#0d0d0d]">What this score measures</h3>
@@ -193,7 +206,9 @@ export function TechnicalOverview({
                     <span className="text-sm font-semibold text-[#0d0d0d]">{area.label}</span>
                     <Tooltip text={area.tooltip} />
                   </div>
-                  <p className="text-xs leading-snug text-gray-500">{area.description}</p>
+                  <p className="text-xs leading-snug text-gray-500">
+                    <TextWithSampleScriptsLink text={area.description} onNavigate={onNavigate} />
+                  </p>
                 </div>
                 <div className="shrink-0 text-right">
                   <span
@@ -227,6 +242,14 @@ export function TechnicalOverview({
           last crawl time. Re-run the audit after making technical fixes to see updated scores.
           Citability includes AI search success and query coverage. Platform Readiness also
           incorporates live probe data from the Prompts section.
+          {onNavigate ? (
+            <>
+              {" "}When findings call for <code className="text-[11px]">robots.txt</code>,{" "}
+              <code className="text-[11px]">llms.txt</code>, or JSON-LD changes, use{" "}
+              <SampleScriptsLinkButton onNavigate={onNavigate} className="text-xs no-underline" label="Sample scripts" />
+              {" "}as copy-ready starting points.
+            </>
+          ) : null}
         </p>
       </div>
     </div>

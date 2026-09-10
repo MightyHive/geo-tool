@@ -250,6 +250,7 @@ def _generate_via_api_key(
     model: str,
     system_instruction: str,
     user_text: str,
+    max_output_tokens: int = 1024,
 ) -> str:
     q = quote(api_key, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='')}:generateContent?key={q}"
@@ -258,7 +259,7 @@ def _generate_via_api_key(
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": max(256, int(max_output_tokens or 1024)),
         },
     }
     payload = _post_json(url, body, {})
@@ -272,6 +273,7 @@ def _generate_via_vertex(
     model: str,
     system_instruction: str,
     user_text: str,
+    max_output_tokens: int = 1024,
 ) -> str:
     from google.auth import default as google_auth_default
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -294,7 +296,7 @@ def _generate_via_vertex(
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": max(256, int(max_output_tokens or 1024)),
         },
     }
     payload = _post_json(url, body, {"Authorization": f"Bearer {token}"})

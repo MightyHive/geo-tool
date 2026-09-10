@@ -96,7 +96,7 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
         if (status.status === "done" && !status.still_running) {
           setActiveAuditId(null);
           setFullRunState("idle");
-          window.location.assign(`/report/${auditSlug(status.audit_dir ?? activeAuditId)}/config`);
+          navigate(`/report/${auditSlug(status.audit_dir ?? activeAuditId)}/config`);
         } else if (status.status === "error") {
           setActiveAuditId(null);
           setFullRunState("idle");
@@ -174,6 +174,7 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
         ...(config.ga4_property_id ? { ga4_property_id: config.ga4_property_id } : {}),
         crawl_urls: pageUrls.map((url) => url.trim()).filter(Boolean),
         skip_prompt_probes: true,
+        ...(config.model_category ? { model_category: config.model_category } : {}),
       });
       setFullRunState("running");
       setActiveAuditId(result.audit_dir);

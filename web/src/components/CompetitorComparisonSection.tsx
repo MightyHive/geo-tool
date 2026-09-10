@@ -42,6 +42,8 @@ export interface BrandRow {
   promptMentionCount: number;
   /** Total completed platform responses. */
   totalPrompts: number;
+  platformResponseCounts: Record<CompetitorPlatform, number>;
+  platformMentionCounts: Record<CompetitorPlatform, number>;
   sentiment: SentimentLabel | null;
 }
 

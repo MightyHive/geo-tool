@@ -3,6 +3,7 @@ import {
   formatLocaleKeyLabel,
   localeLabel,
   makeLocale,
+  normalizePromptLocales,
 } from "./promptLocales";
 
 describe("localeLabel / formatLocaleKeyLabel", () => {
@@ -51,5 +52,15 @@ describe("localeLabel / formatLocaleKeyLabel", () => {
   it("returns Overall for overall key", () => {
     expect(formatLocaleKeyLabel("__overall__")).toBe("Overall");
     expect(formatLocaleKeyLabel("")).toBe("Overall");
+  });
+
+  it("keeps the configured primary-market language", () => {
+    const locales = normalizePromptLocales(
+      [makeLocale({ country: "Italy", country_code: "IT", language: "it" })],
+      "Italy",
+      "IT",
+    );
+    expect(locales[0].key).toBe("IT:it");
+    expect(locales[0].language_name).toBe("Italian");
   });
 });

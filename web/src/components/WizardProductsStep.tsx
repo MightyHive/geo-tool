@@ -1,51 +1,45 @@
 import { useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
-import { suggestProductsServices } from "../api/client";
 import { CUSTOM_PROMPTS_LABEL, isCustomPromptsCategory } from "../lib/customPrompts";
 import type { ProductServiceRow } from "../types";
+
+export type ProductsSuggestStatus = "idle" | "loading" | "ready" | "error";
 
 interface WizardProductsStepProps {
   brandName: string;
   brandWebsite: string;
-  marketCountry: string;
-  marketCountryCode: string;
   rows: ProductServiceRow[];
   selected: string[];
+  suggestStatus: ProductsSuggestStatus;
+  suggestError: string | null;
+  modelCategory: string | null;
   onRowsChange: (rows: ProductServiceRow[]) => void;
   onSelectedChange: (selected: string[]) => void;
+  onRetrySuggest: () => void;
   onBack: () => void;
   onContinue: () => void;
-}
-
-function parseApiError(raw: string): string {
-  try {
-    const data = JSON.parse(raw) as { detail?: string | { msg?: string }[] };
-    if (typeof data.detail === "string") return data.detail;
-    if (Array.isArray(data.detail) && data.detail[0]?.msg) return data.detail[0].msg;
-  } catch {
-    /* use raw */
-  }
-  return raw || "Request failed";
 }
 
 export function WizardProductsStep({
   brandName,
   brandWebsite,
-  marketCountry,
-  marketCountryCode,
   rows,
   selected,
+  suggestStatus,
+  suggestError,
+  modelCategory,
   onRowsChange,
   onSelectedChange,
+  onRetrySuggest,
   onBack,
   onContinue,
 }: WizardProductsStepProps) {
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [customLine, setCustomLine] = useState("");
 
   const siteReady = Boolean(brandWebsite.trim());
+  const loading = suggestStatus === "loading";
 
   function toggleName(name: string) {
     if (selected.includes(name)) {
@@ -77,37 +71,9 @@ export function WizardProductsStep({
     setSuccess(`Added “${name}”. Prompts will be generated on the Generate prompts step.`);
   }
 
-  async function handleSuggest() {
-    if (!siteReady) {
-      setError(
-        "Add and verify your brand website on step 1 (Show audit preview) — the brand name alone is not enough.",
-      );
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      const { rows: next } = await suggestProductsServices({
-        brand_website: brandWebsite.trim(),
-        market_country: marketCountry.trim(),
-        market_country_code: marketCountryCode.trim(),
-      });
-      onRowsChange(next);
-      const labels = next.map((r) => r.product_or_service.trim()).filter(Boolean);
-      onSelectedChange(labels);
-      setSuccess(`Received ${labels.length} lines — adjust the list below, then continue.`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Gemini request failed";
-      setError(parseApiError(msg));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function handleContinue() {
     if (!rows.length) {
-      setError("Use Suggest products or services from website and keep at least one line.");
+      setError("Wait for website suggestions or add at least one product line.");
       return;
     }
     if (!selected.length) {
@@ -122,9 +88,9 @@ export function WizardProductsStep({
     <div className="card-surface p-6 mb-6">
       <h3>Products or services</h3>
       <p className="text-sm text-gray-600 mb-4">
-        By default you get <strong>five</strong> product or service lines and{" "}
-        <strong>five</strong> shopper-style prompts each, using your primary market from step 1 when
-        set. Choose which lines to keep; step 5 generates AI prompts for any custom lines you add.
+        Gemini suggests <strong>five</strong> product or service lines from your website as soon as
+        it is verified on step 1. Choose which lines to keep; the Markets &amp; prompts step
+        generates AI prompts for any custom lines you add.
       </p>
 
       {!siteReady && (
@@ -140,21 +106,44 @@ export function WizardProductsStep({
         </div>
       )}
 
+      {loading && (
+        <p className="alert-info flex items-center gap-2 mb-4" role="status">
+          <Loader2 className="w-5 h-5 shrink-0 animate-spin text-brand-accent" />
+          Asking Gemini for product or service lines…
+        </p>
+      )}
+
+      {modelCategory && suggestStatus === "ready" && (
+        <p className="text-xs text-gray-500 mb-3">
+          Suggested category: <span className="font-medium text-brand-dark">{modelCategory}</span>
+        </p>
+      )}
+
       <button
         type="button"
         className="btn-primary inline-flex items-center gap-2 mb-4"
         disabled={!siteReady || loading}
-        onClick={handleSuggest}
+        onClick={() => {
+          setError(null);
+          setSuccess(null);
+          onRetrySuggest();
+        }}
       >
         {loading ? (
           <Loader2 className="w-4 h-4 animate-spin" />
         ) : (
           <Sparkles className="w-4 h-4" />
         )}
-        {loading ? "Asking Gemini…" : "Suggest products or services from website (Gemini)"}
+        {loading
+          ? "Asking Gemini…"
+          : rows.length
+            ? "Refresh suggestions from website"
+            : "Suggest products or services from website (Gemini)"}
       </button>
 
-      {error && <div className="alert-error mb-4">{error}</div>}
+      {(error || suggestError) && (
+        <div className="alert-error mb-4">{error || suggestError}</div>
+      )}
       {success && <div className="alert-success mb-4">{success}</div>}
 
       {rows.length > 0 && (
@@ -223,7 +212,7 @@ export function WizardProductsStep({
         <button type="button" className="btn-secondary" onClick={onBack}>
           ← Back
         </button>
-        <button type="button" className="btn-primary" onClick={handleContinue}>
+        <button type="button" className="btn-primary" onClick={handleContinue} disabled={loading}>
           Continue →
         </button>
       </div>

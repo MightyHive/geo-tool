@@ -32,10 +32,31 @@ import {
   scoreColor,
   scoreTone,
 } from "../lib/reportScore";
+import {
+  AI_OVERVIEW_PLATFORMS,
+  CHATBOT_PLATFORMS,
+} from "../lib/visibilityMetrics";
+import {
+  SAMPLE_SCRIPT_ARTIFACT_RE,
+  mentionsSampleScriptArtifact,
+} from "../lib/sampleScriptsArtifacts";
+import type { VisibilityPlatform } from "../lib/brandVisibilityRows";
 
 type ScoreBreakdown = Awaited<ReturnType<typeof fetchScoreBreakdown>>;
 type RecommendationTab = "ai" | "technical" | "content";
 type Priority = "High" | "Medium";
+
+/** Platform readiness keys treated as chatbots (probe + crawl-only assistants). */
+export const CHATBOT_PLATFORM_KEYS = [
+  "gemini",
+  "openai",
+  "claude",
+  "perplexity",
+  "copilot",
+] as const;
+export const AI_OVERVIEW_PLATFORM_KEYS = ["google_aio"] as const;
+
+export { SAMPLE_SCRIPT_ARTIFACT_RE, mentionsSampleScriptArtifact };
 
 export interface RecommendationItem {
   id: string;
@@ -44,7 +65,15 @@ export interface RecommendationItem {
   actions: string[];
   priority: Priority;
   score?: number;
+  /** When set, item CTA navigates here (overrides group default for sample scripts). */
+  sectionId?: string;
+  topic?: string;
 }
+
+export type NavigateToReportSection = (
+  sectionId: string,
+  options?: { topic?: string },
+) => void;
 
 interface RecommendationGroup {
   id: string;
@@ -105,6 +134,8 @@ function promptTopicMap(ctx: PromptPerformanceContext): Map<string, string> {
 
 export function buildLowVisibilityTopicRecommendations(
   ctx: PromptPerformanceContext,
+  platforms: readonly VisibilityPlatform[] = COMPETITOR_PLATFORMS,
+  idPrefix = "topic",
 ): RecommendationItem[] {
   const rows = ctx.live_probe?.per_prompt ?? [];
   if (!rows.length) return [];
@@ -120,7 +151,7 @@ export function buildLowVisibilityTopicRecommendations(
     const prompt = String(row.prompt ?? "").trim().toLowerCase();
     const topic = topics.get(prompt) ?? positionalTopics[index] ?? "Other";
     const counts = totals.get(topic) ?? { responses: 0, mentions: 0 };
-    for (const platform of COMPETITOR_PLATFORMS) {
+    for (const platform of platforms) {
       for (const run of completedPlatformRuns(row, platform)) {
         counts.responses += 1;
         const visible = Number(run.scores.brand_signal ?? 0) > 0
@@ -144,7 +175,7 @@ export function buildLowVisibilityTopicRecommendations(
         counts.responses > 0 && isOkOrBelow(visibility)
       )
       .map(({ topic, counts, visibility }) => ({
-        id: `topic-${topic}`,
+        id: `${idPrefix}-${topic}`,
         title: topic,
         detail: `Your brand appeared in ${counts.mentions} of ${counts.responses} analysed responses for this topic (${Math.round(visibility)}% visibility).`,
         actions: [
@@ -153,6 +184,8 @@ export function buildLowVisibilityTopicRecommendations(
         ],
         priority: priorityForScore(visibility),
         score: visibility,
+        sectionId: "content-outline-generator",
+        topic,
       })),
   );
 }
@@ -192,6 +225,7 @@ export function buildCrawlerRecommendations(
         "Re-test the live robots.txt rules after deployment.",
       ],
       priority: Number(row.tier) <= 2 ? ("High" as const) : ("Medium" as const),
+      sectionId: "sample-scripts",
     }));
   const policyActions = unique(breakdown?.crawler_access?.improvements ?? []);
   if (policyActions.length) {
@@ -201,6 +235,9 @@ export function buildCrawlerRecommendations(
       detail: "Additional access or discovery findings recorded by the crawler assessment.",
       actions: policyActions,
       priority: "High",
+      sectionId: mentionsSampleScriptArtifact(...policyActions)
+        ? "sample-scripts"
+        : undefined,
     });
   }
   return prepareRecommendations(rowItems);
@@ -228,6 +265,7 @@ export function buildCitabilityRecommendations(
           actions,
           priority: priorityForScore(criterion.score),
           score: criterion.score,
+          sectionId: mentionsSampleScriptArtifact(...actions) ? "sample-scripts" : undefined,
         });
       }
       continue;
@@ -242,6 +280,7 @@ export function buildCitabilityRecommendations(
       actions,
       priority: priorityForScore(component.score),
       score: component.score,
+      sectionId: mentionsSampleScriptArtifact(...actions) ? "sample-scripts" : undefined,
     });
   }
   return prepareRecommendations(items);
@@ -250,10 +289,13 @@ export function buildCitabilityRecommendations(
 export function buildPlatformRecommendations(
   ctx: PromptPerformanceContext | null,
   breakdown: ScoreBreakdown | null,
+  platformKeys?: readonly string[],
 ): RecommendationItem[] {
+  const allowed = platformKeys ? new Set(platformKeys) : null;
   const baseScores = new Map((breakdown?.platform_readiness ?? []).map((row) => [row.key, row]));
   return prepareRecommendations(
     PLATFORM_READINESS_CONFIG.flatMap((config) => {
+      if (allowed && !allowed.has(config.key)) return [];
       const probe = ctx && config.probeKey
         ? computePlatformVisibility(ctx, config.probeKey)
         : null;
@@ -270,18 +312,20 @@ export function buildPlatformRecommendations(
           )
         : base?.score == null ? null : Math.round(base.score);
       if (score == null || !isOkOrBelow(score)) return [];
+      const actions = unique([
+        ...(base?.gap ? [base.gap] : []),
+        ...config.improvements,
+      ]);
       return [{
         id: `platform-${config.key}`,
         title: config.label,
         detail: hasProbe
           ? `${Math.round(probe!.brandPct)}% response visibility and a combined readiness score of ${score}/100.`
           : `${score}/100 technical readiness. Prompt visibility data is not available for this platform.`,
-        actions: unique([
-          ...(base?.gap ? [base.gap] : []),
-          ...config.improvements,
-        ]),
+        actions,
         priority: priorityForScore(score),
         score,
+        sectionId: mentionsSampleScriptArtifact(...actions) ? "sample-scripts" : undefined,
       }];
     }),
   );
@@ -369,13 +413,15 @@ export function buildSchemaRecommendations(
 ): RecommendationItem[] {
   const section = breakdown?.content_quality_details?.schema_entity;
   if (!section?.improvements?.length || !isOkOrBelow(section.score)) return [];
+  const actions = unique(section.improvements);
   return prepareRecommendations([{
     id: "schema-entity",
     title: "Schema and entity coverage",
     detail: section.summary,
-    actions: unique(section.improvements),
+    actions,
     priority: priorityForScore(section.score),
     score: section.score,
+    sectionId: mentionsSampleScriptArtifact(...actions) ? "sample-scripts" : undefined,
   }]);
 }
 
@@ -421,6 +467,7 @@ export function buildSampleScriptsRecommendations(
       score: typeof crawlerScore === "number" && isOkOrBelow(crawlerScore)
         ? crawlerScore
         : undefined,
+      sectionId: "sample-scripts",
     });
   }
 
@@ -436,6 +483,7 @@ export function buildSampleScriptsRecommendations(
         ...crawlerImprovements.filter((item) => /llms\.txt/i.test(item)).slice(0, 2),
       ]),
       priority: "Medium",
+      sectionId: "sample-scripts",
     });
   }
 
@@ -454,6 +502,7 @@ export function buildSampleScriptsRecommendations(
         ]),
         priority: priorityForScore(typeof schemaScore === "number" ? schemaScore : 50),
         score: typeof schemaScore === "number" ? schemaScore : undefined,
+        sectionId: "sample-scripts",
       });
     }
   }
@@ -513,7 +562,7 @@ function RecommendationGroupView({
   onNavigate,
 }: {
   group: RecommendationGroup;
-  onNavigate?: (sectionId: string) => void;
+  onNavigate?: NavigateToReportSection;
 }) {
   return (
     <section aria-labelledby={`${group.id}-heading`}>
@@ -545,15 +594,52 @@ function RecommendationGroupView({
                   <div className="flex flex-wrap items-center gap-2">
                     <h4 className="text-sm font-semibold text-[#0d0d0d]">{item.title}</h4>
                     <PriorityBadge priority={item.priority} />
+                    {onNavigate && item.sectionId === "content-outline-generator" && item.topic && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate(item.sectionId!, { topic: item.topic })}
+                        className="inline-flex items-center gap-1 rounded-md text-[11px] font-semibold text-blue-700 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        Build outline <ArrowRight className="h-3 w-3" />
+                      </button>
+                    )}
+                    {onNavigate && item.sectionId === "sample-scripts" && group.sectionId !== "sample-scripts" && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate("sample-scripts")}
+                        className="inline-flex items-center gap-1 rounded-md text-[11px] font-semibold text-violet-700 hover:text-violet-900 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                      >
+                        Open sample scripts <ArrowRight className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-gray-500">{item.detail}</p>
                   <ul className="mt-3 space-y-1.5">
-                    {item.actions.map((action) => (
-                      <li key={action} className="flex gap-2 text-xs leading-relaxed text-gray-700">
-                        <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
-                        <span>{action}</span>
-                      </li>
-                    ))}
+                    {item.actions.map((action) => {
+                      const linkSampleScripts = Boolean(
+                        onNavigate && mentionsSampleScriptArtifact(action),
+                      );
+                      return (
+                        <li key={action} className="flex gap-2 text-xs leading-relaxed text-gray-700">
+                          <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
+                          <span>
+                            {action}
+                            {linkSampleScripts && (
+                              <>
+                                {" "}
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigate!("sample-scripts")}
+                                  className="inline font-semibold text-violet-700 underline decoration-violet-300 underline-offset-2 hover:text-violet-900"
+                                >
+                                  Open sample scripts
+                                </button>
+                              </>
+                            )}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
                 {item.score != null && <RecommendationScoreBadge score={item.score} />}
@@ -598,57 +684,122 @@ const TAB_META = [
 export function RecommendationsSection({
   auditDirOrSlug,
   onNavigate,
+  breakdown: breakdownProp,
+  pageScoped = false,
 }: {
   auditDirOrSlug: string;
-  onNavigate?: (sectionId: string) => void;
+  onNavigate?: NavigateToReportSection;
+  breakdown?: ScoreBreakdown | null;
+  pageScoped?: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<RecommendationTab>("ai");
-  const { ctx, loading: ctxLoading } = usePromptPerformanceContext(auditDirOrSlug);
-  const [breakdown, setBreakdown] = useState<ScoreBreakdown | null>(null);
+  const {
+    ctx,
+    loading: ctxLoading,
+    ensureScope,
+  } = usePromptPerformanceContext(auditDirOrSlug);
+  const [fetchedBreakdown, setFetchedBreakdown] = useState<ScoreBreakdown | null>(null);
   const [sentiment, setSentiment] = useState<PromptSentimentAnalysis | null>(null);
-  const [extraLoading, setExtraLoading] = useState(true);
+  const [extraLoading, setExtraLoading] = useState(!(breakdownProp && pageScoped));
 
   useEffect(() => {
+    if (pageScoped) return;
+    void ensureScope({ allLocales: true }).catch(() => {
+      // The shared store exposes the fetch error; existing recommendation
+      // sections continue to render any already-cached audit evidence.
+    });
+  }, [ensureScope, pageScoped]);
+
+  useEffect(() => {
+    if (breakdownProp && pageScoped) {
+      setFetchedBreakdown(breakdownProp);
+      setExtraLoading(false);
+      return;
+    }
     setExtraLoading(true);
     Promise.all([
-      fetchScoreBreakdown(auditDirOrSlug).catch(() => null),
-      fetchPromptSentiment(auditDirOrSlug).catch(() => null),
+      breakdownProp
+        ? Promise.resolve(breakdownProp)
+        : fetchScoreBreakdown(auditDirOrSlug).catch(() => null),
+      pageScoped ? Promise.resolve(null) : fetchPromptSentiment(auditDirOrSlug).catch(() => null),
     ]).then(([scores, sentimentResponse]) => {
-      setBreakdown(scores);
+      setFetchedBreakdown(scores);
       setSentiment(sentimentResponse?.sentiment ?? null);
     }).finally(() => setExtraLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, breakdownProp, pageScoped]);
 
-  const loading = ctxLoading || extraLoading;
+  const loading = extraLoading || (!pageScoped && ctxLoading);
+  const breakdown = breakdownProp ?? fetchedBreakdown;
 
   const groups = useMemo<Record<RecommendationTab, RecommendationGroup[]>>(() => ({
-    ai: [
-      {
-        id: "low-visibility-topics",
-        title: "Low visibility topics",
-        description: `Topics at OK or below (${GOOD_SCORE_MIN - 1}/100 or less), ordered from the largest gap.`,
-        sectionId: "prompts",
-        emptyMessage: ctx
-          ? "No tested topic is at OK or below."
-          : "Run prompt probes to identify low-visibility topics.",
-        items: ctx ? buildLowVisibilityTopicRecommendations(ctx) : [],
-      },
-      {
-        id: "negative-sentiment",
-        title: "Negative sentiment categories",
-        description: "Categories where AI responses contain concerns or unfavourable brand framing.",
-        sectionId: "ai-visibility-overview",
-        emptyMessage: sentiment
-          ? "No negative sentiment category was detected."
-          : "Run sentiment analysis to identify categories that need attention.",
-        items: buildNegativeSentimentRecommendations(sentiment),
-      },
-    ],
+    ai: pageScoped
+      ? [
+          {
+            id: "page-citability",
+            title: "Page citability and citations",
+            description: "Extractability and citation findings for this URL from the page audit.",
+            sectionId: "citability",
+            emptyMessage: "No material citability improvement is recorded for this page.",
+            items: buildCitabilityRecommendations(breakdown),
+          },
+        ]
+      : [
+          {
+            id: "low-visibility-topics-chatbots",
+            title: "Low visibility topics — Chatbots",
+            description: `Topics at OK or below (${GOOD_SCORE_MIN - 1}/100 or less) across Gemini, ChatGPT, and Claude, ordered from the largest gap.`,
+            sectionId: "prompts",
+            emptyMessage: ctx
+              ? "No tested chatbot topic is at OK or below."
+              : "Run prompt probes to identify low-visibility chatbot topics.",
+            items: ctx
+              ? buildLowVisibilityTopicRecommendations(ctx, CHATBOT_PLATFORMS, "topic-chatbots")
+              : [],
+          },
+          {
+            id: "low-visibility-topics-overviews",
+            title: "Low visibility topics — AI Overviews",
+            description: `Topics at OK or below (${GOOD_SCORE_MIN - 1}/100 or less) in Google AI Overviews, ordered from the largest gap.`,
+            sectionId: "prompts",
+            emptyMessage: ctx
+              ? "No tested AI Overview topic is at OK or below."
+              : "Run prompt probes to identify low-visibility AI Overview topics.",
+            items: ctx
+              ? buildLowVisibilityTopicRecommendations(ctx, AI_OVERVIEW_PLATFORMS, "topic-overviews")
+              : [],
+          },
+          {
+            id: "platform-actions-chatbots",
+            title: "Low visibility platforms — Chatbots",
+            description: `Improvement actions for chatbot platforms scoring OK or below (below ${GOOD_SCORE_MIN}/100).`,
+            sectionId: "platform-readiness",
+            emptyMessage: "No chatbot platform is currently at OK or below.",
+            items: buildPlatformRecommendations(ctx, breakdown, CHATBOT_PLATFORM_KEYS),
+          },
+          {
+            id: "platform-actions-overviews",
+            title: "Low visibility platforms — AI Overviews",
+            description: `Improvement actions for AI Overview platforms scoring OK or below (below ${GOOD_SCORE_MIN}/100).`,
+            sectionId: "platform-readiness",
+            emptyMessage: "No AI Overview platform is currently at OK or below.",
+            items: buildPlatformRecommendations(ctx, breakdown, AI_OVERVIEW_PLATFORM_KEYS),
+          },
+          {
+            id: "negative-sentiment",
+            title: "Negative sentiment categories",
+            description: "Categories where AI responses contain concerns or unfavourable brand framing.",
+            sectionId: "ai-visibility-overview",
+            emptyMessage: sentiment
+              ? "No negative sentiment category was detected."
+              : "Run sentiment analysis to identify categories that need attention.",
+            items: buildNegativeSentimentRecommendations(sentiment),
+          },
+        ],
     technical: [
       {
         id: "crawler-changes",
         title: "Crawler access changes",
-        description: "Robots.txt rules that do not match the recommended access policy.",
+        description: "Robots.txt rules that do not match the recommended access policy. Actions that mention robots.txt or llms.txt link to Sample scripts.",
         sectionId: "crawler-access",
         emptyMessage: "Current crawler access rules align with the recorded recommendations.",
         items: buildCrawlerRecommendations(breakdown),
@@ -660,14 +811,6 @@ export function RecommendationsSection({
         sectionId: "citability",
         emptyMessage: "No material Citability improvement is recorded.",
         items: buildCitabilityRecommendations(breakdown),
-      },
-      {
-        id: "platform-actions",
-        title: "Low visibility platform actions",
-        description: `Improvement actions for platforms scoring OK or below (below ${GOOD_SCORE_MIN}/100).`,
-        sectionId: "platform-readiness",
-        emptyMessage: "No platform is currently at OK or below.",
-        items: buildPlatformRecommendations(ctx, breakdown),
       },
       {
         id: "sample-scripts",
@@ -700,7 +843,7 @@ export function RecommendationsSection({
       {
         id: "schema-changes",
         title: "Schema and entity markup",
-        description: "Structured data changes drawn from the current schema assessment.",
+        description: "Structured data changes drawn from the current schema assessment. JSON-LD fixes link to Sample scripts.",
         sectionId: "schema-entity-markup",
         emptyMessage: "No material schema or entity markup change is recorded.",
         items: buildSchemaRecommendations(breakdown),
@@ -714,7 +857,7 @@ export function RecommendationsSection({
         items: buildBrandAuthorityRecommendations(breakdown),
       },
     ],
-  }), [breakdown, ctx, sentiment]);
+  }), [breakdown, ctx, sentiment, pageScoped]);
 
   if (loading) return <LoadingRecommendations />;
 
@@ -730,8 +873,9 @@ export function RecommendationsSection({
       <div>
         <h2 className="text-xl font-bold text-[#0d0d0d]">Recommendations</h2>
         <p className="mt-1 max-w-3xl text-sm leading-relaxed text-gray-500">
-          Prioritised actions generated from the latest visibility probes and audit scores.
-          Each recommendation links back to its supporting report section.
+          {pageScoped
+            ? "Prioritised actions generated from this URL’s page audit. Inherited site-wide findings (crawler access, brand authority) are included when they still apply."
+            : "Prioritised actions generated from the latest visibility probes and audit scores. Each recommendation links back to its supporting report section."}
         </p>
       </div>
 

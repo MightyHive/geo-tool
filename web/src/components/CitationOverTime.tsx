@@ -108,7 +108,7 @@ export default function CitationOverTime({
   const [raw, setRaw] = useState<CitationHistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [topN, setTopN] = useState(8);
+  const [topN, setTopN] = useState(10);
 
   useEffect(() => {
     if (!auditId) return;

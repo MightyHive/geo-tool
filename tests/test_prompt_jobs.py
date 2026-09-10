@@ -22,6 +22,56 @@ def test_accepted_operation_name_supports_library_metadata_variants() -> None:
     )
 
 
+def test_enqueue_prompt_job_rejects_page_mode(tmp_path: Path) -> None:
+    audit_dir = tmp_path / "example-com"
+    audit_dir.mkdir()
+    try:
+        prompt_jobs.enqueue_prompt_job(audit_dir, mode="page")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "enqueue_page_prompt_job" in str(exc)
+
+
+def test_enqueue_page_prompt_job_requires_page_id(tmp_path: Path, monkeypatch) -> None:
+    audit_dir = tmp_path / "example-com"
+    audit_dir.mkdir()
+    monkeypatch.setattr(prompt_jobs.geo, "audit_dir_api_rel", lambda _path: "example-com")
+    try:
+        prompt_jobs.enqueue_page_prompt_job(audit_dir, page_id="", prompts=["How do I change pads?"])
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "page_id" in str(exc)
+
+
+def test_enqueue_page_prompt_job_writes_page_pending(tmp_path: Path, monkeypatch) -> None:
+    audit_dir = tmp_path / "example-com"
+    audit_dir.mkdir()
+    monkeypatch.setattr(prompt_jobs.geo, "audit_dir_api_rel", lambda _path: "example-com")
+    monkeypatch.setattr(
+        prompt_jobs,
+        "_execute_prompt_job",
+        lambda *, audit_id, request_id: f"executions/{audit_id}-{request_id}",
+    )
+    result = prompt_jobs.enqueue_page_prompt_job(
+        audit_dir,
+        page_id="guides_brakes_abc",
+        prompts=["How do I change brake pads in the UK?"],
+    )
+    assert result["fanout"] is False
+    assert result["page_id"] == "guides_brakes_abc"
+    pending = json.loads(
+        (audit_dir / "page_audits" / "guides_brakes_abc" / "page_probe_pending.json").read_text()
+    )
+    assert pending["mode"] == "page"
+    assert not (audit_dir / prompt_jobs.PROMPT_PENDING_FILE).exists()
+    manifests = list((audit_dir / prompt_jobs.PROMPT_JOB_REQUESTS_DIR).glob("*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["mode"] == "page"
+    assert manifest["page_id"] == "guides_brakes_abc"
+    assert manifest["prompts"]
+
+
 def test_enqueue_prompt_job_persists_manifest_and_pending(monkeypatch, tmp_path: Path) -> None:
     audit_dir = tmp_path / "audit_output" / "example-com"
     audit_dir.mkdir(parents=True)

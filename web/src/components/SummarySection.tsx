@@ -11,7 +11,8 @@
  *   Overall         = 40% × AI Visibility + 30% × Technical + 30% × Content
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { createPortal } from "react-dom";
 import { AlertCircle, ArrowRight, ExternalLink, Info, X } from "lucide-react";
 import { PageLoading } from "./PageLoading";
@@ -19,7 +20,9 @@ import {
   fetchScoreBreakdown,
   fetchExecutiveSummary,
   fetchPromptSentiment,
+  fetchPageAudits,
 } from "../api/client";
+import type { PageAuditListItem } from "../types";
 import { usePromptPerformanceContext } from "../lib/promptPerformanceStore";
 import { groupContentQualityComponents } from "../lib/contentQualityAreas";
 import { groupTechnicalSetupComponents } from "../lib/technicalSetupAreas";
@@ -27,11 +30,18 @@ import { formatReportScore, scoreLabel, scoreTone, scoreColor } from "../lib/rep
 import ScoreOverTime from "./ScoreOverTime";
 import { platformScoreColor } from "../lib/platformScoreColor";
 import {
+  AI_OVERVIEW_PLATFORMS,
+  CHATBOT_PLATFORMS,
   computeVisibilityMetrics,
+  computeVisibilityMetricsForPlatforms,
+  notableSurfaceScoreDifference,
   visibilityPlatformsWithResults,
 } from "../lib/visibilityMetrics";
 import { PlatformLogo, PLATFORM_META } from "./PlatformLogo";
 import { ViewportOverlay } from "./ViewportOverlay";
+
+const CHATBOT_COLOR = "#8B5CF6";
+const AI_OVERVIEW_COLOR = "#EA4335";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -178,12 +188,14 @@ function PillarCard({
   score,
   description,
   weight,
+  extra,
   onExplain,
 }: {
   label: string;
   score: number | null;
   description?: string;
   weight: number;
+  extra?: ReactNode;
   onExplain: () => void;
 }) {
   if (score === null) {
@@ -202,6 +214,7 @@ function PillarCard({
           </div>
         </div>
         {description && <p className="text-xs text-gray-400 leading-snug">{description}</p>}
+        {extra}
         <button type="button" onClick={onExplain} className="mt-auto text-left text-[11px] font-semibold text-violet-700 hover:text-violet-900">
           How is this score calculated?
         </button>
@@ -233,6 +246,7 @@ function PillarCard({
           style={{ width: `${score}%`, background: color }}
         />
       </div>
+      {extra}
       <button type="button" onClick={onExplain} className="mt-auto text-left text-[11px] font-semibold text-violet-700 hover:text-violet-900">
         How is this score calculated?
       </button>
@@ -468,15 +482,18 @@ export function SummarySection({
   const [exec, setExec] = useState<ExecSummary | null>(null);
   const [extraLoading, setExtraLoading] = useState(true);
   const [calculationPillar, setCalculationPillar] = useState<string | null>(null);
+  const [pageAudits, setPageAudits] = useState<PageAuditListItem[]>([]);
 
   const load = useCallback(() => {
     setExtraLoading(true);
     Promise.all([
       fetchScoreBreakdown(auditDirOrSlug).catch(() => null),
       fetchExecutiveSummary(auditDirOrSlug).catch(() => null),
-    ]).then(([b, e]) => {
+      fetchPageAudits(auditDirOrSlug).catch(() => ({ items: [] as PageAuditListItem[] })),
+    ]).then(([b, e, pages]) => {
       setBreakdown(b);
       setExec(e);
+      setPageAudits(pages?.items ?? []);
     }).finally(() => setExtraLoading(false));
   }, [auditDirOrSlug]);
 
@@ -490,6 +507,12 @@ export function SummarySection({
 
   // ── Compute scores ──────────────────────────────────────────────────────────
   const aiVisibilityMetrics = ctx ? computeVisibilityMetrics(ctx) : null;
+  const chatbotMetrics = ctx
+    ? computeVisibilityMetricsForPlatforms(ctx, CHATBOT_PLATFORMS)
+    : null;
+  const aiOverviewMetrics = ctx
+    ? computeVisibilityMetricsForPlatforms(ctx, AI_OVERVIEW_PLATFORMS)
+    : null;
   const promptMetrics = breakdown?.prompt_metrics ?? ctx?.overall_metrics ?? null;
   const aiVisibilityScore = breakdown?.ai_visibility ?? promptMetrics?.score ?? aiVisibilityMetrics?.score ?? null;
   const technicalScore = breakdown?.technical_setup ?? null;
@@ -509,6 +532,18 @@ export function SummarySection({
   const topCompetitorSovPct = promptMetrics?.top_competitor_sov_pct ?? aiVisibilityMetrics?.topCompetitorSovPct ?? 0;
   const averageCompetitorSovPct = promptMetrics?.average_competitor_sov_pct ?? aiVisibilityMetrics?.averageCompetitorSovPct ?? 0;
   const hasVisibilityMetrics = !!promptMetrics || !!aiVisibilityMetrics;
+  const chatbotHasData = (chatbotMetrics?.promptCount ?? 0) > 0;
+  const overviewHasData = (aiOverviewMetrics?.promptCount ?? 0) > 0;
+  const surfaceDifferenceNote = notableSurfaceScoreDifference(
+    chatbotMetrics?.score,
+    aiOverviewMetrics?.score,
+    chatbotHasData,
+    overviewHasData,
+  );
+  const surfaceGroups = [
+    { label: "Chatbots", color: CHATBOT_COLOR, items: CHATBOT_PLATFORMS },
+    { label: "AI Overviews", color: AI_OVERVIEW_COLOR, items: AI_OVERVIEW_PLATFORMS },
+  ] as const;
   const calculationComponents: Record<string, ScoreComponent[]> = {
     "AI Visibility": hasVisibilityMetrics ? [
       {
@@ -591,6 +626,19 @@ export function SummarySection({
                   className="prose prose-sm max-w-none text-gray-600 leading-relaxed"
                   dangerouslySetInnerHTML={{ __html: synchronizeExecutiveScore(exec.paragraph_html, overallScore) }}
                 />
+                {surfaceDifferenceNote && (
+                  <p className="mt-3 rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-relaxed text-gray-700">
+                    {surfaceDifferenceNote}
+                  </p>
+                )}
+              </div>
+            )}
+            {!exec?.paragraph_html && surfaceDifferenceNote && (
+              <div className="flex-1 lg:border-l lg:border-gray-100 lg:pl-6">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1.5">Surface comparison</p>
+                <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-relaxed text-gray-700">
+                  {surfaceDifferenceNote}
+                </p>
               </div>
             )}
           </>
@@ -614,6 +662,36 @@ export function SummarySection({
             hasProbe && hasVisibilityMetrics
               ? `${brandName} is mentioned in ${Math.round(visibilityPct)}% of analysed responses across ${Object.values(perPlatform).filter((metrics) => metrics.responseCount > 0).length} platforms.`
               : "Run probes to calculate AI Visibility score."
+          }
+          extra={
+            hasProbe && hasVisibilityMetrics ? (
+              <div className="space-y-2">
+                {(chatbotHasData || overviewHasData) && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                    {chatbotHasData && chatbotMetrics && (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+                        <span className="h-2 w-2 rounded-full" style={{ background: CHATBOT_COLOR }} />
+                        <span className="font-semibold" style={{ color: CHATBOT_COLOR }}>Chatbots</span>
+                        <span className="font-bold text-[#0d0d0d]">{formatReportScore(chatbotMetrics.score)}</span>
+                        <span className="text-gray-400">
+                          ({Math.round(chatbotMetrics.visibilityPct)}% visibility)
+                        </span>
+                      </span>
+                    )}
+                    {overviewHasData && aiOverviewMetrics && (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+                        <span className="h-2 w-2 rounded-full" style={{ background: AI_OVERVIEW_COLOR }} />
+                        <span className="font-semibold" style={{ color: AI_OVERVIEW_COLOR }}>AI Overviews</span>
+                        <span className="font-bold text-[#0d0d0d]">{formatReportScore(aiOverviewMetrics.score)}</span>
+                        <span className="text-gray-400">
+                          ({Math.round(aiOverviewMetrics.visibilityPct)}% visibility)
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : undefined
           }
           onExplain={() => setCalculationPillar("AI Visibility")}
         />
@@ -647,18 +725,32 @@ export function SummarySection({
         <div className="bg-white rounded-2xl border border-gray-200 p-5">
           <h3 className="text-sm font-bold text-[#0d0d0d] mb-4 inline-flex items-center">
             Brand visibility by AI platform
-            <Tooltip text="Visibility is the percentage of tested prompts where the platform's response mentions the brand. Each bar uses the same violet scale, with a deeper shade indicating a higher score." />
+            <Tooltip text="Visibility is the percentage of tested prompts where the platform's response mentions the brand. Platforms are grouped into Chatbots (Gemini, ChatGPT, Claude) and AI Overviews (Google). Bar colour uses a violet score scale — a deeper shade indicates higher visibility." />
           </h3>
-          <div className="space-y-3">
-            {visibilityPlatformsWithResults(perPlatform).map((plat) => {
-              const metrics = perPlatform[plat];
+          <div className="space-y-5">
+            {surfaceGroups.map((group) => {
+              const platforms = visibilityPlatformsWithResults(perPlatform, group.items);
+              if (platforms.length === 0) return null;
               return (
-                <PlatformMiniRow
-                  key={plat}
-                  platform={plat}
-                  brandPct={metrics.visibilityPct}
-                  totalPrompts={metrics.responseCount}
-                />
+                <div key={group.label}>
+                  <p className="mb-3 flex items-center gap-2 text-xs font-semibold text-gray-500">
+                    <span className="h-2 w-2 rounded-full" style={{ background: group.color }} />
+                    {group.label}
+                  </p>
+                  <div className="space-y-3">
+                    {platforms.map((plat) => {
+                      const metrics = perPlatform[plat];
+                      return (
+                        <PlatformMiniRow
+                          key={plat}
+                          platform={plat}
+                          brandPct={metrics.visibilityPct}
+                          totalPrompts={metrics.responseCount}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -686,6 +778,40 @@ export function SummarySection({
         Technical Setup and Content Quality are generated by the GEO audit engine.
         Overall = 40% AI Visibility + 30% Technical + 30% Content.
       </p>
+      {pageAudits.length > 0 ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-bold text-[#0d0d0d]">Single-page audits</h3>
+            <Link
+              to={`/report/${encodeURIComponent(auditDirOrSlug)}/single-page-audits`}
+              className="text-xs font-semibold text-violet-700 hover:text-violet-900"
+            >
+              Run another
+            </Link>
+          </div>
+          <ul className="space-y-2">
+            {pageAudits.map((item) => {
+              const href = `/page-audits/${encodeURIComponent(auditDirOrSlug)}/${encodeURIComponent(item.id)}`;
+              const overall = item.scores?.overall;
+              return (
+                <li key={item.id}>
+                  <Link
+                    to={href}
+                    className="flex items-center justify-between gap-3 rounded-lg px-2 py-2 hover:bg-gray-50"
+                  >
+                    <span className="min-w-0 truncate text-sm text-gray-800">
+                      {item.title || item.url}
+                    </span>
+                    <span className="shrink-0 text-sm font-semibold text-gray-900">
+                      {typeof overall === "number" ? formatReportScore(overall) : item.status}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
       {calculationPillar && (
         <ScoreCalculationOverlay
           label={calculationPillar}

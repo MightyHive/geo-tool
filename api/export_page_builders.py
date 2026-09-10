@@ -2082,44 +2082,53 @@ def build_recommendations_export(audit_dir: Path) -> str:
         return out
 
     # ── AI Visibility groups ──
-    low_vis: list[dict[str, Any]] = []
+    low_vis_chatbots: list[dict[str, Any]] = []
+    low_vis_overviews: list[dict[str, Any]] = []
     try:
         from api.export_builders import _map_prompt_topics, _active_platforms, _brand_mentioned
 
-        platforms = _active_platforms(live) or list(PRIMARY_PLATFORMS)
+        all_platforms = _active_platforms(live) or list(PRIMARY_PLATFORMS)
+        chatbot_platforms = [pk for pk in all_platforms if pk in {"gemini", "openai", "claude"}]
+        overview_platforms = [pk for pk in all_platforms if pk == "google_aio"]
         brand = str(ctx.get("brand_name") or live.get("brand_name") or "Brand")
         tokens = list(live.get("brand_match_tokens") or [brand])
         mapped = _map_prompt_topics(ctx, [p for p in live.get("per_prompt") or [] if isinstance(p, dict)])
         by_topic: dict[str, list[dict[str, Any]]] = {}
         for item in mapped:
             by_topic.setdefault(item["topic"], []).append(item["row"])
-        for topic, rows in by_topic.items():
-            total = hits = 0
-            for row in rows:
-                for pk in platforms:
-                    resp = str(row.get(f"{pk}_response") or "")
-                    if not resp:
-                        continue
-                    total += 1
-                    scores_row = row.get(f"mention_scores_{pk}") if isinstance(row.get(f"mention_scores_{pk}"), dict) else {}
-                    if float(scores_row.get("brand_signal") or 0) > 0 or _brand_mentioned(resp, brand, tokens):
-                        hits += 1
-            vis = (100.0 * hits / total) if total else 0.0
-            if total and _is_ok_or_below(vis):
-                low_vis.append({
-                    "title": topic,
-                    "detail": (
-                        f"Your brand appeared in {hits} of {total} analysed responses for this topic "
-                        f"({vis:.0f}% visibility)."
-                    ),
-                    "actions": [
-                        f'Create or strengthen content that directly answers the priority questions associated with “{topic}”.',
-                        "Use clear question-led headings, concise answer passages, supporting evidence, and internal links to the most relevant commercial pages.",
-                    ],
-                    "priority": priority_for(vis),
-                    "score": vis,
-                })
-        low_vis = _prepare_recommendation_items(low_vis)
+
+        def _low_vis_for(platforms: list[str]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for topic, rows in by_topic.items():
+                total = hits = 0
+                for row in rows:
+                    for pk in platforms:
+                        resp = str(row.get(f"{pk}_response") or "")
+                        if not resp:
+                            continue
+                        total += 1
+                        scores_row = row.get(f"mention_scores_{pk}") if isinstance(row.get(f"mention_scores_{pk}"), dict) else {}
+                        if float(scores_row.get("brand_signal") or 0) > 0 or _brand_mentioned(resp, brand, tokens):
+                            hits += 1
+                vis = (100.0 * hits / total) if total else 0.0
+                if total and _is_ok_or_below(vis):
+                    out.append({
+                        "title": topic,
+                        "detail": (
+                            f"Your brand appeared in {hits} of {total} analysed responses for this topic "
+                            f"({vis:.0f}% visibility)."
+                        ),
+                        "actions": [
+                            f'Create or strengthen content that directly answers the priority questions associated with “{topic}”.',
+                            "Use clear question-led headings, concise answer passages, supporting evidence, and internal links to the most relevant commercial pages.",
+                        ],
+                        "priority": priority_for(vis),
+                        "score": vis,
+                    })
+            return _prepare_recommendation_items(out)
+
+        low_vis_chatbots = _low_vis_for(chatbot_platforms)
+        low_vis_overviews = _low_vis_for(overview_platforms)
     except Exception:
         pass
 
@@ -2221,15 +2230,15 @@ def build_recommendations_export(audit_dir: Path) -> str:
     if not isinstance(per_platform, dict):
         per_platform = {}
     platform_cfg = [
-        ("gemini", "gemini", "Gemini"),
-        ("openai", "chatgpt", "ChatGPT / OpenAI"),
-        ("google_aio", "aio", "Google AI Overviews"),
-        ("claude", "claude", "Claude (Anthropic)"),
-        ("perplexity", "perplexity", "Perplexity"),
-        ("copilot", "copilot", "Microsoft Copilot"),
+        ("gemini", "gemini", "Gemini", "chatbots"),
+        ("openai", "chatgpt", "ChatGPT / OpenAI", "chatbots"),
+        ("google_aio", "aio", "Google AI Overviews", "overviews"),
+        ("claude", "claude", "Claude (Anthropic)", "chatbots"),
+        ("perplexity", "perplexity", "Perplexity", "chatbots"),
+        ("copilot", "copilot", "Microsoft Copilot", "chatbots"),
     ]
     base_by_key = {str(r.get("key") or ""): r for r in platform_rows}
-    for probe_key, base_key, label in platform_cfg:
+    for probe_key, base_key, label, _surface in platform_cfg:
         base = base_by_key.get(base_key) or base_by_key.get(probe_key)
         probe = per_platform.get(probe_key) if isinstance(per_platform.get(probe_key), dict) else None
         has_probe = bool(probe and float(probe.get("response_count") or 0) > 0)
@@ -2253,8 +2262,11 @@ def build_recommendations_export(audit_dir: Path) -> str:
             "actions": unique_actions([gap] if gap else ["Improve platform-specific technical and content readiness."]),
             "priority": priority_for(float(sc)),
             "score": float(sc),
+            "surface": _surface,
         })
     platform_items = _prepare_recommendation_items(platform_items)
+    platform_chatbots = [item for item in platform_items if item.get("surface") == "chatbots"]
+    platform_overviews = [item for item in platform_items if item.get("surface") == "overviews"]
 
     # ── Content groups ──
     eeat_items: list[dict[str, Any]] = []
@@ -2348,8 +2360,18 @@ def build_recommendations_export(audit_dir: Path) -> str:
 
     tabs = [
         ("AI Visibility", [
-            ("Low visibility topics", f"Topics at OK or below ({good_min - 1}/100 or less), ordered from the largest gap.", low_vis,
-             "No tested topic is at OK or below."),
+            ("Low visibility topics — Chatbots",
+             f"Topics at OK or below ({good_min - 1}/100 or less) across Gemini, ChatGPT, and Claude, ordered from the largest gap.",
+             low_vis_chatbots, "No tested chatbot topic is at OK or below."),
+            ("Low visibility topics — AI Overviews",
+             f"Topics at OK or below ({good_min - 1}/100 or less) in Google AI Overviews, ordered from the largest gap.",
+             low_vis_overviews, "No tested AI Overview topic is at OK or below."),
+            ("Low visibility platforms — Chatbots",
+             f"Improvement actions for chatbot platforms scoring OK or below (below {good_min}/100).",
+             platform_chatbots, "No chatbot platform is currently at OK or below."),
+            ("Low visibility platforms — AI Overviews",
+             f"Improvement actions for AI Overview platforms scoring OK or below (below {good_min}/100).",
+             platform_overviews, "No AI Overview platform is currently at OK or below."),
             ("Negative sentiment categories", "Categories where AI responses contain concerns or unfavourable brand framing.", neg_sent,
              "No negative sentiment category was detected."),
         ]),
@@ -2358,8 +2380,6 @@ def build_recommendations_export(audit_dir: Path) -> str:
              "Current crawler access rules align with the recorded recommendations."),
             ("Citability improvements", "The current What needs work findings from the Citability report.", citability_items,
              "No material Citability improvement is recorded."),
-            ("Low visibility platform actions", f"Improvement actions for platforms scoring OK or below (below {good_min}/100).", platform_items,
-             "No platform is currently at OK or below."),
         ]),
         ("Content Quality", [
             ("E-E-A-T content required", f"Content formats to strengthen E-E-A-T criteria scoring OK or below (below {good_min}/100).", eeat_items,
@@ -2431,39 +2451,10 @@ def enhance_summary_pillar_descriptions(scores: dict[str, Any], brand: str, visi
 
 
 def _load_ai_impact_estimate(audit_dir: Path) -> dict[str, Any] | None:
-    """Load stashed estimate for this audit, else newest completed run estimate."""
-    local = audit_dir / "ai_impact_estimate.json"
-    if local.is_file():
-        try:
-            raw = json.loads(local.read_text(encoding="utf-8", errors="replace"))
-            return raw if isinstance(raw, dict) else None
-        except (OSError, json.JSONDecodeError):
-            pass
-    try:
-        from api.ai_impact import _runs_root
+    """Load only the estimate explicitly attached to this audit."""
+    from api.ai_impact import load_ai_impact_estimate
 
-        root = _runs_root()
-    except Exception:
-        return None
-    if not root.is_dir():
-        return None
-    newest: tuple[float, dict[str, Any]] | None = None
-    for run_dir in root.iterdir():
-        if not run_dir.is_dir():
-            continue
-        est_path = run_dir / "estimate.json"
-        if not est_path.is_file():
-            continue
-        try:
-            mtime = est_path.stat().st_mtime
-            raw = json.loads(est_path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(raw, dict) or not (raw.get("weekly_series") or []):
-            continue
-        if newest is None or mtime > newest[0]:
-            newest = (mtime, raw)
-    return newest[1] if newest else None
+    return load_ai_impact_estimate(audit_dir)
 
 
 def _svg_ai_impact_chart(weekly: list[dict[str, Any]]) -> str:
@@ -2474,19 +2465,38 @@ def _svg_ai_impact_chart(weekly: list[dict[str, Any]]) -> str:
     pad_l, pad_r, pad_t, pad_b = 48, 16, 20, 36
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
-    keys = [
-        ("total_sessions", "#6b7280", "Total sessions"),
-        ("ai_sessions", "#2563eb", "Tracked AI"),
-        ("estimated_ai_sessions", "#7c3aed", "Estimated AI"),
-        ("counterfactual_sessions", "#d97706", "Counterfactual"),
-    ]
+    hierarchical = any(
+        isinstance(point.get("seo_uncapped_counterfactual"), dict)
+        for point in weekly
+    )
+    keys = (
+        [
+            ("seo_sessions", "#0f766e", "SEO actual"),
+            ("seo_uncapped_counterfactual", "#14b8a6", "SEO counterfactual"),
+            ("direct_sessions", "#1d4ed8", "Direct actual"),
+            ("direct_uncapped_counterfactual", "#60a5fa", "Direct counterfactual"),
+        ]
+        if hierarchical
+        else [
+            ("total_sessions", "#6b7280", "Total sessions"),
+            ("ai_sessions", "#2563eb", "Tracked AI"),
+            ("estimated_ai_sessions", "#7c3aed", "Estimated AI"),
+            ("counterfactual_sessions", "#d97706", "Counterfactual"),
+        ]
+    )
+
+    def chart_value(point: dict[str, Any], key: str) -> float:
+        value = point.get(key)
+        if isinstance(value, dict):
+            value = value.get("posterior_mean")
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
     values: list[float] = []
     for point in weekly:
         for key, _, _ in keys:
-            try:
-                values.append(float(point.get(key) or 0))
-            except (TypeError, ValueError):
-                pass
+            values.append(chart_value(point, key))
     if not values:
         return ""
     vmin, vmax = min(values), max(values)
@@ -2503,10 +2513,7 @@ def _svg_ai_impact_chart(weekly: list[dict[str, Any]]) -> str:
     for key, color, _label in keys:
         pts = []
         for i, point in enumerate(weekly):
-            try:
-                val = float(point.get(key) or 0)
-            except (TypeError, ValueError):
-                val = 0.0
+            val = chart_value(point, key)
             pts.append(f"{x_at(i):.1f},{y_at(val):.1f}")
         paths.append(
             f"<polyline fill='none' stroke='{color}' stroke-width='2' points='{' '.join(pts)}'/>"
@@ -2603,6 +2610,8 @@ def build_ga4_traffic_export(audit_dir: Path) -> str:
             [p for p in estimate["weekly_series"] if isinstance(p, dict)]
         )
         chart = _svg_ai_impact_chart(weekly)
+        posterior_outcomes = estimate.get("posterior_outcomes")
+        hierarchical = isinstance(posterior_outcomes, dict)
         quality = estimate.get("model_quality_score") or estimate.get("confidence_score")
         probability = _probability_of_result_percent(estimate.get("p_value"))
         window = ""
@@ -2611,49 +2620,76 @@ def build_ga4_traffic_export(audit_dir: Path) -> str:
         meta = []
         if window:
             meta.append(f"<span class='muted'>Window: {ESC(str(window))}</span>")
-        if isinstance(quality, (int, float)):
+        if estimate.get("category"):
+            meta.append(f"<span class='muted'>Category: {ESC(str(estimate['category']))}</span>")
+        if estimate.get("estimate_mode"):
+            meta.append(f"<span class='muted'>Mode: {ESC(str(estimate['estimate_mode']))}</span>")
+        if estimate.get("model_artifact_version"):
+            meta.append(
+                f"<span class='muted'>Model: {ESC(str(estimate['model_artifact_version']))}</span>"
+            )
+        if not hierarchical and isinstance(quality, (int, float)):
             meta.append(f"<span class='muted'>Data &amp; model quality {float(quality):.0f}%</span>")
-        if probability is not None:
+        if not hierarchical and probability is not None:
             meta.append(f"<span class='muted'>Probability of result {probability}%</span>")
         sessions_summary = ""
-        try:
-            direct = float(estimate.get("direct_ai_sessions") or 0)
-        except (TypeError, ValueError):
-            direct = None
-        indirect_label = _indirect_sessions_range_label(estimate)
-        if direct is not None or indirect_label:
+        if hierarchical:
             rows = []
-            if direct is not None:
+            for channel in ("seo", "direct"):
+                outcome = posterior_outcomes.get(channel)
+                if not isinstance(outcome, dict):
+                    continue
+                primary = outcome.get("uncapped")
+                capped = outcome.get("capped")
+                if not isinstance(primary, dict) or not isinstance(capped, dict):
+                    continue
+                def interval_label(value: dict[str, Any]) -> str:
+                    return (
+                        f"{_fmt_compact_estimate(float(value.get('posterior_mean') or 0))} "
+                        f"({_fmt_compact_estimate(float(value.get('lower_94') or 0))} to "
+                        f"{_fmt_compact_estimate(float(value.get('upper_94') or 0))})"
+                    )
                 rows.append(
                     "<tr>"
-                    "<th style='text-align:left;padding:6px 10px;font-weight:600'>Direct (tracked)</th>"
-                    f"<td style='padding:6px 10px;font-variant-numeric:tabular-nums'>"
-                    f"{ESC(f'{round(direct):,}')}</td>"
-                    "</tr>"
-                )
-            if indirect_label:
-                rows.append(
-                    "<tr>"
-                    "<th style='text-align:left;padding:6px 10px;font-weight:600'>Indirect estimate</th>"
-                    f"<td style='padding:6px 10px;font-variant-numeric:tabular-nums'>"
-                    f"{ESC(indirect_label)}</td>"
+                    f"<th style='text-align:left;padding:6px 10px;font-weight:600'>{channel.upper()}</th>"
+                    f"<td style='padding:6px 10px'>{ESC(interval_label(primary))}</td>"
+                    f"<td style='padding:6px 10px'>{ESC(interval_label(capped))}</td>"
                     "</tr>"
                 )
             sessions_summary = (
                 "<table style='margin:12px 0 0;border-collapse:collapse;font-size:13px'>"
-                "<thead><tr>"
-                "<th style='text-align:left;padding:6px 10px;color:#6b7280;font-size:11px;"
-                "text-transform:uppercase;letter-spacing:.04em'>Impact</th>"
-                "<th style='text-align:left;padding:6px 10px;color:#6b7280;font-size:11px;"
-                "text-transform:uppercase;letter-spacing:.04em'>Sessions</th>"
-                "</tr></thead>"
-                f"<tbody>{''.join(rows)}</tbody></table>"
+                "<thead><tr><th style='padding:6px 10px'>Channel</th>"
+                "<th style='padding:6px 10px'>Primary mean (94% CI)</th>"
+                "<th style='padding:6px 10px'>Capped sensitivity (94% CI)</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
             )
+        else:
+            try:
+                direct = float(estimate.get("direct_ai_sessions") or 0)
+            except (TypeError, ValueError):
+                direct = None
+            indirect_label = _indirect_sessions_range_label(estimate)
+            if direct is not None or indirect_label:
+                rows = []
+                if direct is not None:
+                    rows.append(
+                        "<tr><th style='padding:6px 10px'>Direct (tracked)</th>"
+                        f"<td style='padding:6px 10px'>{ESC(f'{round(direct):,}')}</td></tr>"
+                    )
+                if indirect_label:
+                    rows.append(
+                        "<tr><th style='padding:6px 10px'>Indirect estimate</th>"
+                        f"<td style='padding:6px 10px'>{ESC(indirect_label)}</td></tr>"
+                    )
+                sessions_summary = (
+                    "<table style='margin:12px 0 0;border-collapse:collapse;font-size:13px'>"
+                    f"<tbody>{''.join(rows)}</tbody></table>"
+                )
         parts.append(
             "<div style='padding:18px 24px 24px;border-top:1px solid rgba(0,0,0,.06)'>"
             "<h3 style='margin:0 0 4px;font-size:15px;font-weight:700'>Estimated AI impact</h3>"
-            "<p class='muted' style='margin:0 0 12px'>Weekly sources used in the model, with a counterfactual "
-            "line showing sessions after removing tracked AI and the central indirect estimate.</p>"
+            "<p class='muted' style='margin:0 0 12px'>SEO and Direct actual sessions versus the "
+            "posterior counterfactual with AI adoption frozen at baseline.</p>"
             + (f"<div style='display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px'>{''.join(meta)}</div>" if meta else "")
             + (f"<div style='overflow-x:auto'>{chart}</div>" if chart else
                "<p class='muted'>Weekly series is not available for this estimate.</p>")

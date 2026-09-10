@@ -1,0 +1,7 @@
+arviz
+google-cloud-storage
+jax
+matplotlib
+numpy
+numpyro
+pandas

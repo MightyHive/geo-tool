@@ -3,19 +3,34 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Info } from "lucide-react";
 import { PageLoading } from "./PageLoading";
 import { fetchScoreBreakdown, type ContentEvidenceExample, type ContentQualityDetails } from "../api/client";
 import { scoreColor, scoreTone, formatReportScore } from "../lib/reportScore";
+import { TextWithSampleScriptsLink } from "./SampleScriptsLink";
 
-function useContentDetails(auditDirOrSlug: string) {
-  const [details, setDetails] = useState<ContentQualityDetails | null>(null);
-  const [loading, setLoading] = useState(true);
+function useContentDetails(
+  auditDirOrSlug: string,
+  injected?: ContentQualityDetails | null,
+) {
+  const [details, setDetails] = useState<ContentQualityDetails | null>(injected ?? null);
+  const [loading, setLoading] = useState(injected === undefined);
   useEffect(() => {
+    if (injected !== undefined) {
+      setDetails(injected);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetchScoreBreakdown(auditDirOrSlug)
       .then((response) => setDetails(response.content_quality_details ?? null))
       .catch(() => setDetails(null))
       .finally(() => setLoading(false));
-  }, [auditDirOrSlug]);
+  }, [auditDirOrSlug, injected]);
   return { details, loading };
 }
+
+type ContentSectionProps = {
+  auditDirOrSlug: string;
+  onNavigate?: (sectionId: string) => void;
+  contentQualityDetails?: ContentQualityDetails | null;
+};
 
 function Loading() {
   return <PageLoading />;
@@ -56,11 +71,14 @@ function EvidenceList({ examples, emptyMessage }: { examples: ContentEvidenceExa
   );
 }
 
-export function EeatSignalsSection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const { details, loading } = useContentDetails(auditDirOrSlug);
+export function EeatSignalsSection({
+  auditDirOrSlug,
+  contentQualityDetails,
+}: ContentSectionProps) {
+  const { details, loading } = useContentDetails(auditDirOrSlug, contentQualityDetails);
   if (loading) return <Loading />;
   const rows = details?.eeat ?? [];
-  const aggregate = details?.components.find((component) => component.key === "eeat");
+  const aggregate = details?.components?.find((component) => component.key === "eeat");
   const gemini = details?.gemini_overlay;
   const geminiApplied = Boolean(gemini?.available && gemini.status === "applied");
   return (
@@ -106,8 +124,11 @@ export function EeatSignalsSection({ auditDirOrSlug }: { auditDirOrSlug: string 
   );
 }
 
-export function ContentStructureAnswerabilitySection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const { details, loading } = useContentDetails(auditDirOrSlug);
+export function ContentStructureAnswerabilitySection({
+  auditDirOrSlug,
+  contentQualityDetails,
+}: ContentSectionProps) {
+  const { details, loading } = useContentDetails(auditDirOrSlug, contentQualityDetails);
   if (loading) return <Loading />;
   const rows = details?.structure_answerability ?? [];
   return (
@@ -144,8 +165,12 @@ export function ContentStructureAnswerabilitySection({ auditDirOrSlug }: { audit
   );
 }
 
-export function SchemaEntityMarkupSection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const { details, loading } = useContentDetails(auditDirOrSlug);
+export function SchemaEntityMarkupSection({
+  auditDirOrSlug,
+  onNavigate,
+  contentQualityDetails,
+}: ContentSectionProps) {
+  const { details, loading } = useContentDetails(auditDirOrSlug, contentQualityDetails);
   if (loading) return <Loading />;
   const section = details?.schema_entity;
   if (!section) return <EvidenceList examples={[]} emptyMessage="No schema evidence is available for this audit." />;
@@ -153,34 +178,83 @@ export function SchemaEntityMarkupSection({ auditDirOrSlug }: { auditDirOrSlug: 
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold text-[#0d0d0d]">Schema &amp; Entity Markup</h2>
-        <p className="mt-1 text-sm leading-relaxed text-gray-500">{section.summary}</p>
+        <p className="mt-1 text-sm leading-relaxed text-gray-500">
+          <TextWithSampleScriptsLink text={section.summary} onNavigate={onNavigate} />
+        </p>
       </div>
       <div className="flex items-center gap-4 rounded-2xl border border-gray-200 bg-white p-5">
         <ScorePill score={section.score} />
-        <p className="text-sm text-gray-600">Combined JSON-LD coverage, schema depth and entity-linking score.</p>
+        <p className="text-sm text-gray-600">
+          <TextWithSampleScriptsLink
+            text="Combined JSON-LD coverage, schema depth and entity-linking score."
+            onNavigate={onNavigate}
+          />
+        </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-gray-200 bg-white p-5">
           <h3 className="mb-3 text-sm font-bold text-[#0d0d0d]">What is working well</h3>
           <ul className="space-y-2">
-            {section.strengths.map((finding) => <li key={finding} className="flex gap-2 text-xs text-gray-600"><CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />{finding}</li>)}
+            {section.strengths.map((finding) => (
+              <li key={finding} className="flex gap-2 text-xs text-gray-600">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                <TextWithSampleScriptsLink text={finding} onNavigate={onNavigate} />
+              </li>
+            ))}
             {!section.strengths.length && <li className="text-xs italic text-gray-400">No positive schema finding recorded.</li>}
           </ul>
         </div>
         <div className="rounded-2xl border border-gray-200 bg-white p-5">
           <h3 className="mb-3 text-sm font-bold text-[#0d0d0d]">What needs work</h3>
           <ul className="space-y-2">
-            {section.improvements.map((finding) => <li key={finding} className="flex gap-2 text-xs text-gray-600"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />{finding}</li>)}
+            {section.improvements.map((finding) => (
+              <li key={finding} className="flex gap-2 text-xs text-gray-600">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <TextWithSampleScriptsLink text={finding} onNavigate={onNavigate} />
+              </li>
+            ))}
             {!section.improvements.length && <li className="text-xs italic text-gray-400">No material schema gap recorded.</li>}
           </ul>
         </div>
       </div>
       <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
         <table className="w-full text-sm">
-          <thead><tr className="border-b border-gray-100 bg-gray-50"><th className="px-5 py-3 text-left text-[10px] uppercase tracking-wide text-gray-400">Page</th><th className="px-5 py-3 text-left text-[10px] uppercase tracking-wide text-gray-400">Schema types</th><th className="px-5 py-3 text-center text-[10px] uppercase tracking-wide text-gray-400">Blocks</th><th className="px-5 py-3 text-center text-[10px] uppercase tracking-wide text-gray-400">sameAs</th></tr></thead>
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50">
+              <th className="px-5 py-3 text-left text-[10px] uppercase tracking-wide text-gray-400">Page</th>
+              <th className="px-5 py-3 text-left text-[10px] uppercase tracking-wide text-gray-400">Schema types</th>
+              <th className="px-5 py-3 text-center text-[10px] uppercase tracking-wide text-gray-400">Blocks</th>
+              <th className="px-5 py-3 text-center text-[10px] uppercase tracking-wide text-gray-400">sameAs</th>
+            </tr>
+          </thead>
           <tbody>
-            {section.evidence.map((item) => <tr key={item.url} className="border-b border-gray-100 last:border-0"><td className="px-5 py-3"><a href={item.url} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-blue-600 hover:underline">{item.title}</a></td><td className="px-5 py-3 text-xs text-gray-500">{item.types.join(", ") || "Unclassified JSON-LD"}</td><td className="px-5 py-3 text-center text-xs">{item.blocks}</td><td className="px-5 py-3 text-center text-xs">{item.same_as_count}</td></tr>)}
-            {!section.evidence.length && <tr><td colSpan={4} className="px-5 py-8 text-center text-sm text-gray-400">No JSON-LD was found on sampled pages.</td></tr>}
+            {section.evidence.map((item) => (
+              <tr key={item.url} className="border-b border-gray-100 last:border-0">
+                <td className="px-5 py-3">
+                  <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-blue-600 hover:underline">
+                    {item.title}
+                  </a>
+                </td>
+                <td className="px-5 py-3 text-xs text-gray-500">
+                  <TextWithSampleScriptsLink
+                    text={item.types.join(", ") || "Unclassified JSON-LD"}
+                    onNavigate={onNavigate}
+                  />
+                </td>
+                <td className="px-5 py-3 text-center text-xs">{item.blocks}</td>
+                <td className="px-5 py-3 text-center text-xs">{item.same_as_count}</td>
+              </tr>
+            ))}
+            {!section.evidence.length && (
+              <tr>
+                <td colSpan={4} className="px-5 py-8 text-center text-sm text-gray-400">
+                  <TextWithSampleScriptsLink
+                    text="No JSON-LD was found on sampled pages."
+                    onNavigate={onNavigate}
+                  />
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -188,8 +262,11 @@ export function SchemaEntityMarkupSection({ auditDirOrSlug }: { auditDirOrSlug: 
   );
 }
 
-export function BrandVisibilityAuthoritySection({ auditDirOrSlug }: { auditDirOrSlug: string }) {
-  const { details, loading } = useContentDetails(auditDirOrSlug);
+export function BrandVisibilityAuthoritySection({
+  auditDirOrSlug,
+  contentQualityDetails,
+}: ContentSectionProps) {
+  const { details, loading } = useContentDetails(auditDirOrSlug, contentQualityDetails);
   if (loading) return <Loading />;
   const section = details?.brand_visibility_authority;
   if (!section) return <EvidenceList examples={[]} emptyMessage="No brand visibility scan is available for this audit." />;

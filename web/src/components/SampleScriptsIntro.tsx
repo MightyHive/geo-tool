@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, FileCode2 } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { fetchAudit, fetchScoreBreakdown } from "../api/client";
 
 const STRONG_TECHNICAL_SCORE = 75;
@@ -18,7 +18,6 @@ function scriptSignals(summary: Record<string, unknown> | null | undefined) {
 
 export function SampleScriptsIntro({ auditDirOrSlug }: SampleScriptsIntroProps) {
   const [strongSetup, setStrongSetup] = useState(false);
-  const [signals, setSignals] = useState({ robots: false, llms: false, anyJsonLd: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -30,7 +29,6 @@ export function SampleScriptsIntro({ auditDirOrSlug }: SampleScriptsIntroProps) 
       const nextSignals = scriptSignals(
         (audit?.summary ?? null) as Record<string, unknown> | null,
       );
-      setSignals(nextSignals);
       const techScore = breakdown?.technical_setup;
       setStrongSetup(
         typeof techScore === "number"
@@ -66,36 +64,6 @@ export function SampleScriptsIntro({ auditDirOrSlug }: SampleScriptsIntroProps) 
         </div>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-        <div className="border-b border-gray-100 bg-gray-50 px-6 py-3">
-          <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-            <FileCode2 className="h-3.5 w-3.5" aria-hidden="true" />
-            Sample scripts
-          </h2>
-        </div>
-        <div className="space-y-3 px-6 py-4">
-          <p className="text-sm leading-relaxed text-gray-700">
-            These are <strong>example versions of key files</strong> you can implement on the site
-            to improve AI crawler access and citability: a merged <code className="text-xs">robots.txt</code>,
-            a WebSite <code className="text-xs">JSON-LD</code> sample, and a generated{" "}
-            <code className="text-xs">llms.txt</code> skeleton. Expand each block to review and copy.
-          </p>
-          <p className="text-xs leading-relaxed text-gray-500">
-            Use them as starting points — adapt hosts, paths, and policy to your brand before
-            publishing.{" "}
-            {!signals.robots || !signals.llms || !signals.anyJsonLd ? (
-              <>
-                Current crawl signals: robots.txt{" "}
-                {signals.robots ? "found" : "missing"}, llms.txt{" "}
-                {signals.llms ? "live" : "not live"}, JSON-LD{" "}
-                {signals.anyJsonLd ? "present" : "not detected on sampled pages"}.
-              </>
-            ) : (
-              <>All three artefacts were detected on this audit’s crawl.</>
-            )}
-          </p>
-        </div>
-      </div>
     </div>
   );
 }

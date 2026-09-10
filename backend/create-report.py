@@ -3882,8 +3882,9 @@ def ensure_brand_visibility_on_audit(audit: dict[str, Any]) -> None:
         bq = (raw.get("brand_query") or "").strip()
     if not bq:
         bq = bvs.derive_brand_from_base(base)
+    same_as = list((audit.get("summary") or {}).get("unique_same_as_urls") or [])
     audit["brand_visibility"] = bvs.scan_brand_platforms(
-        bq, base, delay=0.15, brand_source="report_fallback"
+        bq, base, delay=0.15, brand_source="report_fallback", same_as_urls=same_as
     )
 
 

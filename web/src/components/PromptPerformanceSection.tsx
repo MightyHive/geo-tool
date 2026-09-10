@@ -64,6 +64,11 @@ import {
   probePlatformsLabel,
   type ProbePlatform,
 } from "../lib/probePlatforms";
+import {
+  platformsForSurface,
+  type SurfaceFilter,
+} from "../lib/visibilityMetrics";
+import { ReportFilterSelect } from "./ReportFilterSelect";
 import { Card, CardDescription, CardTitle } from "./ui/Card";
 import { CompetitorFavicon, PlatformLogo, PLATFORM_META } from "./PlatformLogo";
 import {
@@ -1016,7 +1021,7 @@ export function PromptTableRow({
   );
 }
 
-function PromptTable({
+export function PromptTable({
   auditSlug,
   ctx,
   live,
@@ -1025,6 +1030,9 @@ function PromptTable({
   activePlatforms,
   localeKey,
   onRefresh,
+  enableTagging = true,
+  enableSentimentFetch = true,
+  enableAddPrompt = true,
 }: {
   auditSlug: string;
   ctx: PromptPerformanceContext;
@@ -1034,8 +1042,12 @@ function PromptTable({
   activePlatforms: ProbePlatform[];
   localeKey?: string;
   onRefresh?: () => void;
+  enableTagging?: boolean;
+  enableSentimentFetch?: boolean;
+  enableAddPrompt?: boolean;
 }) {
   const [platformFilter, setPlatformFilter] = useState<ProbePlatform | "">("");
+  const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>("all");
   const [topicFilter, setTopicFilter] = useState<string>("");
   const [tagFilter, setTagFilter] = useState<string>("");
   /** Topics present in this set are expanded. Overall defaults to all collapsed. */
@@ -1061,6 +1073,7 @@ function PromptTable({
   const localeOptions = useMemo(() => configuredPromptLocales(ctx), [ctx]);
 
   useEffect(() => {
+    if (!enableSentimentFetch) return;
     let cancelled = false;
     let timer: number | undefined;
     const load = () => {
@@ -1085,7 +1098,7 @@ function PromptTable({
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [auditSlug, live?.per_prompt?.length]);
+  }, [auditSlug, enableSentimentFetch, live?.per_prompt?.length]);
 
   const geminiByPromptId = useMemo(
     () => buildGeminiPromptSentimentMap(llmSentiment),
@@ -1176,9 +1189,25 @@ function PromptTable({
     setTopicsSeeded(true);
   }, [allTopics, isOverallView, topicsSeeded]);
 
-  // Filter tree by topic / platform / tag without flattening the hierarchy.
+  // Platforms available under the current Chatbots / AI Overviews surface filter.
+  const surfacePlatforms = useMemo(
+    () => platformsForSurface(surfaceFilter, activePlatforms) as ProbePlatform[],
+    [surfaceFilter, activePlatforms],
+  );
+
+  // When a single platform is selected, metrics use that platform only.
+  const metricPlatforms = useMemo(
+    () => (platformFilter ? [platformFilter] : surfacePlatforms),
+    [platformFilter, surfacePlatforms],
+  );
+
+  function rowHasPlatformResponse(row: LiveProbePerPrompt, platform: ProbePlatform): boolean {
+    return completedPlatformRuns(row, platform).length > 0;
+  }
+
+  // Filter tree by topic / platform / surface / tag without flattening the hierarchy.
   const filteredTopicTree = useMemo(() => {
-    if (!topicFilter && !platformFilter && !tagFilter) {
+    if (!topicFilter && !platformFilter && !tagFilter && surfaceFilter === "all") {
       return topicTree;
     }
     const nodes: TopicMarketNode[] = [];
@@ -1189,9 +1218,12 @@ function PromptTable({
           ...market,
           prompts: market.prompts.filter((entry) => {
             if (platformFilter) {
-              const hasResponse = !!(entry.row as Record<string, unknown>)[`${platformFilter}_response`]
-                || (entry.row.list_metrics?.platforms_responded ?? []).includes(platformFilter);
-              if (!hasResponse) return false;
+              if (!rowHasPlatformResponse(entry.row, platformFilter)) return false;
+            } else if (surfaceFilter !== "all") {
+              const hasSurfaceResponse = surfacePlatforms.some((platform) =>
+                rowHasPlatformResponse(entry.row, platform),
+              );
+              if (!hasSurfaceResponse) return false;
             }
             if (tagFilter && !entry.tags.includes(tagFilter)) return false;
             return true;
@@ -1209,10 +1241,10 @@ function PromptTable({
       });
     }
     return nodes;
-  }, [topicTree, topicFilter, platformFilter, tagFilter]);
+  }, [topicTree, topicFilter, platformFilter, tagFilter, surfaceFilter, surfacePlatforms]);
 
-  const hasFilter = !!platformFilter || !!topicFilter || !!tagFilter;
-  const activeConfig = PLATFORM_CONFIG.filter((p) => activePlatforms.includes(p.key));
+  const hasFilter = !!platformFilter || !!topicFilter || !!tagFilter || surfaceFilter !== "all";
+  const activeConfig = PLATFORM_CONFIG.filter((p) => surfacePlatforms.includes(p.key));
 
   function toggleTopic(topic: string) {
     setExpandedTopics((current) => {
@@ -1333,6 +1365,7 @@ function PromptTable({
   return (
     <div>
       {/* ── Add Prompt panel ─────────────────────────────────────────────── */}
+      {enableAddPrompt ? (
       <div className="mb-4">
         <button
           type="button"
@@ -1437,8 +1470,10 @@ function PromptTable({
           </div>
         )}
       </div>
+      ) : null}
 
       {/* Bulk prompt tagging */}
+      {enableTagging ? (
       <div className="mb-4">
         <button
           type="button"
@@ -1527,61 +1562,89 @@ function PromptTable({
           </div>
         )}
       </div>
+      ) : null}
 
       {/* Filter bar — dropdowns */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 shrink-0">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <span className="flex items-center gap-1.5 pb-1.5 text-xs font-semibold text-gray-400 shrink-0">
           <Filter className="w-3.5 h-3.5" /> Filter
         </span>
 
-        {/* Platform dropdown */}
-        <select
+        <ReportFilterSelect
+          id="prompts-surface-select"
+          label="Surface"
+          hint="Chatbots (Gemini, ChatGPT, Claude) or Google AI Overviews."
+          value={surfaceFilter}
+          onChange={(e) => {
+            const next = e.target.value as SurfaceFilter;
+            setSurfaceFilter(next);
+            const nextPlatforms = platformsForSurface(next, metricPlatforms);
+            if (platformFilter && !nextPlatforms.includes(platformFilter)) {
+              setPlatformFilter("");
+            }
+          }}
+        >
+          <option value="all">All surfaces</option>
+          <option value="chatbots">Chatbots</option>
+          <option value="overviews">AI Overviews</option>
+        </ReportFilterSelect>
+
+        <ReportFilterSelect
+          id="prompts-platform-select"
+          label="Platform"
+          hint="Show prompts with a response from this platform."
           value={platformFilter}
           onChange={(e) => setPlatformFilter(e.target.value as ProbePlatform | "")}
-          className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer"
         >
           <option value="">All platforms</option>
           {activeConfig.map((p) => (
             <option key={p.key} value={p.key}>{p.label}</option>
           ))}
-        </select>
+        </ReportFilterSelect>
 
-        {/* Topic dropdown */}
         {allTopics.length > 0 && (
-          <select
+          <ReportFilterSelect
+            id="prompts-topic-select"
+            label="Topic"
+            hint="Limit the table to one product or service topic."
             value={topicFilter}
             onChange={(e) => setTopicFilter(e.target.value)}
-            className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer"
           >
             <option value="">All topics</option>
             {allTopics.map((topic) => (
               <option key={topic} value={topic}>{topic}</option>
             ))}
-          </select>
+          </ReportFilterSelect>
         )}
 
         {allTags.length > 0 && (
-          <select
+          <ReportFilterSelect
+            id="prompts-tag-select"
+            label="Tag"
             value={tagFilter}
             onChange={(e) => setTagFilter(e.target.value)}
-            className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer"
           >
             <option value="">All tags</option>
             {allTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
-          </select>
+          </ReportFilterSelect>
         )}
 
         {hasFilter && (
           <button
             type="button"
-            onClick={() => { setPlatformFilter(""); setTopicFilter(""); setTagFilter(""); }}
-            className="text-xs text-gray-400 hover:text-gray-600 underline"
+            onClick={() => {
+              setPlatformFilter("");
+              setSurfaceFilter("all");
+              setTopicFilter("");
+              setTagFilter("");
+            }}
+            className="pb-1.5 text-xs text-gray-400 underline hover:text-gray-600"
           >
             Clear
           </button>
         )}
 
-        <span className="ml-auto text-xs text-gray-400">
+        <span className="ml-auto pb-1.5 text-xs text-gray-400">
           {filteredTopicTree.length} topic{filteredTopicTree.length !== 1 ? "s" : ""}
           {hasFilter && ` of ${allTopics.length}`}
         </span>
@@ -1634,18 +1697,18 @@ function PromptTable({
               const rows = node.allRows;
               const isTopicExpanded = expandedTopics.has(topic);
               const showMarketLevel = isOverallView && node.markets.length > 1;
-              const activeCfg = PLATFORM_CONFIG.filter((p) => activePlatforms.includes(p.key));
+              const activeCfg = PLATFORM_CONFIG.filter((p) => metricPlatforms.includes(p.key));
 
               const avgVis = averageVisibilityAcrossPrompts(
                 rows,
                 rows.map((row) =>
-                  promptVisibilityPct(row, brandLabel, brandMatchTokens, activePlatforms),
+                  promptVisibilityPct(row, brandLabel, brandMatchTokens, metricPlatforms),
                 ),
               );
 
               const topicPositions: number[] = [];
               for (const row of rows) {
-                const pos = computePromptAvgPosition(row as Record<string, unknown>, brandMatchTokens, activePlatforms);
+                const pos = computePromptAvgPosition(row as Record<string, unknown>, brandMatchTokens, metricPlatforms);
                 if (pos != null) topicPositions.push(pos);
               }
               const avgTopicPosition = topicPositions.length > 0
@@ -1666,7 +1729,7 @@ function PromptTable({
 
               const rawTopicMentions = new Map<string, { name: string; website?: string }>();
               for (const row of rows) {
-                for (const p of activePlatforms) {
+                for (const p of metricPlatforms) {
                   const scores = (row as Record<string, MentionScores | undefined>)[`mention_scores_${p}`];
                   for (const [cName, hits] of Object.entries(scores?.competitor_detail ?? {})) {
                     if (
@@ -1694,7 +1757,7 @@ function PromptTable({
 
               const topicCitDomains = new Set<string>();
               for (const row of rows) {
-                for (const p of activePlatforms) {
+                for (const p of metricPlatforms) {
                   const cits = ((row as Record<string, unknown>)[`citations_${p}`] ?? []) as CitationItem[];
                   for (const c of cits) {
                     if (isPromptCitationSource(c, ctx)) topicCitDomains.add(c.domain);
@@ -1713,7 +1776,7 @@ function PromptTable({
                     const marketVis = averageVisibilityAcrossPrompts(
                       marketRows,
                       marketRows.map((row) =>
-                        promptVisibilityPct(row, brandLabel, brandMatchTokens, activePlatforms),
+                        promptVisibilityPct(row, brandLabel, brandMatchTokens, metricPlatforms),
                       ),
                     );
                     childRows.push(
@@ -1759,7 +1822,7 @@ function PromptTable({
                             productLabel={productLabel}
                             brandLabel={brandLabel}
                             brandMatchTokens={brandMatchTokens}
-                            activePlatforms={activePlatforms}
+                            activePlatforms={metricPlatforms}
                             compWebsiteMap={compWebsiteMap}
                             citationCtx={ctx}
                             tags={tags}
@@ -1793,7 +1856,7 @@ function PromptTable({
                         productLabel={productLabel}
                         brandLabel={brandLabel}
                         brandMatchTokens={brandMatchTokens}
-                        activePlatforms={activePlatforms}
+                        activePlatforms={metricPlatforms}
                         compWebsiteMap={compWebsiteMap}
                         citationCtx={ctx}
                         tags={tags}
@@ -1916,7 +1979,7 @@ function PromptTable({
           productLabel={selectedDetail.productLabel}
           brandLabel={brandLabel}
           brandMatchTokens={brandMatchTokens}
-          activePlatforms={activePlatforms}
+          activePlatforms={metricPlatforms}
           compWebsiteMap={compWebsiteMap}
           citationCtx={ctx}
           localeKey={selectedDetail.localeKey || localeKey}

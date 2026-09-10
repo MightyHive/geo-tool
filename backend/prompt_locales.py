@@ -148,14 +148,20 @@ def _with_label(locale: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def default_locale_from_market(market_country: str, market_country_code: str) -> dict[str, Any]:
-    """Wizard step-1 market + English (product default for all historical audits)."""
+def default_locale_from_market(
+    market_country: str,
+    market_country_code: str,
+    *,
+    language: str = "en",
+    language_name_override: str = "",
+) -> dict[str, Any]:
+    """Primary market locale; English remains the fallback for historical audits."""
     return _with_label(
         make_locale(
             country=market_country,
             country_code=market_country_code,
-            language="en",
-            language_name_override="English",
+            language=language,
+            language_name_override=language_name_override or language_name(language),
         )
     )
 
@@ -167,10 +173,41 @@ def normalize_prompt_locales(
     market_country_code: str = "",
 ) -> list[dict[str, Any]]:
     """
-    Normalize configured locales. Always includes primary market + English first.
+    Normalize configured locales. Keeps the configured primary-market language first,
+    falling back to English for historical audits.
     Caps at ``MAX_PROMPT_LOCALES``. Dedupes by locale key.
     """
-    default = default_locale_from_market(market_country, market_country_code)
+    primary_country = (market_country or "").strip().lower()
+    primary_code = (market_country_code or "").strip().upper()
+    configured_primary: dict[str, Any] | None = None
+    if isinstance(raw, list):
+        if not primary_code and not primary_country and raw and isinstance(raw[0], dict):
+            configured_primary = raw[0]
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            item_country = str(item.get("country") or "").strip().lower()
+            item_code = str(
+                item.get("country_code") or item.get("country_id") or ""
+            ).strip().upper()
+            if (
+                (primary_code and item_code == primary_code)
+                or (
+                    not primary_code
+                    and primary_country
+                    and item_country == primary_country
+                )
+            ):
+                configured_primary = item
+                break
+    default = default_locale_from_market(
+        market_country,
+        market_country_code,
+        language=str((configured_primary or {}).get("language") or "en"),
+        language_name_override=str(
+            (configured_primary or {}).get("language_name") or ""
+        ),
+    )
     out: list[dict[str, Any]] = [default]
     seen = {str(default["key"])}
 
@@ -268,13 +305,15 @@ def regenerate_prompts_for_language(
     market_country_code: str = "",
     source_market_country: str = "",
     source_market_country_code: str = "",
+    source_language: str = "en",
+    source_language_name: str = "English",
 ) -> list[str]:
     """
     Adapt prompts for a target market and/or language.
 
-    - Same market + English → return originals (noop).
-    - Different market (even if English) → rewrite geographic references for the new market.
-    - Non-English → translate into the target language for that market.
+    - Same market + same language → return originals (noop).
+    - Different market in the same language → rewrite geographic references.
+    - Different language → translate into the target language for that market.
     """
     cleaned = [str(p).strip() for p in prompts if str(p).strip()]
     if not cleaned:
@@ -284,9 +323,11 @@ def regenerate_prompts_for_language(
     mc, mid = resolve_primary_market(market_country, market_country_code)
     src_country = (source_market_country or "").strip() or mc
     src_code = (source_market_country_code or "").strip() or mid
+    src_lang = (source_language or "en").strip().lower() or "en"
+    src_lang_label = (source_language_name or "").strip() or language_name(src_lang)
     same_market = _same_market(src_country, src_code, mc, mid)
 
-    if lang == "en" and same_market:
+    if lang == src_lang and same_market:
         return cleaned
 
     from prompt_suggest import (
@@ -300,7 +341,7 @@ def regenerate_prompts_for_language(
     source_label = src_country or src_code or "the source market"
     target_label = mc or mid or "the target market"
 
-    if lang == "en":
+    if lang == "en" and src_lang == "en":
         system = (
             "You adapt shopper search prompts for AI assistants. "
             f"Rewrite each prompt for shoppers in {target_label}"
@@ -317,7 +358,8 @@ def regenerate_prompts_for_language(
     else:
         system = (
             "You adapt shopper search prompts for AI assistants. "
-            f"Rewrite each prompt into natural {lang_label} ({lang}) for shoppers in "
+            f"The source prompts are in {src_lang_label} ({src_lang}). "
+            f"Translate and rewrite each prompt into natural {lang_label} ({lang}) for shoppers in "
             f"{target_label}"
             + (f" ({mid})" if mid else "")
             + ". Preserve intent, product/category meaning, and brand-neutrality. "
@@ -335,7 +377,7 @@ def regenerate_prompts_for_language(
         raw = _gemini_generate(system_instruction=system, user_text=user)
     except Exception as exc:
         log.warning("Prompt locale adaptation failed (%s); using fallback", exc)
-        if lang == "en" and not same_market:
+        if lang == "en" and src_lang == "en" and not same_market:
             return _deterministic_market_rewrite(
                 cleaned,
                 source_country=src_country,
@@ -348,7 +390,7 @@ def regenerate_prompts_for_language(
     parsed = _parse_string_array(raw, expected=len(cleaned))
     if not parsed:
         log.warning("Prompt locale adaptation returned unusable JSON; using fallback")
-        if lang == "en" and not same_market:
+        if lang == "en" and src_lang == "en" and not same_market:
             return _deterministic_market_rewrite(
                 cleaned,
                 source_country=src_country,
@@ -358,7 +400,7 @@ def regenerate_prompts_for_language(
             )
         return cleaned
 
-    if phrase:
+    if phrase and lang == "en":
         parsed = [ensure_prompt_contains_geo_locator(p, phrase) for p in parsed]
     return parsed
 

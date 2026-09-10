@@ -34,15 +34,16 @@ export function PageLoadingProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const isLoading = keys.size > 0;
   const value = useMemo(
-    () => ({ setLoading, isLoading: keys.size > 0 }),
-    [keys, setLoading],
+    () => ({ setLoading, isLoading }),
+    [isLoading, setLoading],
   );
 
   return (
     <PageLoadingContext.Provider value={value}>
       {children}
-      <PageLoadingBar active={keys.size > 0} />
+      <PageLoadingBar active={isLoading} />
     </PageLoadingContext.Provider>
   );
 }
@@ -52,12 +53,17 @@ export function usePageLoadingSignal(loading: boolean, key?: string) {
   const ctx = useContext(PageLoadingContext);
   const autoKey = useId();
   const signalKey = key ?? autoKey;
+  // Depend on the stable setter, not the whole context value. The provider
+  // recreates ``value`` whenever keys change; including ``ctx`` here caused
+  // Maximum update depth (#185) when a section remounted into a loading UI
+  // (cleanup cleared the key, the new value retriggered the effect, repeat).
+  const setLoading = ctx?.setLoading;
 
   useEffect(() => {
-    if (!ctx) return;
-    ctx.setLoading(signalKey, loading);
-    return () => ctx.setLoading(signalKey, false);
-  }, [ctx, signalKey, loading]);
+    if (!setLoading) return;
+    setLoading(signalKey, loading);
+    return () => setLoading(signalKey, false);
+  }, [setLoading, signalKey, loading]);
 }
 
 /**

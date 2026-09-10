@@ -52,12 +52,15 @@ def pdf_export_job_region() -> str:
 
 
 def pdf_export_job_project() -> str:
-    return (
+    project = (
         os.getenv("PDF_EXPORT_JOB_PROJECT")
         or os.getenv("GOOGLE_CLOUD_PROJECT")
         or os.getenv("GCP_PROJECT")
-        or "emea-ds-sandbox"
+        or ""
     ).strip()
+    if not project:
+        raise RuntimeError("PDF_EXPORT_JOB_PROJECT is not configured")
+    return project
 
 
 def pdf_export_jobs_enabled() -> bool:

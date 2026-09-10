@@ -38,6 +38,7 @@ export function CountryCombobox({
     highlightedIndex,
     selectedItem,
     openMenu,
+    closeMenu,
   } = useCombobox({
     items,
     inputValue,
@@ -55,6 +56,8 @@ export function CountryCombobox({
     },
   });
 
+  const menuOpen = isOpen && items.length > 0;
+
   return (
     <div className="mb-4 relative">
       <label htmlFor={id} className="block text-sm font-medium text-brand-dark mb-1.5">
@@ -67,6 +70,10 @@ export function CountryCombobox({
           id,
           placeholder: "e.g. United Kingdom",
           onFocus: () => openMenu(),
+          onBlur: () => {
+            closeMenu();
+            setInputValue(value);
+          },
         })}
       />
       {countryCode && selectedItem && (
@@ -76,8 +83,8 @@ export function CountryCombobox({
       )}
       <ul
         {...getMenuProps()}
-        className={`absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg ${
-          isOpen && items.length ? "block" : "hidden"
+        className={`absolute z-30 mt-1 w-full max-h-56 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg ${
+          menuOpen ? "block" : "hidden pointer-events-none"
         }`}
       >
         {isOpen &&

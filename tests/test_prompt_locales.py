@@ -35,6 +35,24 @@ def test_normalize_always_includes_primary_english() -> None:
     assert locale_key("FR", "fr") == "FR:fr"
 
 
+def test_normalize_keeps_configured_primary_language() -> None:
+    locales = normalize_prompt_locales(
+        [
+            {
+                "country": "Italy",
+                "country_code": "IT",
+                "language": "it",
+                "language_name": "Italian",
+            }
+        ],
+        market_country="Italy",
+        market_country_code="IT",
+    )
+    assert locales[0]["key"] == "IT:it"
+    assert locales[0]["language_name"] == "Italian"
+    assert len(locales) == 1
+
+
 def test_normalize_dedupes_and_caps(monkeypatch) -> None:
     monkeypatch.setattr("prompt_locales.MAX_PROMPT_LOCALES", 3)
     raw = [
@@ -65,6 +83,24 @@ def test_regenerate_english_same_market_is_noop() -> None:
             market_country_code="GB",
             source_market_country="United Kingdom",
             source_market_country_code="GB",
+        )
+        == prompts
+    )
+
+
+def test_regenerate_same_italian_source_is_noop() -> None:
+    prompts = ["Quali sono i migliori conti correnti in Italia?"]
+    assert (
+        regenerate_prompts_for_language(
+            prompts,
+            target_language="it",
+            target_language_name="Italian",
+            market_country="Italy",
+            market_country_code="IT",
+            source_market_country="Italy",
+            source_market_country_code="IT",
+            source_language="it",
+            source_language_name="Italian",
         )
         == prompts
     )

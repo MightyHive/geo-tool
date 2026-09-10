@@ -2,16 +2,79 @@
 
 | Job directory | Purpose | Status |
 | --- | --- | --- |
-| `prompt_probe/` | AI prompt / AIO probes | Deployed (`geo-audit-prompt-probes`) |
+| `prompt_probe/` | AI prompt / AIO probes | Deployed (`geo-audit-prompt-probes` / staging) |
 | `prompt_sentiment/` | Gemini qualitative sentiment (overall + by_category + by_prompt) | Deployed (`geo-audit-prompt-sentiment`) |
 | `content_quality_gemini/` | Gemini E-E-A-T / answerability overlay on sampled pages | Deployed (`geo-audit-content-quality`) |
+| `topic_content_generator/` | Gemini 3.5 Flash outlines for low-visibility topics | Deployed (`geo-audit-topic-content` / staging) |
 | `audit_crawl/` | Brand + competitor site crawls | Deployed (`geo-audit-site-crawls`) |
+| `scheduler_runner/` | Daily prompt rerun + monthly crawl fan-out | Deployed (`geo-audit-scheduler-runner-dev` / `-staging`) |
 | `ga4_channel_export/` | Weekly GA4 channels | Wraps `research/ga4/ga4_channel_export.py` |
 | `gsc_export/` | Search Console | Placeholder |
+| `ai_signal_refresh/` | Optional 61-site complete-week AI portfolio signal | Available; not scheduled |
+| `ai_impact_refit/` | Async site-inclusive NumPyro SEO/Direct refit | Deployed (`geo-audit-ai-impact-refit` / staging) — own NumPyro image via `scripts/deploy_ai_impact_refit_job.sh` |
+| `ai_impact_baseline_refit/` | Full 61-site portfolio baseline retraining | Deployed as `geo-audit-ai-impact-baseline-refit`; run manually each month |
+| *(external)* `geo-audit-google-trends-weekly` | Brand weekly Google Trends (Playwright) | Deployed separately from `cloud-run-google-trends-scraper` → `geo-tool-emea-ds`; API env `GOOGLE_TRENDS_JOB_*` |
 
 See `docs/AI_TRAFFIC_IMPACT_DASHBOARD.md`.
 
-## Prompt sentiment job
+## Automated refresh (scheduler)
+
+Canonical path:
+
+1. Cloud Scheduler (`geo-audit-daily-rerun-{dev,staging}`, `geo-audit-monthly-crawl-{dev,staging}`)
+2. Pub/Sub topic `geo-audit-scheduler-topic`
+3. Cloud Function `geo-audit-scheduler-launcher` (`functions/scheduler_runner`)
+4. Environment-isolated Cloud Run Job `geo-audit-scheduler-runner-{dev,staging}`
+5. Downstream prompt-probe / site-crawl Jobs for that environment
+
+Setup / redeploy launcher + schedules:
+
+```bash
+bash scripts/setup_automated_refresh_scheduler.sh both pubsub
+```
+
+Optional exclusions (comma-separated audit folder IDs):
+
+```bash
+DEV_EXCLUDED_AUDITS=www.example.com_abc \
+STAGING_EXCLUDED_AUDITS= \
+  bash scripts/setup_automated_refresh_scheduler.sh both pubsub
+```
+
+Runner Jobs are deployed by `scripts/deploy_cloud_run_dev.sh` and
+`scripts/deploy_cloud_run_staging.sh` from the shared application image
+(`python -m jobs.scheduler_runner.run_job`). Do **not** deploy a separate
+scheduler Dockerfile.
+
+The portfolio baseline is refreshed manually each month. Refresh all 61 GA4
+exports and the approved real Google Trends series, upload an immutable input
+snapshot, then execute `geo-audit-ai-impact-baseline-refit`. Its input and output
+URIs are configured through `AI_IMPACT_TRAINING_INPUT_URI` and
+`AI_IMPACT_TRAINING_OUTPUT_URI`. It updates the model-root `CURRENT` pointer only
+after all diagnostics and holdout gates pass. `ai_signal_refresh` remains
+available as an optional signal-only operation but is not scheduled.
+
+## AI Impact site-refit job
+
+Site-inclusive NumPyro fits run as a **separate Cloud Run Job** with its own
+image (JAX/NumPyro), not the web image:
+
+```bash
+./scripts/deploy_ai_impact_refit_job.sh dev      # geo-audit-ai-impact-refit
+./scripts/deploy_ai_impact_refit_job.sh staging  # geo-audit-staging-ai-impact-refit
+```
+
+The API enqueues executions via `run_v2.JobsClient.run_job` when a run has ≥8
+eligible completed non-Christmas weeks (GA4 + brand Trends + category).
+Required API env (set by `deploy_cloud_run_{dev,staging}.sh`):
+
+- `AI_IMPACT_REFIT_MODE=cloud_run`
+- `AI_IMPACT_REFIT_JOB_NAME`
+- `AI_IMPACT_REFIT_JOB_PROJECT` / `AI_IMPACT_REFIT_JOB_REGION`
+- `AI_IMPACT_REFIT_GCS_ROOT=gs://<bucket>/ai_impact_runs`
+
+Cold-start category scoring stays in-process on the API; only the heavy refit
+is offloaded to this job.
 
 After probe finalize, the API enqueues `geo-audit-prompt-sentiment` (DEV) /
 `geo-audit-staging-prompt-sentiment` (staging) via `api/sentiment_jobs.py`.
@@ -53,6 +116,18 @@ verified findings the same way as brand.
 
 Local / no job configured: background thread
 (`CONTENT_QUALITY_FORCE_LOCAL=1` forces this).
+
+## Topic content generator job
+
+After all locale probes merge, the API computes response-weighted visibility by
+topic and enqueues one outline for the lowest-visibility topic. Other topics are
+generated on demand from the report workshop.
+
+The job runs `python -m jobs.topic_content_generator.run_job`, uses
+`GEMINI_TOPIC_CONTENT_MODEL=gemini-3.5-flash`, and stores one current atomic
+sample per topic alongside versioned topic evidence. Editable section order and
+writer instructions are passed through a request context file on the shared
+audit mount. `TOPIC_CONTENT_FORCE_LOCAL=1` enables the development fallback.
 
 ### Redeploy notes
 

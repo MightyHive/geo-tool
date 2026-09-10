@@ -62,12 +62,15 @@ def content_quality_job_region() -> str:
 
 
 def content_quality_job_project() -> str:
-    return (
+    project = (
         os.getenv("CONTENT_QUALITY_JOB_PROJECT")
         or os.getenv("GOOGLE_CLOUD_PROJECT")
         or os.getenv("GCP_PROJECT")
-        or "emea-ds-sandbox"
+        or ""
     ).strip()
+    if not project:
+        raise RuntimeError("CONTENT_QUALITY_JOB_PROJECT is not configured")
+    return project
 
 
 def content_quality_jobs_enabled() -> bool:

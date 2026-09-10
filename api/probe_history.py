@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+import os
 
 from api import geo_services as geo
 
@@ -105,7 +106,10 @@ def _save_index(audit_dir: Path, index: dict[str, Any]) -> None:
 
 # ── Summary extraction from a full probe result ───────────────────────────────
 
-def _build_daily_summary(live_probe: dict[str, Any]) -> dict[str, Any]:
+def _build_daily_summary(
+    live_probe: dict[str, Any],
+    topic_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Extract lightweight per-platform visibility + top domains from a probe result."""
     data = live_probe.get("live_probe", live_probe) if isinstance(live_probe, dict) else {}
     saved_top_sites = data.get("top_cited_sites") or []
@@ -192,10 +196,30 @@ def _build_daily_summary(live_probe: dict[str, Any]) -> dict[str, Any]:
         for s in top_sites[:20]
     ]
 
+    if topic_map:
+        topic_rows: dict[str, list[dict[str, Any]]] = {}
+        for index, row in enumerate(per_prompt):
+            topic = topic_map.get(str(row.get("prompt") or "").strip().lower())
+            if not topic:
+                topic = topic_map.get(f"__index_{index}")
+            if topic:
+                topic_rows.setdefault(topic, []).append(row)
+        summary["topic_summaries"] = {
+            topic: _build_daily_summary(
+                {"live_probe": {**data, "per_prompt": rows}},
+            )
+            for topic, rows in topic_rows.items()
+            if rows
+        }
+
     return summary
 
 
-def save_probe_to_history(audit_dir: Path, probe_result: dict[str, Any]) -> str:
+def save_probe_to_history(
+    audit_dir: Path,
+    probe_result: dict[str, Any],
+    prompt_context: dict[str, Any] | None = None,
+) -> str:
     """Save a probe result to the history folder and update the index. Returns ISO date."""
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     created_at = datetime.now(UTC).isoformat()
@@ -217,9 +241,30 @@ def save_probe_to_history(audit_dir: Path, probe_result: dict[str, Any]) -> str:
     except Exception:
         log.exception("Failed to invalidate audit JSON cache after history save")
 
-    # Build lightweight summary
+    # Build lightweight summary. Topic metadata is resolved from the persisted
+    # prompt configuration so historical charts can honour the Overview filter.
     data = probe_result.get("live_probe", probe_result)
-    summary = _build_daily_summary(data)
+    if prompt_context is None:
+        try:
+            from api.prompt_performance import _build_context_response
+
+            prompt_context = _build_context_response(audit_dir)
+        except Exception:
+            prompt_context = None
+    topic_map: dict[str, str] = {}
+    if prompt_context:
+        rows = prompt_context.get("probed_pss_rows") or prompt_context.get("pss_rows") or []
+        positional_topics: list[str] = []
+        for row in rows:
+            topic = str(row.get("product_or_service") or "Other").strip() or "Other"
+            for prompt in row.get("prompts") or []:
+                key = str(prompt or "").strip().lower()
+                if key:
+                    topic_map[key] = topic
+                positional_topics.append(topic)
+        for index, topic in enumerate(positional_topics):
+            topic_map[f"__index_{index}"] = topic
+    summary = _build_daily_summary(data, topic_map or None)
 
     # Update index
     index = _load_index(audit_dir)
@@ -342,10 +387,59 @@ def _should_rerun_today(audit_dir: Path) -> bool:
     return is_automated_tracking_eligible(audit_dir)
 
 
+def parse_excluded_audits(*sources: str | None) -> set[str]:
+    """Normalize comma-separated audit folder IDs / API paths into a match set.
+
+    Accepts folder names (``www.example.com_abc``) and API-relative paths
+    (``audit_output/www.example.com_abc``). Both forms are stored so callers
+    can match either ``id`` or ``audit_dir`` from ``list_primary_audits``.
+    """
+    excluded: set[str] = set()
+    for source in sources:
+        if not source:
+            continue
+        for part in str(source).split(","):
+            token = part.strip()
+            if not token:
+                continue
+            excluded.add(token)
+            if "/" in token:
+                excluded.add(token.rsplit("/", 1)[-1])
+    return excluded
+
+
+def _audit_is_excluded(audit_info: dict[str, Any], excluded: set[str]) -> bool:
+    if not excluded:
+        return False
+    folder_id = str(audit_info.get("id") or "").strip()
+    audit_dir = str(audit_info.get("audit_dir") or "").strip()
+    if folder_id and folder_id in excluded:
+        return True
+    if audit_dir and audit_dir in excluded:
+        return True
+    if audit_dir:
+        basename = audit_dir.rsplit("/", 1)[-1]
+        if basename in excluded:
+            return True
+    return False
+
+
+def _resolve_excluded_audits(excluded_audits: str | None = None) -> set[str]:
+    """Merge query/param exclusions with ``SCHEDULE_EXCLUDED_AUDITS`` / ``EXCLUDED_AUDITS``."""
+    return parse_excluded_audits(
+        excluded_audits,
+        os.environ.get("SCHEDULE_EXCLUDED_AUDITS"),
+        os.environ.get("EXCLUDED_AUDITS"),
+    )
+
+
 @scheduled_router.post("/daily-rerun")
-def scheduled_daily_rerun() -> dict[str, Any]:
+def scheduled_daily_rerun(excluded_audits: str | None = None) -> dict[str, Any]:
     """Bulk daily prompt re-run for audits created on/after 2026-07-22.
     Called by Cloud Scheduler at 02:00 UTC daily.
+
+    Optional query param `excluded_audits` (comma-separated) or env vars
+    `SCHEDULE_EXCLUDED_AUDITS` / `EXCLUDED_AUDITS` list audit folder names to skip.
     """
     try:
         audits = geo.list_primary_audits()
@@ -355,6 +449,7 @@ def scheduled_daily_rerun() -> dict[str, Any]:
 
     queued: list[str] = []
     skipped: list[str] = []
+    excluded_set = _resolve_excluded_audits(excluded_audits)
     from api.prompt_jobs import enqueue_prompt_job
 
     for audit_info in audits:
@@ -362,6 +457,9 @@ def scheduled_daily_rerun() -> dict[str, Any]:
         if not audit_id:
             continue
         try:
+            if _audit_is_excluded(audit_info, excluded_set):
+                skipped.append(audit_id)
+                continue
             audit_dir = geo.resolve_audit_dir(audit_id)
             if _should_rerun_today(audit_dir):
                 enqueue_prompt_job(audit_dir, mode="history", all_prompts=True)
@@ -376,10 +474,13 @@ def scheduled_daily_rerun() -> dict[str, Any]:
     return {"status": "ok", "queued": len(queued), "skipped": len(skipped), "queued_ids": queued}
 
 
-@scheduled_router.post("/weekly-crawl")
-def scheduled_weekly_crawl() -> dict[str, Any]:
-    """Weekly brand crawl (+ competitor crawl when competitors are configured) for tracked audits.
-    Called by Cloud Scheduler at 01:00 UTC every Monday.
+@scheduled_router.post("/monthly-crawl")
+def scheduled_monthly_crawl(excluded_audits: str | None = None) -> dict[str, Any]:
+    """Monthly brand crawl (+ competitor crawl when competitors are configured) for tracked audits.
+    Called by Cloud Scheduler once per month (configure Cloud Scheduler accordingly).
+
+    Optional query param `excluded_audits` (comma-separated) or env vars
+    `SCHEDULE_EXCLUDED_AUDITS` / `EXCLUDED_AUDITS` list audit folder names to skip.
     """
     from api.automated_refresh import (
         is_automated_tracking_eligible,
@@ -393,17 +494,21 @@ def scheduled_weekly_crawl() -> dict[str, Any]:
     try:
         audits = geo.list_primary_audits()
     except Exception as e:
-        log.error("scheduled_weekly_crawl: failed to list audits: %s", e)
+        log.error("scheduled_monthly_crawl: failed to list audits: %s", e)
         return {"status": "error", "message": str(e)}
 
     queued: list[dict[str, Any]] = []
     skipped: list[str] = []
+    excluded_set = _resolve_excluded_audits(excluded_audits)
 
     for audit_info in audits:
         audit_id = str(audit_info.get("audit_dir") or "")
         if not audit_id:
             continue
         try:
+            if _audit_is_excluded(audit_info, excluded_set):
+                skipped.append(audit_id)
+                continue
             audit_dir = geo.resolve_audit_dir(audit_id)
             if not is_automated_tracking_eligible(audit_dir):
                 skipped.append(audit_id)
@@ -423,10 +528,10 @@ def scheduled_weekly_crawl() -> dict[str, Any]:
                 }
             )
         except Exception as e:
-            log.warning("scheduled_weekly_crawl: skipping %s: %s", audit_id, e)
+            log.warning("scheduled_monthly_crawl: skipping %s: %s", audit_id, e)
             skipped.append(audit_id)
 
-    log.info("scheduled_weekly_crawl: queued=%d, skipped=%d", len(queued), len(skipped))
+    log.info("scheduled_monthly_crawl: queued=%d, skipped=%d", len(queued), len(skipped))
     return {"status": "ok", "queued": len(queued), "skipped": len(skipped), "queued_ids": queued}
 
 

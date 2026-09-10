@@ -1,5 +1,9 @@
 import { auditSlug } from "../lib/auditPath";
 import type {
+  DashboardConfig,
+  DashboardDataResponse,
+} from "../lib/workshopDashboard";
+import type {
   AppConfig,
   ArchiveResponse,
   AuditDetail,
@@ -25,6 +29,10 @@ import type {
   ProbeSiteProtection,
   YouTubeVideo,
   CrawlMarket,
+  GenerateContentOutlineRequest,
+  TopicContentSamplesResponse,
+  PageAuditListItem,
+  PageAuditDetail,
 } from "../types";
 
 const API = "/api";
@@ -80,6 +88,93 @@ export function fetchAudit(
   return json<AuditDetail>(
     `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}`,
     init,
+  );
+}
+
+export function fetchWorkshopDashboard(
+  auditDirOrSlug: string,
+): Promise<DashboardConfig> {
+  return json<DashboardConfig>(
+    `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}/workshop/dashboard`,
+  );
+}
+
+export function fetchWorkshopDashboardData(
+  auditDirOrSlug: string,
+): Promise<DashboardDataResponse> {
+  return json<DashboardDataResponse>(
+    `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}/workshop/dashboard-data`,
+  );
+}
+
+export function saveWorkshopDashboard(
+  auditDirOrSlug: string,
+  config: DashboardConfig,
+): Promise<DashboardConfig> {
+  return json<DashboardConfig>(
+    `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}/workshop/dashboard`,
+    {
+      method: "PUT",
+      body: JSON.stringify(config),
+    },
+  );
+}
+
+export function fetchAllPageAudits(): Promise<{ items: PageAuditListItem[] }> {
+  return json("/page-audits");
+}
+
+export function fetchPageAudits(
+  auditDirOrSlug: string,
+): Promise<{ parent_audit_id: string; items: PageAuditListItem[] }> {
+  return json(
+    `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}/page-audits`,
+  );
+}
+
+export function fetchPageAudit(
+  parentId: string,
+  pageId: string,
+): Promise<PageAuditDetail> {
+  return json(
+    `/audits/${encodeURIComponent(auditSlug(parentId))}/page-audits/${encodeURIComponent(pageId)}`,
+  );
+}
+
+export function createPageAudit(
+  auditDirOrSlug: string,
+  url: string,
+): Promise<PageAuditDetail> {
+  return json(
+    `/audits/${encodeURIComponent(auditSlug(auditDirOrSlug))}/page-audits`,
+    {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    },
+  );
+}
+
+export function suggestPageAuditPrompts(
+  parentId: string,
+  pageId: string,
+): Promise<{ prompts: string[]; generated_at?: string; source?: string }> {
+  return json(
+    `/audits/${encodeURIComponent(auditSlug(parentId))}/page-audits/${encodeURIComponent(pageId)}/suggest-prompts`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function runPageAuditPrompts(
+  parentId: string,
+  pageId: string,
+  prompts: string[],
+): Promise<{ status: string; prompts: string[]; already_running?: boolean }> {
+  return json(
+    `/audits/${encodeURIComponent(auditSlug(parentId))}/page-audits/${encodeURIComponent(pageId)}/run-prompts`,
+    {
+      method: "POST",
+      body: JSON.stringify({ prompts }),
+    },
   );
 }
 
@@ -212,7 +307,7 @@ export function suggestProductsServices(payload: {
   brand_website: string;
   market_country?: string;
   market_country_code?: string;
-}): Promise<{ rows: ProductServiceRow[] }> {
+}): Promise<{ rows: ProductServiceRow[]; model_category?: string | null }> {
   return json("/wizard/suggest-products", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -224,6 +319,8 @@ export function suggestPromptsForProducts(payload: {
   products: string[];
   market_country?: string;
   market_country_code?: string;
+  language?: string;
+  language_name?: string;
 }): Promise<{ rows: ProductServiceRow[] }> {
   return json("/wizard/suggest-prompts-for-products", {
     method: "POST",
@@ -249,6 +346,25 @@ export function fetchYouTubeInsights(
 }> {
   const slug = auditSlug(auditDirOrSlug);
   return json(`/audits/${encodeURIComponent(slug)}/youtube-insights`);
+}
+
+export function fetchTopicContentSamples(
+  auditDirOrSlug: string,
+  init?: RequestInit,
+): Promise<TopicContentSamplesResponse> {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/topic-content-samples`, init);
+}
+
+export function generateTopicContentSample(
+  auditDirOrSlug: string,
+  payload: GenerateContentOutlineRequest,
+): Promise<TopicContentSamplesResponse> {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/topic-content-samples`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export interface ContentEvidenceExample {
@@ -415,6 +531,8 @@ export function fetchScoreBreakdown(
   const slug = auditSlug(auditDirOrSlug);
   return json(`/audits/${encodeURIComponent(slug)}/score-breakdown`);
 }
+
+export type ScoreBreakdown = Awaited<ReturnType<typeof fetchScoreBreakdown>>;
 
 export function fetchExecutiveSummary(
   auditDirOrSlug: string,
@@ -922,6 +1040,8 @@ export interface RunAuditPayload {
   skip_prompt_probes?: boolean;
   /** Ignored by API when competitors are set — competitor crawl always follows. */
   follow_on_competitor_crawl?: boolean;
+  /** From suggest-products; publisher | advertiser-retail | advertiser-services */
+  model_category?: string;
 }
 
 export function startAuditBackground(
@@ -1009,29 +1129,63 @@ export async function runAuditStream(
 
 export type AiImpactRange = { low: number; central: number; high: number };
 
+export type AiImpactPosteriorInterval = {
+  posterior_mean: number;
+  lower_94: number;
+  upper_94: number;
+};
+
+export type AiImpactSensitivityOutcome = {
+  actual_sessions?: number;
+  uncapped: AiImpactPosteriorInterval;
+  capped: AiImpactPosteriorInterval;
+  sensitivity_delta?: number;
+  direction_agrees?: boolean;
+  uncertainty_agrees?: boolean;
+};
+
+export type AiImpactPosteriorOutcomes = {
+  seo: AiImpactSensitivityOutcome;
+  direct: AiImpactSensitivityOutcome;
+};
+
 export type AiImpactEstimate = {
   window_start: string;
   window_end: string;
+  category?: "advertiser-retail" | "advertiser-services" | "publisher" | string;
+  estimate_mode?: "category_posterior" | "site_refit" | string;
+  model_artifact_version?: string;
+  signal_artifact_version?: string;
+  awaiting_signal_weeks?: number;
+  posterior_outcomes?: AiImpactPosteriorOutcomes;
   direct_ai_sessions: number;
   direct_ai_purchases: number;
   total_sessions: number;
   total_purchases: number;
-  seo_sessions: number;
-  seo_purchases: number;
-  sessions_overall_net: AiImpactRange;
-  sessions_overall_gross: AiImpactRange;
-  sessions_seo_net: AiImpactRange;
-  purchases_overall: AiImpactRange;
-  purchases_seo: AiImpactRange;
+  seo_sessions?: number;
+  seo_purchases?: number;
+  sessions_overall_net?: AiImpactRange;
+  sessions_overall_gross?: AiImpactRange;
+  sessions_seo_net?: AiImpactRange;
+  purchases_overall?: AiImpactRange;
+  purchases_seo?: AiImpactRange;
   site_cvr: number;
   ai_cvr: number;
-  seo_cvr: number;
+  seo_cvr?: number;
   model_quality_score?: number;
   confidence_score?: number;
   p_value?: number | null;
-  quality_narrative: string;
+  quality_narrative?: string;
   method_notes?: string[];
   weekly_series?: AiImpactWeeklyPoint[];
+};
+
+export type AiImpactRefitState = {
+  status: "not_eligible" | "queued" | "running" | "completed" | "failed" | string;
+  eligible?: boolean;
+  eligible_weeks?: number;
+  required_weeks?: number;
+  error?: string | null;
 };
 
 export type AiImpactWeeklyPoint = {
@@ -1039,12 +1193,19 @@ export type AiImpactWeeklyPoint = {
   total_sessions: number;
   ai_sessions: number;
   seo_sessions: number;
-  non_ai_sessions: number;
-  indirect_ai_sessions: number;
-  estimated_ai_sessions: number;
-  counterfactual_sessions: number;
+  direct_sessions?: number;
+  non_ai_sessions?: number;
+  indirect_ai_sessions?: number;
+  estimated_ai_sessions?: number;
+  counterfactual_sessions?: number;
+  ai_signal?: number;
+  ai_signal_capped?: number;
+  seo_uncapped_counterfactual?: AiImpactPosteriorInterval;
+  seo_capped_counterfactual?: AiImpactPosteriorInterval;
+  direct_uncapped_counterfactual?: AiImpactPosteriorInterval;
+  direct_capped_counterfactual?: AiImpactPosteriorInterval;
   gsc_clicks?: number;
-  [key: string]: string | number | null | undefined;
+  [key: string]: string | number | AiImpactPosteriorInterval | null | undefined;
 };
 
 export type AiImpactRunStatus = {
@@ -1057,6 +1218,20 @@ export type AiImpactRunStatus = {
   conversion_events?: Array<{ event: string; label: string }>;
   jobs: Record<string, string>;
   estimate?: AiImpactEstimate | null;
+  cold_start_estimate?: AiImpactEstimate | null;
+  hierarchical_refit?: AiImpactRefitState | null;
+  category?: string | null;
+  estimate_mode?: string | null;
+  model_artifact_version?: string | null;
+  signal_artifact_version?: string | null;
+  artifact_versions?: Record<string, string>;
+  category_provenance?: Record<string, unknown> | null;
+  refit_eligibility?: {
+    eligible?: boolean;
+    eligible_weeks?: number;
+    minimum_weeks?: number;
+    reasons?: string[];
+  } | null;
   error?: string | null;
   trends_upload?: AiImpactTrendsUpload | null;
   needs_ga4_reauth?: boolean;
@@ -1064,14 +1239,36 @@ export type AiImpactRunStatus = {
 };
 
 export type AiImpactTrendsUpload = {
-  upload_id: string;
-  filename: string;
+  upload_id?: string;
+  filename?: string;
   terms: string[];
   start_date: string;
   end_date: string;
   week_count: number;
   warnings: string[];
+  source?: string;
+  query_term?: string;
+  error?: string;
+  gcs_object?: string;
+  audit_path?: string;
 };
+
+export type AiImpactConfig = {
+  default_window_weeks?: number;
+  trends_manual_upload?: boolean;
+  trends_auto_fetch?: boolean;
+  trends_required?: boolean;
+  trends_expected_start?: string;
+  trends_expected_end?: string;
+  trends_max_terms?: number;
+  trends_url?: string;
+  ga4_oauth_path?: string;
+  gsc_oauth_path?: string;
+};
+
+export function fetchAiImpactConfig(): Promise<AiImpactConfig> {
+  return json("/ai-impact/config");
+}
 
 export type GscStatus = {
   configured: boolean;
@@ -1088,10 +1285,6 @@ export type GscSite = {
   permission_level: string;
 };
 
-export function fetchAiImpactConfig(): Promise<Record<string, unknown>> {
-  return json("/ai-impact/config");
-}
-
 export function createAiImpactRun(body: {
   window_weeks?: number;
   trends_upload_id?: string | null;
@@ -1102,6 +1295,9 @@ export function createAiImpactRun(body: {
   conversion_event_name?: string;
   start_date?: string;
   end_date?: string | null;
+  audit_id?: string | null;
+  category?: string | null;
+  brand_trends_term?: string | null;
 }): Promise<AiImpactRunStatus> {
   return json("/ai-impact/runs", { method: "POST", body: JSON.stringify(body) });
 }
@@ -1136,15 +1332,51 @@ export function fetchAiImpactRun(runId: string): Promise<AiImpactRunStatus> {
   return json(`/ai-impact/runs/${encodeURIComponent(runId)}`);
 }
 
+export type SavedAiImpactEstimate = AiImpactEstimate & { _run_id?: string };
+
+/** Load the estimate persisted on the audit (dashboard restore and exports). */
+export async function fetchAiImpactEstimateForAudit(
+  auditDirOrSlug: string,
+): Promise<SavedAiImpactEstimate | null> {
+  const slug = auditSlug(auditDirOrSlug);
+  const res = await fetch(
+    `${API}/audits/${encodeURIComponent(slug)}/ai-impact-estimate`,
+    withCredentials,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || res.statusText);
+  }
+  return res.json() as Promise<SavedAiImpactEstimate>;
+}
+
 /** Persist estimate on the audit so PDF/HTML exports can include the chart. */
 export function saveAiImpactEstimateForAudit(
   auditDirOrSlug: string,
   estimate: AiImpactEstimate,
   runId?: string,
 ): Promise<{ ok: boolean }> {
-  return json(`/audits/${encodeURIComponent(auditDirOrSlug)}/ai-impact-estimate`, {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/ai-impact-estimate`, {
     method: "PUT",
     body: JSON.stringify({ estimate, run_id: runId ?? null }),
+  });
+}
+
+/** Backfill model_category on an existing audit (explicit value or Gemini classify). */
+export function setAuditModelCategory(
+  auditDirOrSlug: string,
+  body: { category?: string; classify?: boolean },
+): Promise<{
+  audit_dir: string;
+  model_category: string;
+  model_category_provenance?: Record<string, string>;
+}> {
+  const slug = auditSlug(auditDirOrSlug);
+  return json(`/audits/${encodeURIComponent(slug)}/model-category`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

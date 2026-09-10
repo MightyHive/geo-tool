@@ -54,12 +54,15 @@ def crawl_job_region() -> str:
 
 
 def crawl_job_project() -> str:
-    return (
+    project = (
         os.getenv("AUDIT_CRAWL_JOB_PROJECT")
         or os.getenv("GOOGLE_CLOUD_PROJECT")
         or os.getenv("GCP_PROJECT")
-        or "emea-ds-sandbox"
+        or ""
     ).strip()
+    if not project:
+        raise RuntimeError("AUDIT_CRAWL_JOB_PROJECT is not configured")
+    return project
 
 
 def crawl_jobs_enabled() -> bool:

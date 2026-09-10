@@ -23,6 +23,33 @@ SESSION_COLS = (
 TWeekPoint = TypeVar("TWeekPoint", bound=dict[str, Any])
 
 
+def is_model_christmas_week(dates: pd.Series) -> pd.Series:
+    """Training-parity mask for Sunday starts from Dec 15 through Jan 7."""
+    parsed = pd.to_datetime(dates)
+    month_day = parsed.dt.month * 100 + parsed.dt.day
+    return (month_day >= 1215) | (month_day <= 107)
+
+
+def select_brand_trends_column(
+    frame: pd.DataFrame, requested: str | None = None
+) -> str:
+    """Resolve the single brand Trends covariate used by the fitted model."""
+    columns = [column for column in frame.columns if column.startswith("trends_")]
+    if requested:
+        if requested not in columns:
+            raise ValueError(
+                f"Selected brand Trends term {requested!r} is not present"
+            )
+        return requested
+    if len(columns) == 1:
+        return columns[0]
+    if not columns:
+        raise ValueError("A Google Trends brand term is required")
+    raise ValueError(
+        "Multiple Google Trends terms were uploaded; select the brand term"
+    )
+
+
 def _as_of_date(as_of: date | datetime | None = None) -> date:
     if as_of is None:
         return datetime.now(timezone.utc).date()
@@ -171,7 +198,8 @@ def build_weekly_panel(
 ) -> pd.DataFrame:
     """
     Merge GA4 weekly channels with optional manual Trends and GSC metrics.
-    Adds ``mask_bf_twelfth``, ``non_ai_sessions``, ``ai_adstock`` (decay 0.7).
+    Adds the fitted Dec-15-to-Jan-07 mask and keeps the legacy festive mask for
+    old-run compatibility. GSC remains chart context and is not a model input.
     """
     df = ga4 if isinstance(ga4, pd.DataFrame) else pd.read_csv(ga4)
     df = normalize_ga4_channel_weekly(df)
@@ -199,6 +227,7 @@ def build_weekly_panel(
         ads.append(ad)
     df["ai_adstock"] = ads
     df["mask_bf_twelfth"] = festive_mask_bf_to_twelfth_night(df["week"])
+    df["mask_model_christmas"] = is_model_christmas_week(df["week"])
 
     if trends is not None:
         trend_frame = load_trends_weekly(trends)

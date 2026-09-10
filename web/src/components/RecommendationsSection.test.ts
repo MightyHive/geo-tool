@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import type { PromptPerformanceContext } from "../types";
 import { GOOD_SCORE_MIN, isOkOrBelow } from "../lib/reportScore";
 import {
+  AI_OVERVIEW_PLATFORMS,
+  CHATBOT_PLATFORMS,
+} from "../lib/visibilityMetrics";
+import {
   buildBrandAuthorityRecommendations,
   buildCitabilityRecommendations,
   buildCrawlerRecommendations,
   buildEeatRecommendations,
   buildLowVisibilityTopicRecommendations,
   buildNegativeSentimentRecommendations,
+  buildPlatformRecommendations,
   buildSampleScriptsRecommendations,
   buildSchemaRecommendations,
   buildStructureRecommendations,
+  mentionsSampleScriptArtifact,
   prepareRecommendations,
   type RecommendationItem,
 } from "./RecommendationsSection";
@@ -96,6 +102,38 @@ describe("recommendation builders", () => {
     expect(recommendations[0].title).toBe("Weak topic");
     expect(recommendations[0].score).toBe(0);
     expect(recommendations[0].actions[0]).toContain("Weak topic");
+    expect(recommendations[0].sectionId).toBe("content-outline-generator");
+    expect(recommendations[0].topic).toBe("Weak topic");
+  });
+
+  it("splits low-visibility topics by chatbot vs AI overview platforms", () => {
+    const ctx = {
+      ...promptContext(),
+      live_probe: {
+        brand_match_tokens: ["example"],
+        per_prompt: [
+          {
+            prompt: "Weak prompt",
+            runs: {
+              gemini: [{
+                response: "A generic response with no brand.",
+                mention_scores: { brand_signal: 0 },
+              }],
+              google_aio: [{
+                response: "Example is recommended.",
+                mention_scores: { brand_signal: 1 },
+              }],
+            },
+          },
+        ],
+      },
+    } as unknown as PromptPerformanceContext;
+
+    const chatbots = buildLowVisibilityTopicRecommendations(ctx, CHATBOT_PLATFORMS, "topic-chatbots");
+    const overviews = buildLowVisibilityTopicRecommendations(ctx, AI_OVERVIEW_PLATFORMS, "topic-overviews");
+
+    expect(chatbots.map((row) => row.id)).toEqual(["topic-chatbots-Weak topic"]);
+    expect(overviews).toHaveLength(0);
   });
 
   it("includes only negative sentiment categories", () => {
@@ -182,9 +220,13 @@ describe("recommendation builders", () => {
       },
     } as never;
 
-    expect(buildCrawlerRecommendations(breakdown)).toHaveLength(2);
-    expect(buildCrawlerRecommendations(breakdown)[0].title).toBe("ALLOW GPTBot");
-    expect(buildCrawlerRecommendations(breakdown)[1].actions).toContain("Publish a live llms.txt file.");
+    const crawler = buildCrawlerRecommendations(breakdown);
+    expect(crawler).toHaveLength(2);
+    expect(crawler[0].title).toBe("ALLOW GPTBot");
+    expect(crawler[0].sectionId).toBe("sample-scripts");
+    expect(crawler[1].actions).toContain("Publish a live llms.txt file.");
+    expect(crawler[1].sectionId).toBe("sample-scripts");
+    expect(mentionsSampleScriptArtifact(crawler[0].actions[0])).toBe(true);
 
     const citability = buildCitabilityRecommendations(breakdown);
     expect(citability.map((row) => row.title)).toEqual(["Direct answers", "OK band criterion"]);
@@ -196,6 +238,24 @@ describe("recommendation builders", () => {
     expect(sampleScripts.find((row) => row.id === "sample-robots")?.actions[0]).toContain(
       "Sample scripts",
     );
+    expect(sampleScripts.every((row) => row.sectionId === "sample-scripts")).toBe(true);
+  });
+
+  it("filters platform recommendations by chatbot vs overview keys", () => {
+    const breakdown = {
+      platform_readiness: [
+        { key: "chatgpt", score: 40, gap: "Ensure GPTBot is allowed in robots.txt" },
+        { key: "aio", score: 35, gap: "Add FAQ schema for AI Overviews" },
+        { key: "gemini", score: 80, gap: "Already strong" },
+      ],
+    } as never;
+
+    const chatbots = buildPlatformRecommendations(null, breakdown, ["openai", "gemini"]);
+    const overviews = buildPlatformRecommendations(null, breakdown, ["google_aio"]);
+
+    expect(chatbots.map((row) => row.title)).toEqual(["ChatGPT / OpenAI"]);
+    expect(chatbots[0].sectionId).toBe("sample-scripts");
+    expect(overviews.map((row) => row.title)).toEqual(["Google AI Overviews"]);
   });
 
   it("turns each low content-quality area into actionable recommendations", () => {

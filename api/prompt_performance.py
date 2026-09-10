@@ -827,6 +827,12 @@ def run_live_probe_job(
                 "label": "English",
             }
         ]
+    source_language = str(
+        onboarding.get("prompt_source_language") or "en"
+    ).strip().lower() or "en"
+    source_language_name = str(
+        onboarding.get("prompt_source_language_name") or "English"
+    ).strip() or "English"
 
     progress_path = audit_dir / PROBE_PROGRESS_FILE
     progress_events: list[dict[str, Any]] = []
@@ -905,9 +911,8 @@ def run_live_probe_job(
 
         default_country = str(default_locale.get("country") or "")
         default_code = str(default_locale.get("country_code") or "")
-        # Adapt whenever market or language differs from the default (English prompts
-        # still need market-specific rewrites, e.g. Belgium → Netherlands).
-        needs_adapt = lang != "en" or (
+        # Adapt whenever market or language differs from the stored source prompts.
+        needs_adapt = lang != source_language or (
             (code or country)
             and (
                 (code and default_code and code.upper() != default_code.upper())
@@ -930,6 +935,8 @@ def run_live_probe_job(
                 market_country_code=code,
                 source_market_country=default_country,
                 source_market_country_code=default_code,
+                source_language=source_language,
+                source_language_name=source_language_name,
             )
 
         def _locale_progress(
@@ -1034,6 +1041,12 @@ def run_live_probe_for_locale(
     onboarding = _load_audit_onboarding(audit_dir)
     all_locales = locales_from_onboarding(onboarding) or [_default_locale_fallback(ctx_resp)]
     default_locale = all_locales[0]
+    source_language = str(
+        onboarding.get("prompt_source_language") or "en"
+    ).strip().lower() or "en"
+    source_language_name = str(
+        onboarding.get("prompt_source_language_name") or "English"
+    ).strip() or "English"
     key = str(locale.get("key") or f"locale_{locale_index}")
     lang = str(locale.get("language") or "en").strip().lower() or "en"
     lang_name = str(locale.get("language_name") or "English")
@@ -1111,7 +1124,7 @@ def run_live_probe_for_locale(
 
     default_country = str(default_locale.get("country") or "")
     default_code = str(default_locale.get("country_code") or "")
-    needs_adapt = lang != "en" or (
+    needs_adapt = lang != source_language or (
         (code or country)
         and (
             (code and default_code and code.upper() != default_code.upper())
@@ -1134,6 +1147,8 @@ def run_live_probe_for_locale(
             market_country_code=code,
             source_market_country=default_country,
             source_market_country_code=default_code,
+            source_language=source_language,
+            source_language_name=source_language_name,
         )
 
     live = _execute_live_probe(
@@ -1477,6 +1492,16 @@ def maybe_complete_locale_fanout(
 
         side = run_post_probe_side_effects(audit_dir)
         result["side_effects"] = side
+        try:
+            from api.topic_content_jobs import enqueue_lowest_topic_content_job
+
+            topic_content = enqueue_lowest_topic_content_job(audit_dir)
+            if topic_content:
+                result["topic_content"] = topic_content
+        except Exception as exc:
+            # Outline generation is an asynchronous workshop enhancement and
+            # must never turn an otherwise successful probe run into a failure.
+            log.warning("topic content enqueue failed after fan-out merge: %s", exc)
 
         if mode == "post_audit":
             from api.audit_progress import AuditProgressState, advance_to_step

@@ -213,7 +213,7 @@ gcloud run deploy "${SERVICE}" \
   --cpu-boost \
   --no-cpu-throttling \
   --port=8080 \
-  --allow-unauthenticated \
+  --iap \
   --update-env-vars="${ENV_VARS}" \
   --update-secrets="${SET_SECRETS}" \
   --add-volume=name=geo-data,type=cloud-storage,bucket="${BUCKET}" \

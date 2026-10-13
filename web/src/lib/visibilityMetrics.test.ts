@@ -242,3 +242,47 @@ describe("notableSurfaceScoreDifference", () => {
     );
   });
 });
+
+describe("citation rate", () => {
+  it("divides brand-domain citations by all citations, counted per run", () => {
+    const ctx = makeCtx({
+      live_probe: {
+        brand_match_tokens: ["example"],
+        per_prompt: [
+          {
+            prompt: "Who is best?",
+            runs: {
+              gemini: [
+                { has_response: true, citation_domains: ["example.com", "news.com"] },
+                { has_response: true, citation_domains: ["shop.example.com", "rival.com"] },
+                { error: "timeout", citation_domains: ["example.com"] },
+              ],
+            },
+            citations_openai: [
+              { url: "https://www.example.com/a", domain: "example.com" },
+              { url: "https://other.org/b", domain: "other.org" },
+              { url: "https://notexample.com/c", domain: "notexample.com" },
+            ],
+            openai_response: "Some answer",
+          },
+        ],
+      },
+    } as unknown as Partial<PromptPerformanceContext>);
+    const metrics = computeVisibilityMetrics(ctx)!;
+    expect(metrics.perPlatform.gemini.citationCount).toBe(4);
+    expect(metrics.perPlatform.gemini.brandCitationCount).toBe(2);
+    expect(metrics.perPlatform.gemini.citationRatePct).toBe(50);
+    // Row-level fallback when runs carry no citation data.
+    expect(metrics.perPlatform.openai.citationCount).toBe(3);
+    expect(metrics.perPlatform.openai.brandCitationCount).toBe(1);
+    expect(metrics.citationCount).toBe(7);
+    expect(metrics.brandCitationCount).toBe(3);
+    expect(metrics.citationRatePct).toBeCloseTo((3 / 7) * 100);
+  });
+
+  it("reports 0% when responses have no citations", () => {
+    const metrics = computeVisibilityMetrics(makeCtx())!;
+    expect(metrics.citationCount).toBe(0);
+    expect(metrics.citationRatePct).toBe(0);
+  });
+});

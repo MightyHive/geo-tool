@@ -8,68 +8,29 @@ import {
   ensurePromptContainsGeoLocator,
   geoLocatorPhraseForMarket,
 } from "../lib/geoLocator";
-import type { ProductServiceRow } from "../types";
+import { MAX_PERSONA_PROBE_PROMPTS, MAX_TOPIC_PROBE_PROMPTS, personaTag } from "../lib/personas";
+import {
+  buildSelections,
+  countIncludedByBudget,
+  NO_PERSONA_GROUP,
+  selectionGroupKey,
+  selectionsToRows,
+  type PromptGroupBy,
+  type PromptSelection,
+} from "../lib/promptSelections";
+import type { Persona, ProductServiceRow } from "../types";
 
-export interface PromptSelection {
-  product: string;
-  prompt: string;
-  included: boolean;
-  tags: string[];
-  isCustom: boolean;
-  customTopic: boolean;
-}
+export type { PromptSelection } from "../lib/promptSelections";
 
 interface WizardPromptsStepProps {
   rows: ProductServiceRow[];
   onRowsChange: (rows: ProductServiceRow[]) => void;
+  /** Buyer personas from the Personas step (empty = skipped). */
+  personas?: Persona[];
   marketCountry?: string;
   marketCountryCode?: string;
   onBack: () => void;
   onContinue: () => void;
-}
-
-function buildSelections(rows: ProductServiceRow[]): PromptSelection[] {
-  const out: PromptSelection[] = [];
-  for (const row of rows) {
-    const product = row.product_or_service.trim();
-    if (!product) continue;
-    for (const p of row.prompts) {
-      const prompt = String(p).trim();
-      if (prompt) out.push({
-        product,
-        prompt,
-        included: true,
-        tags: row.prompt_tags?.[prompt] ?? [],
-        isCustom: row.is_custom_topic === true
-          || isCustomPromptsCategory(product)
-          || (row.custom_prompts ?? []).includes(prompt),
-        customTopic: row.is_custom_topic === true || isCustomPromptsCategory(product),
-      });
-    }
-  }
-  return out;
-}
-
-function selectionsToRows(selections: PromptSelection[]): ProductServiceRow[] {
-  const byProduct = new Map<string, PromptSelection[]>();
-  for (const s of selections) {
-    if (!s.included) continue;
-    const list = byProduct.get(s.product) ?? [];
-    list.push(s);
-    byProduct.set(s.product, list);
-  }
-  return Array.from(byProduct.entries()).map(([product_or_service, items]) => {
-    const prompts = items.map((item) => item.prompt);
-    return {
-      product_or_service,
-      prompts,
-      prompt_tags: Object.fromEntries(
-        items.filter((item) => item.tags.length).map((item) => [item.prompt, item.tags]),
-      ),
-      custom_prompts: items.filter((item) => item.isCustom).map((item) => item.prompt),
-      is_custom_topic: items.some((item) => item.customTopic),
-    };
-  });
 }
 
 function selectionKey(product: string, prompt: string): string {
@@ -146,11 +107,14 @@ function TagChip({
 export function WizardPromptsStep({
   rows,
   onRowsChange,
+  personas = [],
   marketCountry = "",
   marketCountryCode = "",
   onBack,
   onContinue,
 }: WizardPromptsStepProps) {
+  const [groupBy, setGroupBy] = useState<PromptGroupBy>("topic");
+  const [customPersona, setCustomPersona] = useState("");
   const [selections, setSelections] = useState<PromptSelection[]>(() => buildSelections(rows));
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -192,16 +156,24 @@ export function WizardPromptsStep({
     ? selections.filter((s) => s.tags.includes(activeTagFilter))
     : selections;
 
-  const grouped = sortProductGroups(
-    Array.from(
-      visibleSelections.reduce<Map<string, PromptSelection[]>>((acc, s) => {
-        const list = acc.get(s.product) ?? [];
-        list.push(s);
-        acc.set(s.product, list);
-        return acc;
-      }, new Map()).entries(),
-    ),
+  const groupedEntries = Array.from(
+    visibleSelections.reduce<Map<string, PromptSelection[]>>((acc, s) => {
+      const key = selectionGroupKey(s, groupBy);
+      const list = acc.get(key) ?? [];
+      list.push(s);
+      acc.set(key, list);
+      return acc;
+    }, new Map()).entries(),
   );
+  const personaOrder = personas.map((p) => p.name);
+  const grouped = groupBy === "persona"
+    ? [...groupedEntries].sort(([a], [b]) => {
+        const rank = (k: string) => (k === NO_PERSONA_GROUP ? 1e6 : personaOrder.indexOf(k) < 0 ? 1e5 : personaOrder.indexOf(k));
+        return rank(a) - rank(b) || a.localeCompare(b);
+      })
+    : sortProductGroups(groupedEntries);
+  const hasPersonaPrompts = selections.some((s) => s.persona);
+  const budget = countIncludedByBudget(selections);
 
   const totalIncluded = selections.filter((s) => s.included).length;
   const totalPrompts = selections.length;
@@ -223,15 +195,15 @@ export function WizardPromptsStep({
     setSelections((prev) => prev.map((s) => ({ ...s, included: false })));
   }
 
-  function selectGroup(product: string) {
+  function selectGroup(group: string) {
     setSelections((prev) =>
-      prev.map((s) => (s.product === product ? { ...s, included: true } : s)),
+      prev.map((s) => (selectionGroupKey(s, groupBy) === group ? { ...s, included: true } : s)),
     );
   }
 
-  function deselectGroup(product: string) {
+  function deselectGroup(group: string) {
     setSelections((prev) =>
-      prev.map((s) => (s.product === product ? { ...s, included: false } : s)),
+      prev.map((s) => (selectionGroupKey(s, groupBy) === group ? { ...s, included: false } : s)),
     );
   }
 
@@ -263,15 +235,27 @@ export function WizardPromptsStep({
     const category = resolvedCategory || CUSTOM_PROMPTS_LABEL;
     const customTopic = customCategory === "__new__" || isCustomPromptsCategory(category);
     setError(null);
+    const persona = customPersona.trim();
+    const tags = persona && !customTags.includes(personaTag(persona))
+      ? [...customTags, personaTag(persona)]
+      : customTags;
     const nextSelections: PromptSelection[] = [
       ...selections,
-      { product: category, prompt, included: true, tags: customTags, isCustom: true, customTopic },
+      {
+        product: category,
+        prompt,
+        included: true,
+        tags,
+        isCustom: true,
+        customTopic,
+        ...(persona ? { persona } : {}),
+      },
     ];
     setSelections(nextSelections);
     setCustomPromptInput("");
     setCustomTags([]);
     setCustomTagInput("");
-    setExpandedProduct(category);
+    setExpandedProduct(groupBy === "persona" ? persona || NO_PERSONA_GROUP : category);
   }
 
   function importCustomPromptsCsv(file: File) {
@@ -421,9 +405,43 @@ export function WizardPromptsStep({
 
       {/* ── Global select controls ─────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <p className="text-sm text-gray-700">
-          <strong>{totalIncluded}</strong> of {totalPrompts} prompts selected
-        </p>
+        <div className="text-sm text-gray-700">
+          <p>
+            <strong>{totalIncluded}</strong> of {totalPrompts} prompts selected
+          </p>
+          {hasPersonaPrompts && (
+            <p className="text-xs text-gray-500 mt-0.5">
+              Topic prompts {budget.topic}/{MAX_TOPIC_PROBE_PROMPTS} · Persona prompts{" "}
+              {budget.persona}/{MAX_PERSONA_PROBE_PROMPTS}
+              {budget.custom > 0 ? ` · Custom ${budget.custom}` : ""}
+            </p>
+          )}
+          {(budget.topic > MAX_TOPIC_PROBE_PROMPTS || budget.persona > MAX_PERSONA_PROBE_PROMPTS) && (
+            <p className="text-xs text-amber-700 mt-0.5">
+              Over budget: only the first {MAX_TOPIC_PROBE_PROMPTS} topic prompts (max 5 per topic)
+              and {MAX_PERSONA_PROBE_PROMPTS} persona prompts are probed. Deselect some to choose
+              which ones.
+            </p>
+          )}
+        </div>
+        {hasPersonaPrompts && (
+          <div className="inline-flex rounded-lg border border-gray-200 p-0.5 text-xs" role="group" aria-label="Group prompts by">
+            {(["topic", "persona"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`px-3 py-1 rounded-md font-medium ${groupBy === mode ? "bg-brand-dark text-white" : "text-gray-600 hover:bg-gray-50"}`}
+                onClick={() => {
+                  setGroupBy(mode);
+                  setExpandedProduct(null);
+                }}
+                aria-pressed={groupBy === mode}
+              >
+                By {mode}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -545,6 +563,23 @@ export function WizardPromptsStep({
               <option value="__new__">+ New category…</option>
             </select>
           </div>
+          {personas.length > 0 && (
+            <div className="flex-1 min-w-[12rem]">
+              <label className="text-xs font-medium text-gray-600 block mb-1">Persona (optional)</label>
+              <select
+                className="input-field w-full text-sm"
+                value={customPersona}
+                onChange={(e) => setCustomPersona(e.target.value)}
+              >
+                <option value="">No persona</option>
+                {personas.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {customCategory === "__new__" && (
             <div className="flex-1 min-w-[12rem]">
               <label className="text-xs font-medium text-gray-600 block mb-1">New category name</label>
@@ -712,6 +747,9 @@ export function WizardPromptsStep({
                               <p className="text-sm text-brand-dark leading-relaxed whitespace-pre-wrap break-words">
                                 {item.prompt}
                               </p>
+                              {groupBy === "persona" && (
+                                <p className="text-xs text-gray-500 mt-0.5">Topic: {item.product}</p>
+                              )}
 
                               {/* Tags row */}
                               <div className="flex flex-wrap items-center gap-1.5 mt-2">

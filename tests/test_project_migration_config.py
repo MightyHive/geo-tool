@@ -36,6 +36,8 @@ def test_deploy_scripts_use_migrated_project_and_iap(relative_path: str) -> None
     assert "GOOGLE_OAUTH_DOMAIN" in script
     assert "IAP_HOSTED_DOMAIN" in script
     assert "GSC_OAUTH_REDIRECT_URI=${SERVICE_URL}/api/gsc/callback" in script
+    assert "GEMINI_GROUNDED_MODEL" in script
+    assert "gemini-3.6-flash" in script
 
 
 @pytest.mark.parametrize("relative_path", RUNTIME_LAUNCHERS)

@@ -14,7 +14,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api import geo_services as geo
-from api.prompt_selection import select_flat_prompts_for_probing, select_prompts_for_probing
+from api.prompt_selection import (
+    clean_prompt_personas,
+    select_flat_prompts_for_probing,
+    select_prompts_for_probing,
+)
 
 router = APIRouter(prefix="/api/audits", tags=["prompt-performance"])
 log = logging.getLogger(__name__)
@@ -84,6 +88,7 @@ def _normalize_pss_rows(rows: Any) -> list[dict[str, Any]]:
                         for prompt, tags in raw_tags.items()
                         if str(prompt) in prompt_set and isinstance(tags, list)
                     },
+                    "prompt_personas": clean_prompt_personas(r.get("prompt_personas"), prompt_set),
                     "custom_prompts": [
                         str(prompt).strip()
                         for prompt in (r.get("custom_prompts") or [])
@@ -526,6 +531,11 @@ def _build_full_context_response(audit_dir: Path) -> dict[str, Any]:
         "use_pss": use_pss,
         "pss_rows": pss_rows,
         "probed_pss_rows": probed_pss_rows,
+        "personas": [
+            {"name": str(p.get("name") or "").strip(), "description": str(p.get("description") or "").strip()}
+            for p in (ctx.get("personas") or [])
+            if isinstance(p, dict) and str(p.get("name") or "").strip()
+        ],
         "flat_prompts": flat,
         "prompt_count": len(probed_flat) if probed_flat else len(flat),
         "stored_prompt_count": len(flat),

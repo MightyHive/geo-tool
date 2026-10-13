@@ -48,8 +48,17 @@ def _pending_file_active(path: Path) -> bool:
 
 def crawl_job_is_active(audit_dir: Path) -> bool:
     """True while a full-audit Cloud Run / local crawl job pending file is active."""
-    from api.crawl_jobs import FULL_AUDIT_PENDING_FILE
+    from api.crawl_jobs import (
+        FULL_AUDIT_PENDING_FILE,
+        reconcile_crawl_job_pending,
+    )
 
+    reconciled = reconcile_crawl_job_pending(audit_dir, mode="full_audit")
+    if reconciled and str(reconciled.get("status") or "") in {
+        "completed",
+        "failed",
+    }:
+        return False
     return _pending_file_active(audit_dir / FULL_AUDIT_PENDING_FILE)
 
 

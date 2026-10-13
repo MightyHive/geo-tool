@@ -91,8 +91,15 @@ class WizardProductRow(BaseModel):
     product_or_service: str = ""
     prompts: list[str] = Field(default_factory=list)
     prompt_tags: dict[str, list[str]] = Field(default_factory=dict)
+    # prompt -> buyer persona name (persona prompts have their own probe budget)
+    prompt_personas: dict[str, str] = Field(default_factory=dict)
     custom_prompts: list[str] = Field(default_factory=list)
     is_custom_topic: bool = False
+
+
+class WizardPersonaRow(BaseModel):
+    name: str = ""
+    description: str = ""
 
 
 class WizardCompetitorRow(BaseModel):
@@ -126,6 +133,7 @@ class RunAuditRequest(BaseModel):
     wizard_prompt_locales: list[dict[str, Any]] = Field(default_factory=list)
     wizard_additional_markets: list[WizardAdditionalMarketRow] = Field(default_factory=list)
     wizard_products: list[WizardProductRow] = Field(default_factory=list)
+    wizard_personas: list[WizardPersonaRow] = Field(default_factory=list, max_length=8)
     wizard_competitors: list[WizardCompetitorRow] = Field(default_factory=list, max_length=10)
     crawl_urls: list[str] | None = None
     notification_email: str | None = None
@@ -727,6 +735,7 @@ def run_audit(body: RunAuditRequest, request: Request) -> StreamingResponse:
                 preserve_prompt_data=body.skip_prompt_probes,
                 prompt_locales=list(body.wizard_prompt_locales or []),
                 notification_email=notify,
+                personas=[p.model_dump() for p in body.wizard_personas],
             )
             rel = geo.audit_dir_api_rel(adir)
             yield f"data: {json.dumps({'type': 'started', 'audit_dir': rel})}\n\n"

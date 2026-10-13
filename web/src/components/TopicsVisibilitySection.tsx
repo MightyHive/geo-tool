@@ -29,7 +29,7 @@ import {
   type VisibilityMetrics,
 } from "../lib/visibilityMetrics";
 import { tooltipItemSorterByValueDesc } from "../lib/chartTooltip";
-import SovVisibilityScatter, { topicSovVisibilityPoints } from "./SovVisibilityScatter";
+import CitationVisibilityScatter, { topicCitationVisibilityPoints } from "./CitationVisibilityScatter";
 
 function formatPct(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -169,11 +169,11 @@ export function TopicsVisibilitySection({ auditDirOrSlug }: { auditDirOrSlug: st
         </div>
       ) : (
         <>
-          <SovVisibilityScatter
-            title="SOV vs Visibility: Topics"
+          <CitationVisibilityScatter
+            title="Citation Rate vs Visibility: Topics"
             subtitle="Your brand by product or service topic"
             dimensionLabel="Topic"
-            points={topicSovVisibilityPoints(localeCtx)}
+            points={topicCitationVisibilityPoints(localeCtx)}
             emptyMessage="No topic data available yet."
           />
 

@@ -20,6 +20,10 @@ CRAWL_JOB_REQUESTS_DIR = "crawl_job_requests"
 FULL_AUDIT_PENDING_FILE = "audit_crawl_pending.json"
 COMPETITOR_CRAWL_PENDING_FILE = "competitor_crawl_pending.json"
 GA4_ADC_FILENAME = "ga4_adc.json"
+# Cloud Run currently enforces a 2h task timeout. Allow a short control-plane
+# buffer, then stop trusting an active marker even if a killed container never
+# reached its ``finally`` cleanup.
+DEFAULT_CRAWL_JOB_PENDING_MAX_AGE_SECONDS = (2 * 60 * 60) + (15 * 60)
 
 
 def _utc_now() -> str:
@@ -86,6 +90,87 @@ def _active_request(pending: Path) -> dict[str, Any] | None:
     if str(payload.get("status") or "") in {"queued", "starting", "running"}:
         return payload
     return None
+
+
+def crawl_job_pending_max_age_seconds() -> int:
+    raw = (os.getenv("AUDIT_CRAWL_PENDING_MAX_AGE_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(60, int(raw))
+        except ValueError:
+            log.warning(
+                "Ignoring invalid AUDIT_CRAWL_PENDING_MAX_AGE_SECONDS=%r",
+                raw,
+            )
+    return DEFAULT_CRAWL_JOB_PENDING_MAX_AGE_SECONDS
+
+
+def reconcile_crawl_job_pending(
+    audit_dir: Path,
+    *,
+    mode: CrawlJobMode,
+) -> dict[str, Any] | None:
+    """Clear terminal or over-age crawl markers left by killed Cloud Run tasks."""
+    pending_path = _pending_path(audit_dir, mode)
+    pending = _read_json(pending_path)
+    if not pending:
+        return None
+    if str(pending.get("status") or "") not in {"queued", "starting", "running"}:
+        return pending
+
+    request_id = str(pending.get("request_id") or "").strip()
+    manifest_path = (
+        audit_dir / CRAWL_JOB_REQUESTS_DIR / f"{request_id}.json"
+        if request_id
+        else None
+    )
+    manifest = _read_json(manifest_path) if manifest_path is not None else None
+    manifest_status = str((manifest or {}).get("status") or "").strip().lower()
+
+    if manifest_status == "completed":
+        pending_path.unlink(missing_ok=True)
+        return {**pending, "status": "completed", "reconciled": True}
+
+    failure_statuses = {"failed", "launch_failed", "cancelled", "error"}
+    failure = manifest_status in failure_statuses
+    age = geo.running_status_age_seconds(pending)
+    over_age = age is not None and age >= crawl_job_pending_max_age_seconds()
+    if not failure and not over_age:
+        return pending
+
+    if failure:
+        error = str((manifest or {}).get("error") or "Crawl job failed.")
+    else:
+        error = (
+            "Crawl job exceeded its maximum runtime or the worker stopped "
+            "before publishing a terminal status."
+        )
+        if manifest is not None and manifest_path is not None:
+            manifest.update(
+                {
+                    "status": "failed",
+                    "error": error,
+                    "completed_at": _utc_now(),
+                    "reconciled": True,
+                }
+            )
+            _write_json(manifest_path, manifest)
+
+    log.warning(
+        "Clearing failed crawl marker for %s (mode=%s, request=%s, age=%s)",
+        geo.audit_dir_api_rel(audit_dir),
+        mode,
+        request_id or "unknown",
+        f"{int(age)}s" if age is not None else "unknown",
+    )
+    pending_path.unlink(missing_ok=True)
+    return {
+        **pending,
+        "status": "failed",
+        "error": error,
+        "completed_at": _utc_now(),
+        "reconciled": True,
+    }
 
 
 def persist_ga4_adc(audit_dir: Path, source_path: str | Path | None) -> str | None:

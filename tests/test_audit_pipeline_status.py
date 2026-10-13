@@ -199,6 +199,66 @@ def test_list_primary_audits_exposes_still_running(tmp_path: Path, monkeypatch: 
     assert rows[0]["pipeline_phase"] == get_audit_run_phase(audit)["phase"]
 
 
+def test_list_primary_audits_reconciles_timed_out_crawl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api import crawl_jobs
+    from api import geo_services as geo
+
+    audit = tmp_path / "www.example.com_stale"
+    audit.mkdir()
+    _write(
+        audit / "audit_summary.json",
+        {
+            "audit_label": "primary",
+            "base_url": "https://www.example.com",
+            "overall_score": None,
+        },
+    )
+    _write(
+        audit / "audit_run_status.json",
+        {
+            "status": "running",
+            "percent": 19,
+            "detail": "Crawling competitor sites",
+            "updated_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    _write(
+        audit / crawl_jobs.FULL_AUDIT_PENDING_FILE,
+        {
+            "status": "running",
+            "request_id": "stale-request",
+            "started_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    _write(
+        audit
+        / crawl_jobs.CRAWL_JOB_REQUESTS_DIR
+        / "stale-request.json",
+        {
+            "status": "running",
+            "request_id": "stale-request",
+            "mode": "full_audit",
+        },
+    )
+    monkeypatch.setattr(geo, "audit_output_base", lambda: tmp_path)
+    monkeypatch.setattr(crawl_jobs, "crawl_job_pending_max_age_seconds", lambda: 60)
+
+    rows = geo.list_primary_audits()
+
+    assert len(rows) == 1
+    assert rows[0]["still_running"] is False
+    assert rows[0]["pipeline_phase"] == "idle"
+    assert rows[0]["run_status"] == "error"
+    assert "maximum runtime" in rows[0]["run_error"]
+    status = json.loads((audit / "audit_run_status.json").read_text())
+    assert status["status"] == "error"
+    assert status["reconciled"] is True
+    assert not (audit / crawl_jobs.FULL_AUDIT_PENDING_FILE).exists()
+
+
 def test_read_run_status_not_done_while_sentiment_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -121,3 +121,83 @@ def test_crawl_jobs_enabled_respects_env(monkeypatch) -> None:
 
     monkeypatch.setenv("AUDIT_CRAWL_FORCE_LOCAL", "1")
     assert crawl_jobs.crawl_jobs_enabled() is False
+
+
+def test_reconcile_crawl_job_pending_marks_over_age_request_failed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    audit_dir = tmp_path / "example-com"
+    audit_dir.mkdir()
+    request_id = "stale-request"
+    pending = audit_dir / crawl_jobs.FULL_AUDIT_PENDING_FILE
+    pending.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "request_id": request_id,
+                "started_at": "2020-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = (
+        audit_dir
+        / crawl_jobs.CRAWL_JOB_REQUESTS_DIR
+        / f"{request_id}.json"
+    )
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "request_id": request_id,
+                "mode": "full_audit",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(crawl_jobs, "crawl_job_pending_max_age_seconds", lambda: 60)
+
+    result = crawl_jobs.reconcile_crawl_job_pending(
+        audit_dir,
+        mode="full_audit",
+    )
+
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["reconciled"] is True
+    assert not pending.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["reconciled"] is True
+
+
+def test_reconcile_crawl_job_pending_keeps_fresh_request(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    audit_dir = tmp_path / "example-com"
+    audit_dir.mkdir()
+    pending = audit_dir / crawl_jobs.FULL_AUDIT_PENDING_FILE
+    pending.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "request_id": "fresh-request",
+                "started_at": "2020-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(crawl_jobs.geo, "running_status_age_seconds", lambda _p: 30)
+    monkeypatch.setattr(crawl_jobs, "crawl_job_pending_max_age_seconds", lambda: 60)
+
+    result = crawl_jobs.reconcile_crawl_job_pending(
+        audit_dir,
+        mode="full_audit",
+    )
+
+    assert result is not None
+    assert result["status"] == "running"
+    assert pending.exists()

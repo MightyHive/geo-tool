@@ -27,6 +27,8 @@ import { WizardGa4Step } from "../components/WizardGa4Step";
 import { WizardPagesStep } from "../components/WizardPagesStep";
 import { WizardCompetitorsStep } from "../components/WizardCompetitorsStep";
 import { WizardGeneratePromptsStep } from "../components/WizardGeneratePromptsStep";
+import { WizardPersonasStep } from "../components/WizardPersonasStep";
+import { cleanPersonas, stripPersonaPrompts } from "../lib/personas";
 import { WizardPromptsStep } from "../components/WizardPromptsStep";
 import { WizardProductsStep, type ProductsSuggestStatus } from "../components/WizardProductsStep";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
@@ -47,11 +49,12 @@ import type {
   AuditRunStatusResponse,
   CompetitorDetail,
   CrawlMarket,
+  Persona,
   ProductServiceRow,
   VerifiedSite,
 } from "../types";
 
-const MAX_WIZARD_STEP = 8;
+const MAX_WIZARD_STEP = 9;
 
 function parseApiDetail(raw: string): string {
   try {
@@ -69,9 +72,10 @@ const WIZARD_STEPS = [
   { id: 3, label: "Pages" },
   { id: 4, label: "Products" },
   { id: 5, label: "Competitors" },
-  { id: 6, label: "Markets & prompts" },
-  { id: 7, label: "Review prompts" },
-  { id: 8, label: "Run" },
+  { id: 6, label: "Personas" },
+  { id: 7, label: "Markets & prompts" },
+  { id: 8, label: "Review prompts" },
+  { id: 9, label: "Run" },
 ];
 
 function runStatusToProgress(status: AuditRunStatusResponse): AuditRunProgressPayload | null {
@@ -120,6 +124,7 @@ export function NewAuditPage() {
   const productsSuggestGenRef = useRef(0);
   const productsSuggestKeyRef = useRef("");
   const [competitorDetails, setCompetitorDetails] = useState<CompetitorDetail[]>([]);
+  const [personas, setPersonas] = useState<Persona[] | null>(null);
   const [ga4PropertyId, setGa4PropertyId] = useState("");
   const [ga4AiChannels, setGa4AiChannels] = useState("");
   const [ga4ConversionEventName, setGa4ConversionEventName] = useState("purchase");
@@ -165,6 +170,7 @@ export function NewAuditPage() {
     if (draft.selectedProducts?.length) setSelectedProducts(draft.selectedProducts);
     if (draft.modelCategory) setModelCategory(draft.modelCategory);
     if (draft.competitorDetails?.length) setCompetitorDetails(draft.competitorDetails);
+    if (draft.personas?.length) setPersonas(draft.personas);
     if (draft.ga4PropertyId) setGa4PropertyId(draft.ga4PropertyId);
     if (draft.ga4AiChannels) setGa4AiChannels(draft.ga4AiChannels);
     if (draft.ga4ConversionEventName) {
@@ -203,6 +209,7 @@ export function NewAuditPage() {
     productsSuggestGenRef.current += 1;
     productsSuggestKeyRef.current = "";
     setCompetitorDetails([]);
+    setPersonas(null);
     setGa4PropertyId("");
     setGa4AiChannels("");
     setGa4ConversionEventName("purchase");
@@ -383,11 +390,12 @@ export function NewAuditPage() {
       selectedProducts,
       modelCategory: modelCategory || undefined,
       competitorDetails,
+      personas,
       ga4PropertyId,
       ga4AiChannels,
       ga4ConversionEventName,
       wizardStep: step,
-      promptsReady: step > 6,
+      promptsReady: step > 7,
       crawlUrls,
     });
   }, [
@@ -405,6 +413,7 @@ export function NewAuditPage() {
     selectedProducts,
     modelCategory,
     competitorDetails,
+    personas,
     ga4PropertyId,
     ga4AiChannels,
     ga4ConversionEventName,
@@ -665,9 +674,11 @@ export function NewAuditPage() {
           product_or_service: r.product_or_service.trim(),
           prompts: r.prompts.map((p) => String(p).trim()).filter(Boolean),
           prompt_tags: r.prompt_tags ?? {},
+          prompt_personas: r.prompt_personas ?? {},
           custom_prompts: r.custom_prompts ?? [],
           is_custom_topic: r.is_custom_topic ?? false,
         })),
+        wizard_personas: cleanPersonas(personas),
         wizard_competitors: competitorDetails
           .filter((r) => r.competitor_website.trim())
           .slice(0, 10)
@@ -946,6 +957,26 @@ export function NewAuditPage() {
       )}
 
       {step === 6 && (
+        <WizardPersonasStep
+          brandWebsite={resolveBrandWebsite()}
+          brandName={brandName.trim()}
+          industry={industry === INDUSTRY_PLACEHOLDER ? "" : industry}
+          productNames={selectedProductNames()}
+          marketCountry={marketCountry}
+          marketCountryCode={marketCountryCode}
+          personas={personas}
+          onPersonasChange={(next) => {
+            const changed = JSON.stringify(cleanPersonas(next)) !== JSON.stringify(cleanPersonas(personas));
+            setPersonas(next);
+            // Persona prompts are regenerated on the next step whenever personas change.
+            if (changed) setProductRows((rows) => stripPersonaPrompts(rows));
+          }}
+          onBack={() => goToStep(5)}
+          onContinue={() => goToStep(7)}
+        />
+      )}
+
+      {step === 7 && (
         <WizardGeneratePromptsStep
           brandWebsite={resolveBrandWebsite()}
           marketCountry={marketCountry}
@@ -958,23 +989,25 @@ export function NewAuditPage() {
           onPromptLocalesChange={setPromptLocales}
           rows={productRows}
           onRowsChange={setProductRows}
-          onBack={() => goToStep(5)}
-          onContinue={() => goToStep(7)}
-        />
-      )}
-
-      {step === 7 && (
-        <WizardPromptsStep
-          rows={productRows}
-          onRowsChange={setProductRows}
-          marketCountry={marketCountry}
-          marketCountryCode={marketCountryCode}
+          personas={cleanPersonas(personas)}
           onBack={() => goToStep(6)}
           onContinue={() => goToStep(8)}
         />
       )}
 
       {step === 8 && (
+        <WizardPromptsStep
+          rows={productRows}
+          onRowsChange={setProductRows}
+          personas={cleanPersonas(personas)}
+          marketCountry={marketCountry}
+          marketCountryCode={marketCountryCode}
+          onBack={() => goToStep(7)}
+          onContinue={() => goToStep(9)}
+        />
+      )}
+
+      {step === 9 && (
         <div className="card-surface p-6 mb-6">
           <h3>Run audit</h3>
           <p className="text-sm text-gray-600 mb-4">
@@ -1029,7 +1062,7 @@ export function NewAuditPage() {
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => goToStep(7)}
+              onClick={() => goToStep(8)}
               disabled={running}
             >
               ← Back

@@ -19,10 +19,11 @@ import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales"
 import VisibilityOverTime from "./VisibilityOverTime";
 import CitationOverTime from "./CitationOverTime";
 import SentimentOverTime from "./SentimentOverTime";
-import SovVisibilityScatter, {
-  platformSovVisibilityPoints,
-  topicSovVisibilityPoints,
-} from "./SovVisibilityScatter";
+import CitationVisibilityScatter, {
+  platformCitationVisibilityPoints,
+  topicCitationVisibilityPoints,
+} from "./CitationVisibilityScatter";
+import PersonaOverviewSection from "./PersonaOverviewSection";
 import {
   BrandCompetitorVisibility,
   BrandCompetitorVisibilityTable,
@@ -781,20 +782,21 @@ export function AiVisibilityOverview({ auditDirOrSlug }: AiVisibilityOverviewPro
         </DeferredChart>
       </div>
       <div className="space-y-4">
-        <SovVisibilityScatter
-          title="SOV vs Visibility: Platforms"
+        <CitationVisibilityScatter
+          title="Citation Rate vs Visibility: Platforms"
           subtitle="Your brand by responding platform"
           dimensionLabel="Platform"
-          points={platformSovVisibilityPoints(visibilityMetrics)}
+          points={platformCitationVisibilityPoints(visibilityMetrics)}
           emptyMessage="No platform data available yet."
         />
-        <SovVisibilityScatter
-          title="SOV vs Visibility: Topics"
+        <CitationVisibilityScatter
+          title="Citation Rate vs Visibility: Topics"
           subtitle="Your brand by product or service topic"
           dimensionLabel="Topic"
-          points={topicSovVisibilityPoints(localeCtx)}
+          points={topicCitationVisibilityPoints(localeCtx)}
           emptyMessage="No topic data available yet."
         />
+        <PersonaOverviewSection ctx={localeCtx} />
       </div>
 
       <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">

@@ -69,3 +69,9 @@ def test_competitor_api_citation_is_kept() -> None:
     assert len(merged) == 1
     assert merged[0]["domain"] == "rival.com"
     assert merged[0]["origin"] == "api"
+
+
+def test_text_fallback_keeps_brand_domain_for_citation_rate() -> None:
+    response = "See https://www.example.com/guide and https://www.aad.org/eczema."
+    merged = _merge_citations([], response, "https://example.com")
+    assert {c["domain"] for c in merged} == {"example.com", "aad.org"}

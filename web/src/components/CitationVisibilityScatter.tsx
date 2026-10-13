@@ -13,7 +13,12 @@ import {
   computeVisibilityMetrics,
   type VisibilityMetrics,
 } from "../lib/visibilityMetrics";
-import { filterContextByTopic, listProbeTopics } from "../lib/promptCategoryGrouping";
+import {
+  filterContextByPersona,
+  filterContextByTopic,
+  listProbePersonas,
+  listProbeTopics,
+} from "../lib/promptCategoryGrouping";
 import { PLATFORM_META } from "./PlatformLogo";
 
 /** Round an axis ceiling up to a readable percent tick (e.g. 9 → 10). */
@@ -39,17 +44,24 @@ const TOPIC_COLORS = [
   "#0369A1",
 ];
 
-export type SovVisibilityPoint = {
+export type CitationVisibilityPoint = {
   id: string;
   label: string;
   visibility: number;
-  sov: number;
+  /** Citations to the brand's own domain ÷ all citations × 100. */
+  citationRate: number;
+  brandCitationCount: number;
+  citationCount: number;
   color: string;
 };
 
-export function platformSovVisibilityPoints(
+/** Plain-language definition shown under each Citation Rate chart. */
+export const CITATION_RATE_DEFINITION =
+  "Citation rate = citations to your website ÷ all citations in AI responses.";
+
+export function platformCitationVisibilityPoints(
   metrics: VisibilityMetrics | null | undefined,
-): SovVisibilityPoint[] {
+): CitationVisibilityPoint[] {
   if (!metrics) return [];
   return Object.entries(metrics.perPlatform)
     .filter(([, value]) => value.responseCount > 0)
@@ -57,15 +69,17 @@ export function platformSovVisibilityPoints(
       id: platform,
       label: PLATFORM_META[platform]?.label ?? platform,
       visibility: Number(value.visibilityPct.toFixed(1)),
-      sov: Number(value.sovPct.toFixed(1)),
+      citationRate: Number(value.citationRatePct.toFixed(1)),
+      brandCitationCount: value.brandCitationCount,
+      citationCount: value.citationCount,
       color: PLATFORM_META[platform]?.color ?? "#8B5CF6",
     }));
 }
 
-/** One point per product/service topic (overall visibility + SOV). */
-export function topicSovVisibilityPoints(
+/** One point per product/service topic (overall visibility + citation rate). */
+export function topicCitationVisibilityPoints(
   ctx: PromptPerformanceContext | null | undefined,
-): SovVisibilityPoint[] {
+): CitationVisibilityPoint[] {
   if (!ctx) return [];
   return listProbeTopics(ctx)
     .map((topic, index) => {
@@ -76,17 +90,42 @@ export function topicSovVisibilityPoints(
         id: topic,
         label: topic,
         visibility: Number(metrics.visibilityPct.toFixed(1)),
-        sov: Number(metrics.sovPct.toFixed(1)),
+        citationRate: Number(metrics.citationRatePct.toFixed(1)),
+        brandCitationCount: metrics.brandCitationCount,
+        citationCount: metrics.citationCount,
         color: TOPIC_COLORS[index % TOPIC_COLORS.length],
-      } satisfies SovVisibilityPoint;
+      } satisfies CitationVisibilityPoint;
     })
-    .filter((point): point is SovVisibilityPoint => point != null);
+    .filter((point): point is CitationVisibilityPoint => point != null);
+}
+
+/** One point per buyer persona (prompts written for that persona). */
+export function personaCitationVisibilityPoints(
+  ctx: PromptPerformanceContext | null | undefined,
+): CitationVisibilityPoint[] {
+  if (!ctx) return [];
+  return listProbePersonas(ctx)
+    .map((persona, index) => {
+      const filtered = filterContextByPersona(ctx, persona);
+      const metrics = filtered ? computeVisibilityMetrics(filtered) : null;
+      if (!metrics || metrics.promptCount <= 0) return null;
+      return {
+        id: persona,
+        label: persona,
+        visibility: Number(metrics.visibilityPct.toFixed(1)),
+        citationRate: Number(metrics.citationRatePct.toFixed(1)),
+        brandCitationCount: metrics.brandCitationCount,
+        citationCount: metrics.citationCount,
+        color: TOPIC_COLORS[index % TOPIC_COLORS.length],
+      } satisfies CitationVisibilityPoint;
+    })
+    .filter((point): point is CitationVisibilityPoint => point != null);
 }
 
 /** One point per prompt, calculated only from that prompt's saved platform responses. */
-export function promptSovVisibilityPoints(
+export function promptCitationVisibilityPoints(
   ctx: PromptPerformanceContext | null | undefined,
-): SovVisibilityPoint[] {
+): CitationVisibilityPoint[] {
   const rows = ctx?.live_probe?.per_prompt ?? [];
   if (!ctx || !rows.length) return [];
   return rows
@@ -108,11 +147,13 @@ export function promptSovVisibilityPoints(
         id: String(row.prompt_id || row.index || `${index}-${prompt}`),
         label: prompt,
         visibility: Number(metrics.visibilityPct.toFixed(1)),
-        sov: Number(metrics.sovPct.toFixed(1)),
+        citationRate: Number(metrics.citationRatePct.toFixed(1)),
+        brandCitationCount: metrics.brandCitationCount,
+        citationCount: metrics.citationCount,
         color: TOPIC_COLORS[index % TOPIC_COLORS.length],
-      } satisfies SovVisibilityPoint;
+      } satisfies CitationVisibilityPoint;
     })
-    .filter((point): point is SovVisibilityPoint => point != null);
+    .filter((point): point is CitationVisibilityPoint => point != null);
 }
 
 function ScatterTooltip({
@@ -121,7 +162,7 @@ function ScatterTooltip({
   dimensionLabel,
 }: {
   active?: boolean;
-  payload?: Array<{ payload?: SovVisibilityPoint }>;
+  payload?: Array<{ payload?: CitationVisibilityPoint }>;
   dimensionLabel: string;
 }) {
   if (!active || !payload?.[0]?.payload) return null;
@@ -132,7 +173,11 @@ function ScatterTooltip({
         {dimensionLabel}: {point.label}
       </div>
       <div className="mt-1 text-gray-600">Visibility: {point.visibility?.toFixed(1)}%</div>
-      <div className="text-gray-600">SOV: {point.sov?.toFixed(1)}%</div>
+      <div className="text-gray-600">
+        {point.citationCount > 0
+          ? `Citation rate: ${point.citationRate?.toFixed(1)}% (${point.brandCitationCount} of ${point.citationCount} citations)`
+          : "Citation rate: no citations"}
+      </div>
     </div>
   );
 }
@@ -203,14 +248,14 @@ function overlapArea(a: Box, b: Box): number {
  * scored against already-placed labels, every marker, and the canvas bounds.
  */
 function resolveLabelPlacements(
-  points: SovVisibilityPoint[],
+  points: CitationVisibilityPoint[],
   geometry: {
     width: number;
     height: number;
-    sovDomainMax: number;
+    rateDomainMax: number;
   },
 ): Map<string, Placement> {
-  const { width, height, sovDomainMax } = geometry;
+  const { width, height, rateDomainMax } = geometry;
   const result = new Map<string, Placement>();
   if (!points.length || width <= 0) return result;
 
@@ -225,7 +270,7 @@ function resolveLabelPlacements(
     point,
     cx: plotLeft + (Math.min(100, Math.max(0, point.visibility)) / 100) * plotWidth,
     cy: plotBottom
-      - (sovDomainMax > 0 ? Math.min(1, Math.max(0, point.sov / sovDomainMax)) : 0) * plotHeight,
+      - (rateDomainMax > 0 ? Math.min(1, Math.max(0, point.citationRate / rateDomainMax)) : 0) * plotHeight,
     textWidth: truncateLabel(point.label).length * LABEL_CHAR_WIDTH,
   }));
 
@@ -280,7 +325,7 @@ function resolveLabelPlacements(
   return result;
 }
 
-export default function SovVisibilityScatter({
+export default function CitationVisibilityScatter({
   title,
   subtitle,
   points,
@@ -290,7 +335,7 @@ export default function SovVisibilityScatter({
 }: {
   title: string;
   subtitle?: string;
-  points: SovVisibilityPoint[];
+  points: CitationVisibilityPoint[];
   dimensionLabel?: string;
   emptyMessage?: string;
   className?: string;
@@ -311,8 +356,8 @@ export default function SovVisibilityScatter({
     return () => observer.disconnect();
   }, []);
 
-  const sovMax = points.reduce((max, point) => Math.max(max, point.sov), 0);
-  const sovDomainMax = nicePercentAxisMax(sovMax);
+  const rateMax = points.reduce((max, point) => Math.max(max, point.citationRate), 0);
+  const rateDomainMax = nicePercentAxisMax(rateMax);
   const chartHeight = Math.max(320, 260 + Math.min(points.length, 8) * 10);
 
   const placements = useMemo(
@@ -320,9 +365,9 @@ export default function SovVisibilityScatter({
       resolveLabelPlacements(points, {
         width: chartWidth || 640,
         height: chartHeight,
-        sovDomainMax,
+        rateDomainMax,
       }),
-    [points, chartWidth, chartHeight, sovDomainMax],
+    [points, chartWidth, chartHeight, rateDomainMax],
   );
 
   return (
@@ -330,6 +375,7 @@ export default function SovVisibilityScatter({
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-[#0d0d0d]">{title}</h3>
         {subtitle ? <p className="mt-1 text-[11px] text-gray-400">{subtitle}</p> : null}
+        <p className="mt-0.5 text-[11px] text-gray-400">{CITATION_RATE_DEFINITION}</p>
       </div>
       {points.length === 0 ? (
         <div className="flex h-56 items-center justify-center text-sm text-gray-400">{emptyMessage}</div>
@@ -352,16 +398,16 @@ export default function SovVisibilityScatter({
               />
               <YAxis
                 type="number"
-                dataKey="sov"
-                name="SOV"
-                domain={[0, sovDomainMax]}
+                dataKey="citationRate"
+                name="Citation rate"
+                domain={[0, rateDomainMax]}
                 tickFormatter={(value) => `${value}%`}
                 tick={{ fontSize: 11, fill: "#aaa" }}
                 axisLine={false}
                 tickLine={false}
                 width={Y_AXIS_WIDTH}
-                allowDecimals={sovDomainMax < 5}
-                label={{ value: "SOV (%)", angle: -90, position: "insideLeft", fill: "#6b7280", fontSize: 12 }}
+                allowDecimals={rateDomainMax < 5}
+                label={{ value: "Citation Rate (%)", angle: -90, position: "insideLeft", fill: "#6b7280", fontSize: 12 }}
               />
               <Tooltip
                 cursor={{ strokeDasharray: "3 3" }}
@@ -375,7 +421,7 @@ export default function SovVisibilityScatter({
                 shape={(props: {
                   cx?: number;
                   cy?: number;
-                  payload?: SovVisibilityPoint;
+                  payload?: CitationVisibilityPoint;
                 }) => {
                   const point = props.payload;
                   if (!point || props.cx == null || props.cy == null) return <g />;

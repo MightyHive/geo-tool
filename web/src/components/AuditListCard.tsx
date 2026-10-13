@@ -1,4 +1,4 @@
-import { Calendar, Eye, Loader2 } from "lucide-react";
+import { AlertTriangle, Calendar, Eye, Loader2 } from "lucide-react";
 import type { LocalAudit } from "../types";
 import { formatReportScore } from "../lib/reportScore";
 
@@ -30,6 +30,8 @@ export function AuditListCard({
   const favicon = audit.favicon_url?.trim();
   const stillRunning = Boolean(audit.still_running);
   const isFirstTimeRun = stillRunning && audit.overall_score == null;
+  const failed = audit.run_status === "error";
+  const failedWithoutReport = failed && audit.overall_score == null;
 
   const body = (
     <>
@@ -68,6 +70,14 @@ export function AuditListCard({
           <Loader2 className="w-4 h-4 mr-1 animate-spin" aria-hidden />
           Still running
         </span>
+      ) : failed ? (
+        <span
+          className="mt-4 inline-flex items-center text-sm font-medium text-red-700"
+          title={audit.run_error || undefined}
+        >
+          <AlertTriangle className="w-4 h-4 mr-1" aria-hidden />
+          {failedWithoutReport ? "Audit failed" : "Latest run failed — view previous report"}
+        </span>
       ) : (
         <span className="mt-4 inline-flex items-center text-sm text-blue-600 font-medium">
           <Eye className="w-4 h-4 mr-1" />
@@ -77,17 +87,20 @@ export function AuditListCard({
     </>
   );
 
-  if (isFirstTimeRun) {
+  if (isFirstTimeRun || failedWithoutReport) {
+    const stateLabel = failedWithoutReport ? "audit failed" : "still running";
     return (
       <div
         className="card-surface relative p-5 text-left w-full opacity-55 grayscale pointer-events-none select-none animate-slide-up"
         style={{ animationDelay: `${index * 50}ms` }}
         aria-disabled="true"
-        aria-busy="true"
-        aria-label={`${label}: still running`}
+        aria-busy={isFirstTimeRun ? "true" : undefined}
+        aria-label={`${label}: ${stateLabel}`}
       >
-        <span className="absolute right-3 top-3 rounded bg-gray-700/80 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">
-          Still running
+        <span className={`absolute right-3 top-3 rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white ${
+          failedWithoutReport ? "bg-red-700/90" : "bg-gray-700/80"
+        }`}>
+          {failedWithoutReport ? "Failed" : "Still running"}
         </span>
         {body}
       </div>

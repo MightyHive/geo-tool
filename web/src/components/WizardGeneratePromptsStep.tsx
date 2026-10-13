@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { suggestPromptsForProducts } from "../api/client";
+import { suggestPersonaPrompts, suggestPromptsForProducts } from "../api/client";
 import { isCustomPromptsCategory } from "../lib/customPrompts";
+import { mergePersonaPrompts } from "../lib/personas";
 import { normalizePromptLocales, type PromptLocale } from "../lib/promptLocales";
-import type { ProductServiceRow } from "../types";
+import type { Persona, PersonaPromptSuggestion, ProductServiceRow } from "../types";
 import { CountryCombobox } from "./CountryCombobox";
 import { PromptLocaleEditor } from "./PromptLocaleEditor";
 import { WizardStepProgress, type WizardStepProgressItem } from "./WizardStepProgress";
@@ -16,6 +17,8 @@ interface WizardGeneratePromptsStepProps {
   onPromptLocalesChange: (locales: PromptLocale[]) => void;
   rows: ProductServiceRow[];
   onRowsChange: (rows: ProductServiceRow[]) => void;
+  /** Buyer personas from the Personas step (empty = skipped). */
+  personas?: Persona[];
   onBack: () => void;
   onContinue: () => void;
 }
@@ -63,14 +66,21 @@ export function WizardGeneratePromptsStep({
   onPromptLocalesChange,
   rows,
   onRowsChange,
+  personas = [],
   onBack,
   onContinue,
 }: WizardGeneratePromptsStepProps) {
   const [phase, setPhase] = useState<Phase>("configure");
   const [error, setError] = useState<string | null>(null);
+  const [personaWarning, setPersonaWarning] = useState<string | null>(null);
+  const hasPersonas = personas.length > 0;
+  const personaStepLabel = `Generating persona prompts for ${personas.length} persona(s)`;
   const [progressSteps, setProgressSteps] = useState<WizardStepProgressItem[]>([
     { id: "check", label: "Checking product lines", status: "pending" },
     { id: "generate", label: "Generating AI prompts (Gemini)", status: "pending" },
+    ...(personas.length
+      ? [{ id: "personas", label: `Generating persona prompts for ${personas.length} persona(s)`, status: "pending" as const }]
+      : []),
     { id: "ready", label: "Prompts ready to review", status: "pending" },
   ]);
   const cancelledRef = useRef(false);
@@ -100,77 +110,97 @@ export function WizardGeneratePromptsStep({
 
   const extraLocaleCount = Math.max(0, normalizedLocales.length - 1);
 
+  function setStatus(id: string, patch: Partial<WizardStepProgressItem>) {
+    setProgressSteps((prev) => prev.map((step) => (step.id === id ? { ...step, ...patch } : step)));
+  }
+
   async function runGeneration() {
     setError(null);
+    setPersonaWarning(null);
     setPhase("generating");
     setProgressSteps([
       { id: "check", label: "Checking product lines", status: "active" },
       { id: "generate", label: "Generating AI prompts (Gemini)", status: "pending" },
+      ...(hasPersonas ? [{ id: "personas", label: personaStepLabel, status: "pending" as const }] : []),
       { id: "ready", label: "Prompts ready to review", status: "pending" },
     ]);
 
     await new Promise((r) => setTimeout(r, 300));
     if (cancelledRef.current) return;
+    setStatus("check", { status: "done" });
 
-    if (linesNeedingPrompts.length === 0) {
-      setProgressSteps([
-        { id: "check", label: "Checking product lines", status: "done" },
-        {
-          id: "generate",
-          label: "All product lines already have prompts",
-          status: "done",
-        },
-        { id: "ready", label: "Prompts ready to review", status: "done" },
-      ]);
-      setPhase("ready");
+    const language = primaryLocale?.language || "en";
+    const languageName = primaryLocale?.language_name || "English";
+    const topicRequest = linesNeedingPrompts.length
+      ? suggestPromptsForProducts({
+          brand_website: brandWebsite.trim(),
+          products: linesNeedingPrompts,
+          market_country: marketCountry.trim(),
+          market_country_code: marketCountryCode.trim(),
+          language,
+          language_name: languageName,
+        })
+      : Promise.resolve({ rows: [] as ProductServiceRow[] });
+    const personaRequest: Promise<{ personas: PersonaPromptSuggestion[] }> =
+      hasPersonas && linesNeedingPrompts.length
+        ? suggestPersonaPrompts({
+            brand_website: brandWebsite.trim(),
+            personas,
+            products: linesNeedingPrompts,
+            market_country: marketCountry.trim(),
+            market_country_code: marketCountryCode.trim(),
+            language,
+            language_name: languageName,
+          })
+        : Promise.resolve({ personas: [] });
+
+    setStatus("generate", {
+      label: linesNeedingPrompts.length
+        ? `Generating prompts for ${linesNeedingPrompts.length} line(s) in ${marketCountry || "your market"}…`
+        : "All product lines already have prompts",
+      status: linesNeedingPrompts.length ? "active" : "done",
+    });
+    if (hasPersonas) setStatus("personas", { status: "active" });
+
+    const [topicResult, personaResult] = await Promise.allSettled([topicRequest, personaRequest]);
+    if (cancelledRef.current) return;
+
+    if (topicResult.status === "rejected") {
+      const e = topicResult.reason;
+      setError(e instanceof Error ? e.message : "Gemini request failed");
+      setStatus("generate", { label: "Prompt generation failed", status: "done" });
+      if (hasPersonas) setStatus("personas", { status: "done" });
+      setPhase("error");
       return;
     }
 
-    setProgressSteps([
-      { id: "check", label: "Checking product lines", status: "done" },
-      {
-        id: "generate",
-        label: `Generating prompts for ${linesNeedingPrompts.length} line(s) in ${marketCountry || "your market"}…`,
-        status: "active",
-      },
-      { id: "ready", label: "Prompts ready to review", status: "pending" },
-    ]);
+    let nextRows = topicResult.value.rows.length
+      ? mergeGeneratedPrompts(rows, topicResult.value.rows)
+      : rows;
+    setStatus("generate", {
+      label: extraLocaleCount
+        ? `AI prompts generated for ${marketCountry || "primary market"} (extra markets adapted at probe time)`
+        : "AI prompts generated",
+      status: "done",
+    });
 
-    try {
-      const { rows: generated } = await suggestPromptsForProducts({
-        brand_website: brandWebsite.trim(),
-        products: linesNeedingPrompts,
-        market_country: marketCountry.trim(),
-        market_country_code: marketCountryCode.trim(),
-        language: primaryLocale?.language || "en",
-        language_name: primaryLocale?.language_name || "English",
-      });
-      if (cancelledRef.current) return;
-      onRowsChange(mergeGeneratedPrompts(rows, generated));
-      setProgressSteps([
-        { id: "check", label: "Checking product lines", status: "done" },
-        {
-          id: "generate",
-          label: extraLocaleCount
-            ? `AI prompts generated for ${marketCountry || "primary market"} (extra markets adapted at probe time)`
-            : "AI prompts generated",
-          status: "done",
-        },
-        { id: "ready", label: "Prompts ready to review", status: "done" },
-      ]);
-      setPhase("ready");
-    } catch (e) {
-      if (cancelledRef.current) return;
-      setError(e instanceof Error ? e.message : "Gemini request failed");
-      setProgressSteps((prev) =>
-        prev.map((s) =>
-          s.id === "generate"
-            ? { ...s, label: "Prompt generation failed", status: "done" }
-            : s,
-        ),
-      );
-      setPhase("error");
+    if (hasPersonas) {
+      if (personaResult.status === "fulfilled") {
+        nextRows = mergePersonaPrompts(nextRows, personaResult.value.personas);
+        const count = personaResult.value.personas.reduce((n, p) => n + p.prompts.length, 0);
+        setStatus("personas", { label: `${count} persona prompts generated`, status: "done" });
+      } else {
+        const e = personaResult.reason;
+        setPersonaWarning(
+          `Persona prompts could not be generated (${e instanceof Error ? parseApiError(e.message) : "Gemini request failed"}). Topic prompts are ready; retry to add persona prompts.`,
+        );
+        setStatus("personas", { label: "Persona prompt generation failed", status: "done" });
+      }
     }
+
+    onRowsChange(nextRows);
+    setStatus("ready", { status: "done" });
+    setPhase("ready");
   }
 
   const busy = phase === "generating";
@@ -226,6 +256,25 @@ export function WizardGeneratePromptsStep({
       )}
 
       {error && <div className="alert-error">{parseApiError(error)}</div>}
+      {personaWarning && !error && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {personaWarning}
+          <button
+            type="button"
+            className="ml-2 font-medium underline"
+            disabled={busy}
+            onClick={() => void runGeneration()}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {hasPersonas && !busy && (
+        <p className="text-xs text-gray-500">
+          Personas: {personas.map((p) => p.name).join(", ")} — up to 5 prompts each, probed in
+          addition to topic prompts.
+        </p>
+      )}
 
       <div className="flex flex-wrap justify-between items-center gap-3 pt-4 border-t border-gray-200">
         <button type="button" className="btn-secondary" onClick={onBack} disabled={busy}>

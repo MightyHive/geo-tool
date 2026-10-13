@@ -93,40 +93,47 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role="roles/storage.objectAdmin" \
   --quiet >/dev/null 2>&1 || true
 
-echo "==> Building and pushing image (Cloud Build)…"
-BUILD_ID="$(gcloud builds submit \
-  --project="${PROJECT}" \
-  --region="${REGION}" \
-  --config=deploy/cloudbuild.yaml \
-  --substitutions="_IMAGE=${IMAGE}" \
-  --async \
-  --format='value(id)' \
-  .)"
-echo "==> Cloud Build started: ${BUILD_ID}"
-echo "    Logs: https://console.cloud.google.com/cloud-build/builds;region=${REGION}/${BUILD_ID}?project=${PROJECT}"
-
-while true; do
-  BUILD_STATUS="$(gcloud builds describe "${BUILD_ID}" \
+# PROMOTE_IMAGE=<image@sha256:...> skips the build and deploys an already-built
+# image (e.g. the one dev is running) by digest.
+if [[ -n "${PROMOTE_IMAGE:-}" ]]; then
+  IMAGE="${PROMOTE_IMAGE}"
+  echo "==> Promoting ${IMAGE} (no build)…"
+else
+  echo "==> Building and pushing image (Cloud Build)…"
+  BUILD_ID="$(gcloud builds submit \
     --project="${PROJECT}" \
     --region="${REGION}" \
-    --format='value(status)')"
-  case "${BUILD_STATUS}" in
-    SUCCESS)
-      echo "==> Cloud Build finished successfully."
-      break
-      ;;
-    FAILURE|CANCELLED|EXPIRED|INTERNAL_ERROR|TIMEOUT)
-      echo "==> Cloud Build failed with status: ${BUILD_STATUS}" >&2
-      exit 1
-      ;;
-    *)
-      echo "    Build status: ${BUILD_STATUS}…"
-      sleep 10
-      ;;
-  esac
-done
+    --config=deploy/cloudbuild.yaml \
+    --substitutions="_IMAGE=${IMAGE}" \
+    --async \
+    --format='value(id)' \
+    .)"
+  echo "==> Cloud Build started: ${BUILD_ID}"
+  echo "    Logs: https://console.cloud.google.com/cloud-build/builds;region=${REGION}/${BUILD_ID}?project=${PROJECT}"
 
-ENV_VARS="APP_ENV=staging,GEO_DATA_ROOT=/var/geo-data,GCS_BUCKET=${BUCKET},CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT},TOPIC_CONTENT_JOB_NAME=${TOPIC_CONTENT_JOB},TOPIC_CONTENT_JOB_REGION=${REGION},TOPIC_CONTENT_JOB_PROJECT=${PROJECT},GEMINI_TOPIC_CONTENT_MODEL=gemini-3.5-flash,SCHEDULER_JOB_NAME=${SCHEDULER_JOB},SCHEDULER_JOB_REGION=${REGION},SCHEDULER_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_JOB_NAME=${TRENDS_JOB},GOOGLE_TRENDS_JOB_REGION=${REGION},GOOGLE_TRENDS_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_GCS_BUCKET=${BUCKET},AI_IMPACT_MODEL_ARTIFACT_ROOT=gs://${MODEL_BUCKET}/models/dev,AI_IMPACT_REFIT_MODE=cloud_run,AI_IMPACT_REFIT_JOB_NAME=${AI_IMPACT_REFIT_JOB},AI_IMPACT_REFIT_JOB_PROJECT=${PROJECT},AI_IMPACT_REFIT_JOB_REGION=${REGION},AI_IMPACT_REFIT_GCS_ROOT=gs://${BUCKET}/ai_impact_runs"
+  while true; do
+    BUILD_STATUS="$(gcloud builds describe "${BUILD_ID}" \
+      --project="${PROJECT}" \
+      --region="${REGION}" \
+      --format='value(status)')"
+    case "${BUILD_STATUS}" in
+      SUCCESS)
+        echo "==> Cloud Build finished successfully."
+        break
+        ;;
+      FAILURE|CANCELLED|EXPIRED|INTERNAL_ERROR|TIMEOUT)
+        echo "==> Cloud Build failed with status: ${BUILD_STATUS}" >&2
+        exit 1
+        ;;
+      *)
+        echo "    Build status: ${BUILD_STATUS}…"
+        sleep 10
+        ;;
+    esac
+  done
+fi
+
+ENV_VARS="APP_ENV=staging,GEMINI_GROUNDED_MODEL=${GEMINI_GROUNDED_MODEL:-gemini-3.6-flash},GEO_DATA_ROOT=/var/geo-data,GCS_BUCKET=${BUCKET},CLOUD_RUN_REGION=${REGION},PROMPT_PROBE_JOB_NAME=${PROMPT_JOB},PROMPT_PROBE_JOB_REGION=${REGION},PROMPT_PROBE_JOB_PROJECT=${PROJECT},AUDIT_CRAWL_JOB_NAME=${CRAWL_JOB},AUDIT_CRAWL_JOB_REGION=${REGION},AUDIT_CRAWL_JOB_PROJECT=${PROJECT},PDF_EXPORT_JOB_NAME=${PDF_JOB},PDF_EXPORT_JOB_REGION=${REGION},PDF_EXPORT_JOB_PROJECT=${PROJECT},PROMPT_SENTIMENT_JOB_NAME=${SENTIMENT_JOB},PROMPT_SENTIMENT_JOB_REGION=${REGION},PROMPT_SENTIMENT_JOB_PROJECT=${PROJECT},CONTENT_QUALITY_JOB_NAME=${CONTENT_QUALITY_JOB},CONTENT_QUALITY_JOB_REGION=${REGION},CONTENT_QUALITY_JOB_PROJECT=${PROJECT},TOPIC_CONTENT_JOB_NAME=${TOPIC_CONTENT_JOB},TOPIC_CONTENT_JOB_REGION=${REGION},TOPIC_CONTENT_JOB_PROJECT=${PROJECT},GEMINI_TOPIC_CONTENT_MODEL=gemini-3.5-flash,SCHEDULER_JOB_NAME=${SCHEDULER_JOB},SCHEDULER_JOB_REGION=${REGION},SCHEDULER_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_JOB_NAME=${TRENDS_JOB},GOOGLE_TRENDS_JOB_REGION=${REGION},GOOGLE_TRENDS_JOB_PROJECT=${PROJECT},GOOGLE_TRENDS_GCS_BUCKET=${BUCKET},AI_IMPACT_MODEL_ARTIFACT_ROOT=gs://${MODEL_BUCKET}/models/dev,AI_IMPACT_REFIT_MODE=cloud_run,AI_IMPACT_REFIT_JOB_NAME=${AI_IMPACT_REFIT_JOB},AI_IMPACT_REFIT_JOB_PROJECT=${PROJECT},AI_IMPACT_REFIT_JOB_REGION=${REGION},AI_IMPACT_REFIT_GCS_ROOT=gs://${BUCKET}/ai_impact_runs"
 SECRETS_FILE="${ROOT}/env/.env.staging"
 if [[ -f "${SECRETS_FILE}" ]]; then
   # shellcheck disable=SC1090

@@ -1,4 +1,4 @@
-import type { CompetitorDetail, ProductServiceRow, VerifiedSite } from "../types";
+import type { CompetitorDetail, Persona, ProductServiceRow, VerifiedSite } from "../types";
 
 const STORAGE_KEY = "geo_audit_wizard_draft";
 const AUDIT_RUN_KEY = "geo_audit_run_active";
@@ -20,6 +20,8 @@ export interface WizardDraft {
   productRows: ProductServiceRow[];
   selectedProducts: string[];
   competitorDetails: CompetitorDetail[];
+  /** Wizard Personas step: null/undefined = skipped. */
+  personas?: Persona[] | null;
   ga4PropertyId?: string;
   ga4AiChannels?: string;
   ga4ConversionEventName?: string;

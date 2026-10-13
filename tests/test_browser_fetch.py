@@ -1,4 +1,4 @@
-from browser_fetch import is_bot_wall
+from browser_fetch import is_bot_wall, is_transport_failure
 
 
 def test_waf_provider_cloudflare():
@@ -25,6 +25,41 @@ def test_is_bot_wall_challenge_body():
         {},
         b'<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>',
     )
+
+
+def test_transport_timeout_is_browser_fallback_candidate():
+    assert is_transport_failure(None, "The read operation timed out")
+
+
+def test_http_error_is_not_transport_failure():
+    assert not is_transport_failure(403, "HTTP Error 403: Forbidden")
+
+
+def test_failed_browser_session_is_reset(monkeypatch):
+    import browser_fetch
+
+    class FailedSession:
+        closed = False
+
+        def fetch(self, _url):
+            raise RuntimeError("browser executable unavailable")
+
+        def close(self):
+            self.closed = True
+
+    session = FailedSession()
+    monkeypatch.setattr(browser_fetch, "_session", session)
+
+    result = browser_fetch.fetch_with_browser_fallback(
+        "https://example.com",
+        status=None,
+        headers=None,
+        error="timed out",
+    )
+
+    assert result is None
+    assert session.closed is True
+    assert browser_fetch._session is None
 
 
 def test_resolve_status_real_html_after_403():

@@ -18,6 +18,8 @@ import type {
   Ga4TopPagesResponse,
   LocalAudit,
   CompetitorDetail,
+  Persona,
+  PersonaPromptSuggestion,
   ProductServiceRow,
   PromptPerformanceContext,
   PromptSentimentResponse,
@@ -323,6 +325,37 @@ export function suggestPromptsForProducts(payload: {
   language_name?: string;
 }): Promise<{ rows: ProductServiceRow[] }> {
   return json("/wizard/suggest-prompts-for-products", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function suggestPersonas(payload: {
+  brand_website: string;
+  brand_name?: string;
+  industry?: string;
+  products?: string[];
+  market_country?: string;
+  market_country_code?: string;
+  language?: string;
+  language_name?: string;
+}): Promise<{ personas: Persona[] }> {
+  return json("/wizard/suggest-personas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function suggestPersonaPrompts(payload: {
+  brand_website: string;
+  personas: Persona[];
+  products: string[];
+  market_country?: string;
+  market_country_code?: string;
+  language?: string;
+  language_name?: string;
+}): Promise<{ personas: PersonaPromptSuggestion[] }> {
+  return json("/wizard/suggest-persona-prompts", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -1023,9 +1056,11 @@ export interface RunAuditPayload {
     product_or_service: string;
     prompts: string[];
     prompt_tags?: Record<string, string[]>;
+    prompt_personas?: Record<string, string>;
     custom_prompts?: string[];
     is_custom_topic?: boolean;
   }[];
+  wizard_personas?: Persona[];
   wizard_additional_markets?: CrawlMarket[];
   wizard_competitors?: {
     competitor_brand: string;

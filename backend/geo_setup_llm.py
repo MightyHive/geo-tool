@@ -64,6 +64,34 @@ class OtherBrandFromReplies(BaseModel):
     )
 
 
+DEFAULT_PERSONAS = 5
+DEFAULT_PROMPTS_PER_PERSONA = 5
+MAX_PERSONAS = 8
+
+
+class PersonaSuggestion(BaseModel):
+    name: str = Field(description="Short persona label, e.g. 'First-time home buyer'")
+    description: str = Field(
+        description="One or two sentences: who they are, what they need, and what triggers a purchase"
+    )
+
+
+class PersonaPrompt(BaseModel):
+    prompt: str = Field(description="A question this persona would ask an AI assistant")
+    product_or_service: str = Field(
+        description="The supplied product_or_service this prompt is most about, copied verbatim"
+    )
+
+
+class PersonaWithPrompts(BaseModel):
+    name: str = Field(description="Persona name, copied verbatim from the supplied list")
+    prompts: list[PersonaPrompt] = Field(
+        description="Exactly five prompts this persona would ask",
+        min_length=1,
+        max_length=8,
+    )
+
+
 class SiteModelCategory(BaseModel):
     category: str = Field(
         description=(
@@ -419,6 +447,211 @@ def suggest_prompts_for_product_lines(
         if not prs:
             continue
         out.append({"product_or_service": label, "prompts": prs})
+    return out
+
+
+def personas_user_prompt(
+    website_url: str,
+    *,
+    brand_name: str = "",
+    industry: str = "",
+    product_lines: list[str] | None = None,
+    market_country: str = "",
+    market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
+    count: int = DEFAULT_PERSONAS,
+) -> str:
+    n = max(1, min(int(count) or DEFAULT_PERSONAS, MAX_PERSONAS))
+    brand = (brand_name or "").strip() or website_url
+    mkt = _market_context_lines(market_country, market_country_code)
+    lang_code = (language or "en").strip().lower() or "en"
+    lang_name = (language_name or "").strip() or ("English" if lang_code == "en" else lang_code)
+    industry_line = f"Industry: {industry.strip()}." if (industry or "").strip() else ""
+    lines = "\n".join(f"- {p}" for p in (product_lines or []) if str(p).strip())
+    products_block = f"Products or services in scope:\n{lines}" if lines else ""
+    return f"""
+You are a senior marketing strategist for {brand} ({website_url}).
+{industry_line}
+{products_block}
+
+{mkt}
+
+Identify **exactly {n}** distinct buyer personas: the groups of people most likely to purchase from {brand}.
+Personas must be realistic purchaser segments for this market (not job titles inside {brand}), clearly
+different from each other in needs, life stage or buying situation.
+
+Return a JSON array of {n} objects with:
+- ``name``: a short, memorable persona label (2-5 words).
+- ``description``: one or two sentences describing who they are, what they need and what triggers a purchase.
+
+Write names and descriptions in natural {lang_name} ({lang_code}).
+""".strip()
+
+
+def suggest_personas(
+    website_url: str,
+    *,
+    brand_name: str = "",
+    industry: str = "",
+    product_lines: list[str] | None = None,
+    market_country: str = "",
+    market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
+    count: int = DEFAULT_PERSONAS,
+    model_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Gemini: likely purchaser personas for the brand (wizard Personas step)."""
+    n = max(1, min(int(count) or DEFAULT_PERSONAS, MAX_PERSONAS))
+    client = build_genai_client()
+    model = (model_id or GEMINI_MODEL_DEFAULT).strip()
+    cfg = _generation_config(response_schema=list[PersonaSuggestion])
+    up = personas_user_prompt(
+        website_url.strip(),
+        brand_name=brand_name,
+        industry=industry,
+        product_lines=product_lines,
+        market_country=market_country,
+        market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
+        count=n,
+    )
+    resp = client.models.generate_content(model=model, contents=up, config=cfg)
+    items = _parse_json_list(resp.text or "")
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        persona = PersonaSuggestion.model_validate(item)
+        name = persona.name.strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append({"name": name, "description": persona.description.strip()})
+        if len(out) >= n:
+            break
+    return out
+
+
+def persona_prompts_user_prompt(
+    website_url: str,
+    personas: list[dict[str, str]],
+    product_lines: list[str],
+    *,
+    market_country: str = "",
+    market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
+    prompts_per_persona: int = DEFAULT_PROMPTS_PER_PERSONA,
+) -> str:
+    pp = max(1, min(int(prompts_per_persona) or DEFAULT_PROMPTS_PER_PERSONA, 8))
+    mkt = _market_context_lines(market_country, market_country_code)
+    lang = _language_context_lines(language, language_name)
+    persona_lines = "\n".join(
+        f"{i + 1}. {p['name']}: {p.get('description') or ''}".strip()
+        for i, p in enumerate(personas)
+    )
+    product_list = "\n".join(f"- {p}" for p in product_lines)
+    return f"""
+You are the sales lead for {website_url}.
+These are the buyer personas (do not rename them):
+
+{persona_lines}
+
+These are the products or services in scope (``product_or_service`` values must be copied verbatim from this list):
+
+{product_list}
+
+{mkt}
+{lang}
+
+Return a JSON array with **exactly {len(personas)}** objects, in the same order as the personas above.
+Each object has ``name`` (the exact persona name) and ``prompts``: **exactly {pp}** questions that this persona
+would realistically type into an AI assistant (ChatGPT, Gemini, Google AI Overviews) while researching or choosing
+a purchase. Write them in the persona's own voice and situation, keep them general and exploratory, and do not
+name {website_url} or its brand. For each prompt set ``product_or_service`` to the single listed product or
+service it is most about. Prompts must be distinct across all personas.
+""".strip()
+
+
+def _match_product_line(label: str, product_lines: list[str]) -> str:
+    raw = (label or "").strip().lower()
+    if not product_lines:
+        return (label or "").strip()
+    for p in product_lines:
+        if p.lower() == raw:
+            return p
+    for p in product_lines:
+        pl = p.lower()
+        if raw and (raw in pl or pl in raw):
+            return p
+    return product_lines[0]
+
+
+def suggest_prompts_for_personas(
+    website_url: str,
+    personas: list[dict[str, str]],
+    product_lines: list[str],
+    *,
+    market_country: str = "",
+    market_country_code: str = "",
+    language: str = "en",
+    language_name: str = "English",
+    prompts_per_persona: int = DEFAULT_PROMPTS_PER_PERSONA,
+    model_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Gemini: persona-voiced prompts, each mapped to one of the supplied product lines.
+
+    Returns ``[{"name": persona, "prompts": [{"prompt", "product_or_service"}]}]`` in persona order.
+    """
+    clean_personas = [
+        {"name": str(p.get("name") or "").strip(), "description": str(p.get("description") or "").strip()}
+        for p in personas
+        if str(p.get("name") or "").strip()
+    ][:MAX_PERSONAS]
+    lines = [str(p).strip() for p in product_lines if str(p).strip()]
+    if not clean_personas or not lines:
+        return []
+
+    pp = max(1, min(int(prompts_per_persona) or DEFAULT_PROMPTS_PER_PERSONA, 8))
+    client = build_genai_client()
+    model = (model_id or GEMINI_MODEL_DEFAULT).strip()
+    cfg = _generation_config(response_schema=list[PersonaWithPrompts])
+    up = persona_prompts_user_prompt(
+        website_url.strip(),
+        clean_personas,
+        lines,
+        market_country=market_country,
+        market_country_code=market_country_code,
+        language=language,
+        language_name=language_name,
+        prompts_per_persona=pp,
+    )
+    resp = client.models.generate_content(model=model, contents=up, config=cfg)
+    items = _parse_json_list(resp.text or "")
+    parsed = [PersonaWithPrompts.model_validate(x) for x in items]
+    by_name = {p.name.strip().lower(): p for p in parsed}
+
+    seen_prompts: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for i, persona in enumerate(clean_personas):
+        match = by_name.get(persona["name"].lower()) or (parsed[i] if i < len(parsed) else None)
+        if match is None:
+            continue
+        prompts: list[dict[str, str]] = []
+        for item in match.prompts:
+            text = item.prompt.strip()
+            if not text or text.lower() in seen_prompts:
+                continue
+            seen_prompts.add(text.lower())
+            prompts.append(
+                {"prompt": text, "product_or_service": _match_product_line(item.product_or_service, lines)}
+            )
+            if len(prompts) >= pp:
+                break
+        if prompts:
+            out.append({"name": persona["name"], "prompts": prompts})
     return out
 
 

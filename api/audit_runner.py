@@ -81,9 +81,40 @@ def _write_run_status(audit_dir: Path, payload: dict[str, Any]) -> None:
 
 
 def reconcile_audit_run_status(audit_dir: Path) -> dict[str, Any] | None:
-    """Clear orphaned ``audit_run_status.json`` running states that block competitor crawls."""
+    """Clear failed/orphaned run state left by terminated crawl workers."""
+    pending_failure = ""
+    try:
+        from api.crawl_jobs import reconcile_crawl_job_pending
+
+        pending_state = reconcile_crawl_job_pending(audit_dir, mode="full_audit")
+        if (
+            pending_state
+            and str(pending_state.get("status") or "") == "failed"
+        ):
+            pending_failure = str(
+                pending_state.get("error")
+                or "The crawl worker stopped before publishing a terminal status."
+            )
+    except Exception:
+        log.exception(
+            "Could not reconcile crawl marker for %s",
+            geo.audit_dir_api_rel(audit_dir),
+        )
+
     path = audit_dir / AUDIT_RUN_STATUS_FILE
     if not path.is_file():
+        if pending_failure:
+            errored = {
+                "status": "error",
+                "audit_dir": geo.audit_dir_api_rel(audit_dir),
+                "detail": "Previous audit run failed or timed out. Start a new run to retry.",
+                "error": pending_failure,
+                "percent": 0,
+                "stale": True,
+                "reconciled": True,
+            }
+            _write_run_status(audit_dir, errored)
+            return {**errored, "updated_at": _utc_now()}
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -97,7 +128,7 @@ def reconcile_audit_run_status(audit_dir: Path) -> dict[str, Any] | None:
         return raw
 
     pending = audit_dir / "audit_crawl_pending.json"
-    stale = geo.running_status_is_stale(
+    stale = bool(pending_failure) or geo.running_status_is_stale(
         raw,
         max_age_seconds=STALE_AUDIT_RUN_SECONDS,
         orphan_after_seconds=STALE_AUDIT_ORPHAN_SECONDS,
@@ -152,10 +183,11 @@ def reconcile_audit_run_status(audit_dir: Path) -> dict[str, Any] | None:
     errored = {
         **raw,
         "status": "error",
-        "detail": "Previous audit run was interrupted. Start a new run or competitor crawl to continue.",
-        "error": "Audit run timed out or the worker stopped unexpectedly.",
+        "detail": "Previous audit run failed or timed out. Start a new run to retry.",
+        "error": pending_failure or "Audit run timed out or the worker stopped unexpectedly.",
         "percent": int(raw.get("percent") or 0),
         "stale": True,
+        "reconciled": True,
     }
     _write_run_status(audit_dir, errored)
     return {**errored, "updated_at": _utc_now()}
@@ -427,8 +459,8 @@ def _run_audit_job(
             ],
         }
 
+    progress_state = AuditProgressState() if stream_progress else None
     try:
-        progress_state = AuditProgressState() if stream_progress else None
         _write_run_status(
             audit_dir,
             {
@@ -455,7 +487,11 @@ def _run_audit_job(
             ga4_ai_channels=ga4_ch,
             ga4_oauth_credentials_path=ga4_cred_path,
             crawl_urls=_crawl_urls,
+            target_audit_dir=audit_dir,
         ):
+            clean_line = line.rstrip()
+            if clean_line:
+                log.info("Audit pipeline [%s]: %s", rel, clean_line)
             if stream_progress and progress_state is not None:
                 progress_state = apply_log_line(progress_state, line)
                 _write_run_status(
@@ -554,14 +590,15 @@ def _run_audit_job(
             _queue_follow_on_competitor_crawl(audit_dir, competitors)
     except Exception as exc:
         log.exception("Background audit failed for %s: %s", rel, exc)
+        failure_progress = _progress_payload(progress_state)
         _write_run_status(
             audit_dir,
             {
                 "status": "error",
                 "audit_dir": rel,
                 "error": str(exc),
+                **failure_progress,
                 "detail": str(exc)[:500],
-                "percent": 0,
             },
         )
     finally:
@@ -658,6 +695,7 @@ def start_background_audit(
         preserve_prompt_data=body.skip_prompt_probes,
         prompt_locales=list(getattr(body, "wizard_prompt_locales", None) or []),
         notification_email=notify,
+        personas=[p.model_dump() for p in (getattr(body, "wizard_personas", None) or [])],
     )
     category_metadata = _persist_model_category_metadata(adir, classification)
 

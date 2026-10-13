@@ -346,6 +346,105 @@ def suggest_prompts_for_products(body: SuggestPromptsForProductsBody) -> Suggest
     return SuggestProductsResponse(rows=[ProductServiceRow.model_validate(r) for r in rows])
 
 
+class PersonaRow(BaseModel):
+    name: str
+    description: str = ""
+
+
+class SuggestPersonasBody(BaseModel):
+    brand_website: str
+    brand_name: str = ""
+    industry: str = ""
+    products: list[str] = Field(default_factory=list, max_length=12)
+    market_country: str = ""
+    market_country_code: str = ""
+    language: str = "en"
+    language_name: str = "English"
+
+
+class SuggestPersonasResponse(BaseModel):
+    personas: list[PersonaRow]
+
+
+@router.post("/suggest-personas", response_model=SuggestPersonasResponse)
+def suggest_personas_endpoint(body: SuggestPersonasBody) -> SuggestPersonasResponse:
+    """Gemini: five likely purchaser personas for the brand (optional wizard step)."""
+    from geo_setup_llm import normalize_competitor_url, suggest_personas
+
+    url = normalize_competitor_url(body.brand_website.strip())
+    if not url:
+        raise HTTPException(400, "Brand website is required.")
+    try:
+        personas = suggest_personas(
+            url,
+            brand_name=body.brand_name.strip(),
+            industry=body.industry.strip(),
+            product_lines=[str(p).strip() for p in body.products if str(p).strip()],
+            market_country=body.market_country.strip(),
+            market_country_code=body.market_country_code.strip(),
+            language=body.language.strip(),
+            language_name=body.language_name.strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if not personas:
+        raise HTTPException(502, "Gemini returned no personas.")
+    return SuggestPersonasResponse(personas=[PersonaRow.model_validate(p) for p in personas])
+
+
+class SuggestPersonaPromptsBody(BaseModel):
+    brand_website: str
+    personas: list[PersonaRow] = Field(..., min_length=1, max_length=8)
+    products: list[str] = Field(..., min_length=1, max_length=12)
+    market_country: str = ""
+    market_country_code: str = ""
+    language: str = "en"
+    language_name: str = "English"
+
+
+class PersonaPromptRow(BaseModel):
+    prompt: str
+    product_or_service: str
+
+
+class PersonaPromptsRow(BaseModel):
+    name: str
+    prompts: list[PersonaPromptRow]
+
+
+class SuggestPersonaPromptsResponse(BaseModel):
+    personas: list[PersonaPromptsRow]
+
+
+@router.post("/suggest-persona-prompts", response_model=SuggestPersonaPromptsResponse)
+def suggest_persona_prompts(body: SuggestPersonaPromptsBody) -> SuggestPersonaPromptsResponse:
+    """Gemini: five prompts per persona, each mapped to one of the selected product lines."""
+    from geo_setup_llm import normalize_competitor_url, suggest_prompts_for_personas
+
+    url = normalize_competitor_url(body.brand_website.strip())
+    if not url:
+        raise HTTPException(400, "Brand website is required.")
+    personas = [p.model_dump() for p in body.personas if p.name.strip()]
+    products = [str(p).strip() for p in body.products if str(p).strip()]
+    if not personas or not products:
+        raise HTTPException(400, "Provide at least one persona and one product or service.")
+    try:
+        rows = suggest_prompts_for_personas(
+            url,
+            personas,
+            products,
+            market_country=body.market_country.strip(),
+            market_country_code=body.market_country_code.strip(),
+            language=body.language.strip(),
+            language_name=body.language_name.strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if not rows:
+        raise HTTPException(502, "Gemini returned no persona prompts.")
+    return SuggestPersonaPromptsResponse(personas=[PersonaPromptsRow.model_validate(r) for r in rows])
+
+
 class SuggestCompetitorsBody(BaseModel):
     brand_website: str
     products_and_services: list[str] = Field(default_factory=list)

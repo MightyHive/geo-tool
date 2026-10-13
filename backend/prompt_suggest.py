@@ -1797,16 +1797,15 @@ def extract_citations_from_reply(
     Extract URLs (and optionally bare domain names) mentioned in an LLM reply.
 
     Returns a list of ``{"url": ..., "domain": ..., "content_type": ..., "channel_type": ...}``
-    dicts, deduplicated by URL, with the brand's own domain excluded.
+    dicts, deduplicated by URL. The brand's own domain is kept so citation rate
+    (brand-domain citations ÷ all citations) can be measured; Top Cited views
+    exclude it at aggregation time.
 
     Bare domains (``rival.com``) are off by default — they are usually brand
     recommendations in the answer, not platform-referenced sources.
     """
     if not text:
         return []
-    brand_domain = ""
-    if brand_site_url:
-        _, brand_domain = _normalise_citation_url(brand_site_url)
 
     # Deduplicate by normalised URL key (scheme://domain/path, lowercased, trailing-slash stripped)
     seen_keys: set[str] = set()
@@ -1823,8 +1822,6 @@ def extract_citations_from_reply(
         if not domain:
             continue
         if domain in _CITATION_DOMAIN_BLOCKLIST:
-            continue
-        if brand_domain and domain == brand_domain:
             continue
         url_key = url.lower().rstrip("/")
         if url_key in seen_keys:
@@ -2446,7 +2443,6 @@ def run_live_prompt_probes(
     def _platform_live(pk: str) -> bool:
         return pk not in excluded and pk not in disabled_run
 
-    _, brand_domain = _normalise_citation_url(brand_site_url) if brand_site_url else ("", "")
 
     effective_num_runs = max(1, min(int(num_runs or 1), 5))
     enabled_platforms = [
@@ -2593,7 +2589,7 @@ def run_live_prompt_probes(
                                 row["google_aio_response"] = aio_result.get("response") or ""
                                 raw_cits = [
                                     c for c in (aio_result.get("citations") or [])
-                                    if c.get("domain") and c.get("domain") != brand_domain
+                                    if c.get("domain")
                                 ]
                                 for c in raw_cits:
                                     if not c.get("content_type"):

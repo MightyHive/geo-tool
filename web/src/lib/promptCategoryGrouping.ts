@@ -13,6 +13,8 @@ import { formatLocaleKeyLabel, type PromptLocale } from "./promptLocales";
 export type PromptRowMeta = {
   productLabel: string;
   tags: string[];
+  /** Buyer persona the prompt was written for (persona prompts only). */
+  persona?: string;
   /** Canonical source prompt text used for grouping across locales. */
   sourcePrompt: string;
 };
@@ -49,10 +51,12 @@ function buildMetadataFromPss(
     const productLabel = String(pssRow.product_or_service || "").trim() || "Other";
     for (const prompt of pssRow.prompts ?? []) {
       const sourcePrompt = String(prompt ?? "").trim();
+      const persona = (pssRow.prompt_personas?.[prompt] ?? pssRow.prompt_personas?.[sourcePrompt] ?? "").trim();
       const meta: PromptRowMeta = {
         productLabel,
         tags: pssRow.prompt_tags?.[prompt] ?? pssRow.prompt_tags?.[sourcePrompt] ?? [],
         sourcePrompt: sourcePrompt || productLabel,
+        ...(persona ? { persona } : {}),
       };
       positional.push(meta);
       const key = norm(sourcePrompt);
@@ -392,6 +396,41 @@ export function filterContextByTopic(
   if (!selected || selected === "All topics") return ctx;
   const rows = annotateProbeRowsWithCategory(ctx.live_probe, ctx)
     .filter(({ meta }) => meta.productLabel === selected)
+    .map(({ row }) => row);
+  return {
+    ...ctx,
+    live_probe: ctx.live_probe
+      ? { ...ctx.live_probe, per_prompt: rows }
+      : null,
+  };
+}
+
+/** Persona names with probed prompts, in wizard order (then any extra names A-Z). */
+export function listProbePersonas(ctx: PromptPerformanceContext | null | undefined): string[] {
+  if (!ctx) return [];
+  const seen = new Set(
+    annotateProbeRowsWithCategory(ctx.live_probe, ctx)
+      .map(({ meta }) => meta.persona)
+      .filter((p): p is string => Boolean(p)),
+  );
+  const ordered = (ctx.personas ?? []).map((p) => p.name).filter((name) => seen.has(name));
+  const extra = [...seen].filter((name) => !ordered.includes(name)).sort((a, b) => a.localeCompare(b));
+  return [...ordered, ...extra];
+}
+
+/**
+ * Restrict live_probe.per_prompt to rows written for the selected persona.
+ * Pass "All personas" (or empty) to leave the context unchanged.
+ */
+export function filterContextByPersona(
+  ctx: PromptPerformanceContext | null | undefined,
+  persona: string | null | undefined,
+): PromptPerformanceContext | null {
+  if (!ctx) return null;
+  const selected = (persona || "").trim();
+  if (!selected || selected === "All personas") return ctx;
+  const rows = annotateProbeRowsWithCategory(ctx.live_probe, ctx)
+    .filter(({ meta }) => meta.persona === selected)
     .map(({ row }) => row);
   return {
     ...ctx,

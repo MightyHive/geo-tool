@@ -151,9 +151,21 @@ def list_primary_audits(
             continue
         base = str(data.get("base_url") or d.name).strip() or d.name
         brand_name, favicon_url = _list_row_brand_and_favicon(d, base)
+        run_status = ""
+        run_error = ""
         try:
+            # Cloud Run hard timeouts can kill the worker before its ``finally``
+            # block clears pending files. Reconcile before deriving list badges
+            # so /audits does not display those folders as running forever.
+            from api.audit_runner import reconcile_audit_run_status
             from api.audit_pipeline_status import get_audit_run_phase
 
+            reconciled = reconcile_audit_run_status(d)
+            if reconciled:
+                run_status = str(reconciled.get("status") or "")
+                run_error = str(
+                    reconciled.get("error") or reconciled.get("detail") or ""
+                )
             pipeline = get_audit_run_phase(d)
             still_running = bool(pipeline.get("still_running"))
             pipeline_phase = str(pipeline.get("phase") or "idle")
@@ -171,6 +183,8 @@ def list_primary_audits(
                 "overall_score": data.get("overall_score"),
                 "still_running": still_running,
                 "pipeline_phase": pipeline_phase,
+                "run_status": run_status,
+                "run_error": run_error,
             }
         )
         if limit is not None and limit >= 0 and len(rows) >= limit:
@@ -3027,6 +3041,38 @@ def audit_dir_for_run(out_base: str, primary_url: str) -> Path:
     return candidate.resolve()
 
 
+def filter_crawl_urls_for_site(crawl_urls: list[Any], site_url: str) -> list[str]:
+    """Keep valid http(s) crawl URLs on the brand site (or its subdomains), de-duplicated."""
+    site_host = _website_host(site_url)
+    kept: list[str] = []
+    seen: set[str] = set()
+    dropped = 0
+    for raw in crawl_urls:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if "://" not in text:
+            text = f"https://{text}"
+        parsed = urllib.parse.urlparse(text)
+        host = _website_host(text)
+        valid = parsed.scheme in {"http", "https"} and "." in host
+        same_site = not site_host or (
+            host == site_host
+            or host.endswith(f".{site_host}")
+            or site_host.endswith(f".{host}")
+        )
+        if not valid or not same_site:
+            dropped += 1
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        kept.append(text)
+    if dropped:
+        log.warning("Dropped %d crawl URL(s) not valid or not on %s", dropped, site_host)
+    return kept
+
+
 def seed_audit_dir_from_wizard(
     audit_dir: Path,
     *,
@@ -3046,6 +3092,7 @@ def seed_audit_dir_from_wizard(
     preserve_prompt_data: bool = False,
     prompt_locales: list[dict[str, Any]] | None = None,
     notification_email: str | None = None,
+    personas: list[dict[str, Any]] | None = None,
 ) -> None:
     """
     Create the audit folder early (before crawl) so the report UI can load, and persist
@@ -3153,8 +3200,21 @@ def seed_audit_dir_from_wizard(
             )
     onboarding["additional_crawl_markets"] = extra_markets
     onboarding["accepted_competitors"] = list(competitor_urls)
-    if crawl_urls:
-        onboarding["crawl_urls"] = [u for u in crawl_urls if str(u).strip()]
+    cleaned_personas = [
+        {
+            "name": str(p.get("name") or "").strip(),
+            "description": str(p.get("description") or "").strip(),
+        }
+        for p in (personas or [])
+        if isinstance(p, dict) and str(p.get("name") or "").strip()
+    ]
+    if cleaned_personas:
+        onboarding["personas"] = cleaned_personas
+    elif not preserve_prompt_data:
+        onboarding.pop("personas", None)
+    cleaned_crawl_urls = filter_crawl_urls_for_site(crawl_urls or [], site_u)
+    if cleaned_crawl_urls:
+        onboarding["crawl_urls"] = cleaned_crawl_urls
     else:
         onboarding.pop("crawl_urls", None)
     ga4_prop = ga4_property_id.strip()
@@ -3211,11 +3271,14 @@ def seed_audit_dir_from_wizard(
             for prompt in (r.get("custom_prompts") or [])
             if str(prompt).strip() in prompt_set
         ]
+        from api.prompt_selection import clean_prompt_personas
+
         cleaned_rows.append(
             {
                 "product_or_service": label,
                 "prompts": prs,
                 "prompt_tags": prompt_tags,
+                "prompt_personas": clean_prompt_personas(r.get("prompt_personas"), prompt_set),
                 "custom_prompts": custom_prompts,
                 "is_custom_topic": bool(r.get("is_custom_topic")),
             }
@@ -3284,6 +3347,7 @@ def create_report_cmd_env(
     ga4_ai_channels: str | None = None,
     ga4_oauth_credentials_path: str | None = None,
     crawl_urls: list[str] | None = None,
+    target_audit_dir: str | Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     out_dir = audit_output_base(out_base)
     cmd: list[str] = [
@@ -3304,6 +3368,13 @@ def create_report_cmd_env(
         "--sample-llms",
         str(ASSETS_ROOT / "reference" / "llms-txt-skeleton.txt"),
     ]
+    if target_audit_dir is not None:
+        cmd.extend(
+            [
+                "--target-audit-dir",
+                str(Path(target_audit_dir).expanduser().resolve()),
+            ]
+        )
     if brand_name.strip():
         cmd.extend(["--brand", brand_name.strip()])
     if industry.strip():

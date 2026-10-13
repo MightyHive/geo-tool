@@ -11,6 +11,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import logging
 import re
 import ssl
 import sys
@@ -26,12 +27,15 @@ from html import unescape as html_unescape_json
 from pathlib import Path
 from typing import Any
 
+log = logging.getLogger(__name__)
+
 USER_AGENT = "SEOGECrawlBot/1.0 (+https://example.local; audit)"
 REQUEST_TIMEOUT = 25
 SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
 # HTTPS: set by configure_tls() before any _request(); None means omit urlopen(context=…).
 _HTTPS_CONTEXT: ssl.SSLContext | None = None
+_BROWSER_FIRST_HOSTS: set[str] = set()
 
 
 def configure_tls(*, insecure: bool, no_certifi: bool) -> dict[str, Any]:
@@ -112,15 +116,15 @@ BOT_MIMIC_SPECS: tuple[BotMimicSpec, ...] = (
 
 
 def _request_urllib(url: str, *, user_agent: str = USER_AGENT) -> FetchResult:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": user_agent, "Accept": "*/*"},
-        method="GET",
-    )
-    open_kw: dict[str, Any] = {"timeout": REQUEST_TIMEOUT}
-    if _HTTPS_CONTEXT is not None and urllib.parse.urlparse(url).scheme == "https":
-        open_kw["context"] = _HTTPS_CONTEXT
     try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": user_agent, "Accept": "*/*"},
+            method="GET",
+        )
+        open_kw: dict[str, Any] = {"timeout": REQUEST_TIMEOUT}
+        if _HTTPS_CONTEXT is not None and urllib.parse.urlparse(url).scheme == "https":
+            open_kw["context"] = _HTTPS_CONTEXT
         with urllib.request.urlopen(req, **open_kw) as resp:
             body = resp.read()
             final = resp.geturl()
@@ -154,6 +158,32 @@ def _request(
     user_agent: str = USER_AGENT,
     allow_browser_fallback: bool = True,
 ) -> FetchResult:
+    host = (urllib.parse.urlparse(url).hostname or "").casefold()
+    if allow_browser_fallback and host in _BROWSER_FIRST_HOSTS:
+        try:
+            from browser_fetch import fetch_with_browser_fallback
+
+            fallback = fetch_with_browser_fallback(
+                url,
+                status=None,
+                headers=None,
+                force=True,
+            )
+        except Exception:
+            fallback = None
+        if fallback is not None:
+            status, body, final_url = fallback
+            return FetchResult(
+                url=url,
+                status=status,
+                body=body,
+                final_url=final_url,
+                headers=None,
+            )
+        # The browser session is no longer healthy; allow the normal transport
+        # to retry and decide whether this host should be promoted again.
+        _BROWSER_FIRST_HOSTS.discard(host)
+
     fr = _request_urllib(url, user_agent=user_agent)
     if not allow_browser_fallback:
         return fr
@@ -161,13 +191,25 @@ def _request(
         from browser_fetch import fetch_with_browser_fallback
 
         fallback = fetch_with_browser_fallback(
-            url, status=fr.status, headers=fr.headers, body=fr.body
+            url,
+            status=fr.status,
+            headers=fr.headers,
+            body=fr.body,
+            error=fr.error,
         )
     except Exception:
         fallback = None
     if fallback is None:
         return fr
     status, body, final_url = fallback
+    if host and fr.status is None:
+        _BROWSER_FIRST_HOSTS.add(host)
+        log.info(
+            "Browser fallback recovered transport failure for %s; "
+            "using browser-first fetches for host %s",
+            url,
+            host,
+        )
     return FetchResult(url=url, status=status, body=body, final_url=final_url, headers=None)
 
 
@@ -494,6 +536,20 @@ def safe_dir_name(base: str) -> str:
     return f"{host}_{h}"
 
 
+def primary_output_dir(args: argparse.Namespace, primary_base: str) -> str:
+    target = getattr(args, "target_audit_dir", None)
+    if target is not None:
+        return str(Path(target).expanduser().resolve())
+    return str(Path(args.out) / safe_dir_name(primary_base))
+
+
+def competitor_crawl_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Copy primary crawl settings without its origin-specific selected URLs."""
+    competitor_args = argparse.Namespace(**vars(args))
+    competitor_args.include_urls = ""
+    return competitor_args
+
+
 def ensure_dir(path: str) -> None:
     import os
 
@@ -528,6 +584,18 @@ def parse_robots_sitemaps(robots_text: str) -> list[str]:
         if m:
             urls.append(m.group(1).strip())
     return urls
+
+
+def resolve_http_url(raw_url: str, base_url: str) -> str | None:
+    """Resolve a possibly-relative crawl URL and reject unsupported schemes."""
+    value = str(raw_url or "").strip()
+    if not value:
+        return None
+    resolved = urllib.parse.urljoin(base_url, value)
+    parsed = urllib.parse.urlparse(resolved)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urllib.parse.urldefrag(resolved)[0]
 
 
 RobotsGroup = dict[str, Any]  # comments: list[str], user_agents: list[str], rules: list[tuple[str, str]]
@@ -751,7 +819,13 @@ def collect_sitemap_page_urls(
             pending_sitemaps.append(seed)
 
     if robots_body:
-        extend_sitemap_pending(pending_sitemaps, seen_sitemaps, parse_robots_sitemaps(robots_body), hints)
+        robots_base = base.rstrip("/") + "/"
+        robot_sitemaps = [
+            resolved
+            for raw_url in parse_robots_sitemaps(robots_body)
+            if (resolved := resolve_http_url(raw_url, robots_base))
+        ]
+        extend_sitemap_pending(pending_sitemaps, seen_sitemaps, robot_sitemaps, hints)
 
     defaults = [
         urllib.parse.urljoin(base + "/", "sitemap.xml"),
@@ -772,14 +846,25 @@ def collect_sitemap_page_urls(
         if fr.status != 200 or not fr.body:
             continue
         pages, nested = parse_sitemap_xml(fr.body)
-        for u in pages:
+        sitemap_base = fr.final_url or sm_url
+        resolved_pages = [
+            resolved
+            for raw_url in pages
+            if (resolved := resolve_http_url(raw_url, sitemap_base))
+        ]
+        for u in resolved_pages:
             if u not in page_urls:
                 page_urls.append(u)
                 if len(page_urls) >= max_urls:
                     break
         if len(page_urls) >= max_urls:
             break
-        extend_sitemap_pending(pending_sitemaps, seen_sitemaps, nested, hints)
+        resolved_nested = [
+            resolved
+            for raw_url in nested
+            if (resolved := resolve_http_url(raw_url, sitemap_base))
+        ]
+        extend_sitemap_pending(pending_sitemaps, seen_sitemaps, resolved_nested, hints)
         if hints:
             pending_sitemaps[:] = prioritize_sitemap_urls(pending_sitemaps, hints)
     return page_urls
@@ -2115,7 +2200,12 @@ def run_site_audit(
         report["robots_txt"]["status"] = robots_fr.status
         report["robots_txt"]["error"] = robots_fr.error
 
-    discovered_sm = parse_robots_sitemaps(robots_text or "")
+    sitemap_base = base.rstrip("/") + "/"
+    discovered_sm = [
+        resolved
+        for raw_url in parse_robots_sitemaps(robots_text or "")
+        if (resolved := resolve_http_url(raw_url, sitemap_base))
+    ]
     if not discovered_sm:
         discovered_sm = [urllib.parse.urljoin(base + "/", "sitemap.xml")]
     canonical_sitemap = discovered_sm[0]
@@ -2549,6 +2639,16 @@ def main() -> int:
         help="Base directory for saved files (default: audit_output)",
     )
     parser.add_argument(
+        "--target-audit-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write the primary crawl to this exact directory. "
+            "Overrides the hash-derived folder beneath --out."
+        ),
+    )
+    parser.add_argument(
         "--max-sitemap-urls",
         type=int,
         default=80,
@@ -2692,9 +2792,7 @@ def main() -> int:
 
     import os
 
-    out_root = args.out
-    site_dir = safe_dir_name(primary_base)
-    out_dir = os.path.join(out_root, site_dir)
+    out_dir = primary_output_dir(args, primary_base)
 
     try:
         primary_report = run_site_audit(
@@ -2718,8 +2816,11 @@ def main() -> int:
             comp_out = os.path.join(out_dir, "competitors", safe_dir_name(comp_base))
             label = f"Competitor {i}"
             print(f"{label} ({comp_base}) …", file=sys.stderr)
+            # Wizard-selected URLs belong to the primary origin. Competitors
+            # must perform their own sitemap discovery.
+            competitor_args = competitor_crawl_args(args)
             comp_report = run_site_audit(
-                args,
+                competitor_args,
                 comp_base,
                 comp_out,
                 audit_label=f"competitor_{i}",

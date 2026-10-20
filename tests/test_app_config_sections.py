@@ -36,3 +36,8 @@ def test_dashboard_builder_section_follows_feature_flag(monkeypatch) -> None:
     disabled = geo_services.app_config()
     assert disabled["features"]["workshop_dashboard_builder"] is False
     assert all(section["id"] != "dashboard" for section in disabled["report_sections"])
+
+
+def test_personas_follows_topics_in_ai_visibility_navigation() -> None:
+    ids = [section["id"] for section in geo_services.app_config()["report_sections"]]
+    assert ids.index("personas") == ids.index("topics") + 1

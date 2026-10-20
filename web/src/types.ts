@@ -799,6 +799,8 @@ export interface PromptPerformanceContext {
   probed_pss_rows?: PromptPerformancePssRow[];
   /** Buyer personas from the wizard (empty when the step was skipped). */
   personas?: Persona[];
+  /** Set on ?bootstrap=1 responses: locale the server chose (null = all locales). */
+  bootstrap_locale_key?: string | null;
   flat_prompts: string[];
   prompt_count: number;
   /** Total prompts stored on file (may exceed probed count for non-custom lines). */

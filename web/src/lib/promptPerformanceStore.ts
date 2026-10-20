@@ -29,9 +29,17 @@ type StoreEntry = {
   promise: Promise<PromptPerformanceContext> | null;
   version: number;
   scope: PromptPerfLoadScope | null;
+  /** Id of the latest request; older responses must not overwrite newer state. */
+  requestId: number;
 };
 
+/** Immutable view handed to React (useSyncExternalStore needs a new object per change). */
+export type PromptPerformanceSnapshot = Readonly<
+  Pick<StoreEntry, "status" | "data" | "error" | "scope" | "version">
+>;
+
 const entries = new Map<string, StoreEntry>();
+const snapshots = new Map<string, PromptPerformanceSnapshot>();
 const listeners = new Map<string, Set<() => void>>();
 
 function keyFor(auditDirOrSlug: string): string {
@@ -48,13 +56,17 @@ function ensureEntry(key: string): StoreEntry {
       promise: null,
       version: 0,
       scope: null,
+      requestId: 0,
     };
     entries.set(key, entry);
   }
   return entry;
 }
 
+/** Record a state change: bump the version so React sees a new snapshot, then notify. */
 function notify(key: string): void {
+  const entry = entries.get(key);
+  if (entry) entry.version += 1;
   const set = listeners.get(key);
   if (!set) return;
   for (const listener of set) listener();
@@ -69,6 +81,23 @@ export type EnsurePromptPerformanceOpts = {
 
 export function getPromptPerformanceEntry(auditDirOrSlug: string): StoreEntry {
   return ensureEntry(keyFor(auditDirOrSlug));
+}
+
+/** Stable-until-changed snapshot for useSyncExternalStore. */
+export function getPromptPerformanceSnapshot(auditDirOrSlug: string): PromptPerformanceSnapshot {
+  const key = keyFor(auditDirOrSlug);
+  const entry = ensureEntry(key);
+  const cached = snapshots.get(key);
+  if (cached && cached.version === entry.version) return cached;
+  const next: PromptPerformanceSnapshot = Object.freeze({
+    status: entry.status,
+    data: entry.data,
+    error: entry.error,
+    scope: entry.scope,
+    version: entry.version,
+  });
+  snapshots.set(key, next);
+  return next;
 }
 
 export function subscribePromptPerformance(
@@ -127,6 +156,7 @@ function runFetch(
   entry: StoreEntry,
   opts?: EnsurePromptPerformanceOpts,
 ): Promise<PromptPerformanceContext> {
+  const requestId = ++entry.requestId;
   entry.status = "loading";
   entry.error = null;
   notify(key);
@@ -144,20 +174,20 @@ function runFetch(
     locale: opts?.locale,
   })
     .then((data) => {
+      if (requestId !== entry.requestId) return data; // superseded by a newer request
       entry.data = data;
       entry.status = "ready";
       entry.error = null;
       entry.promise = null;
       entry.scope = nextScope;
-      entry.version += 1;
       notify(key);
       return data;
     })
     .catch((err) => {
+      if (requestId !== entry.requestId) throw err;
       entry.status = "error";
       entry.error = err instanceof Error ? err.message : "Failed to load";
       entry.promise = null;
-      entry.version += 1;
       notify(key);
       throw err;
     });
@@ -190,6 +220,7 @@ export function refreshPromptPerformance(
   const entry = ensureEntry(key);
   if (entry.promise && !opts?.allLocales && !opts?.locale) return entry.promise;
 
+  const requestId = ++entry.requestId;
   if (!entry.data) {
     entry.status = "loading";
     entry.error = null;
@@ -209,22 +240,24 @@ export function refreshPromptPerformance(
     locale: opts?.locale,
   })
     .then((data) => {
+      if (requestId !== entry.requestId) return data;
       entry.data = data;
       entry.status = "ready";
       entry.error = null;
       entry.promise = null;
       entry.scope = nextScope;
-      entry.version += 1;
       notify(key);
       return data;
     })
     .catch((err) => {
+      if (requestId !== entry.requestId) throw err;
       if (!entry.data) {
         entry.status = "error";
         entry.error = err instanceof Error ? err.message : "Failed to load";
+      } else {
+        entry.status = "ready";
       }
       entry.promise = null;
-      entry.version += 1;
       notify(key);
       throw err;
     });
@@ -240,7 +273,7 @@ export function invalidatePromptPerformance(auditDirOrSlug: string): void {
   entry.error = null;
   entry.promise = null;
   entry.scope = null;
-  entry.version += 1;
+  entry.requestId += 1; // drop any in-flight response
   notify(key);
   // Overlay reply bodies must not outlive a re-probe / context reset.
   invalidatePromptPerformanceDetailCache(auditDirOrSlug);
@@ -258,16 +291,20 @@ export function setPromptPerformanceData(
   entry.error = null;
   entry.promise = null;
   entry.scope = scope;
-  entry.version += 1;
+  entry.requestId += 1; // explicit data wins over any in-flight response
   notify(key);
 }
 
 export function usePromptPerformanceContext(auditDirOrSlug: string) {
-  const entry = useSyncExternalStore(
-    (onStoreChange) => subscribePromptPerformance(auditDirOrSlug, onStoreChange),
-    () => getPromptPerformanceEntry(auditDirOrSlug),
-    () => getPromptPerformanceEntry(auditDirOrSlug),
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => subscribePromptPerformance(auditDirOrSlug, onStoreChange),
+    [auditDirOrSlug],
   );
+  const getSnapshot = useCallback(
+    () => getPromptPerformanceSnapshot(auditDirOrSlug),
+    [auditDirOrSlug],
+  );
+  const entry = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   useEffect(() => {
     void ensurePromptPerformance(auditDirOrSlug).catch(() => {

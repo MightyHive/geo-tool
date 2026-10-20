@@ -1755,11 +1755,45 @@ def _audit_dir_or_404(audit_id: str) -> Path:
     return audit_dir
 
 
+# Mirrors web/src/lib/defaultLocaleView.ts (isHugeMultiLocaleAudit).
+HUGE_AUDIT_LOCALE_COUNT = 3
+HUGE_AUDIT_PROMPT_COUNT = 40
+HUGE_AUDIT_OVERALL_ROW_ESTIMATE = 80
+
+
+def bootstrap_locale_key(metrics: dict[str, Any] | None) -> str | None:
+    """Locale a first page load should show, or ``None`` for the all-locales view.
+
+    Huge multi-locale audits open on their primary locale so the first payload
+    stays small; everything else loads all locales (Overall).
+    """
+    if not isinstance(metrics, dict):
+        return None
+    keys = [
+        str(loc.get("key") or "").strip()
+        for loc in (metrics.get("prompt_locales") or [])
+        if isinstance(loc, dict) and str(loc.get("key") or "").strip()
+    ]
+    if len(keys) < 2:
+        return None
+    prompt_count = int(metrics.get("prompt_count") or metrics.get("stored_prompt_count") or 0)
+    huge = (
+        len(keys) >= HUGE_AUDIT_LOCALE_COUNT
+        or prompt_count >= HUGE_AUDIT_PROMPT_COUNT
+        or prompt_count * len(keys) >= HUGE_AUDIT_OVERALL_ROW_ESTIMATE
+    )
+    if not huge:
+        return None
+    preferred = str(metrics.get("default_locale_key") or "").strip()
+    return preferred if preferred in keys else keys[0]
+
+
 @router.get("/{audit_id}/prompt-performance")
 def get_prompt_performance_context(
     audit_id: str,
     locale: str | None = None,
     full: bool = False,
+    bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Return prompt-performance context.
 
@@ -1767,10 +1801,24 @@ def get_prompt_performance_context(
     ``locale`` to scope ``live_probe`` / per-prompt rows to one market
     (``__overall__`` merges slim metrics across locales). Pass ``full=1`` only
     when a caller truly needs reply bodies in one blob (discouraged).
+    Pass ``bootstrap=1`` (first page load) to let the server pick the view: the
+    primary locale for huge multi-locale audits, otherwise all locales. The
+    chosen locale is returned as ``bootstrap_locale_key`` (``None`` = all).
     """
     audit_dir = _audit_dir_or_404(audit_id)
     if full:
         return _build_full_context_response(audit_dir)
+    if bootstrap and locale is None:
+        from api.prompt_performance_metrics import read_metrics_file
+
+        chosen = bootstrap_locale_key(read_metrics_file(audit_dir))
+        resp = _build_context_response(
+            audit_dir,
+            use_persisted_metrics=True,
+            locale_key=chosen,
+            include_all_locales=chosen is None,
+        )
+        return {**resp, "bootstrap_locale_key": chosen}
     return _build_context_response(
         audit_dir,
         use_persisted_metrics=True,

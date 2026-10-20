@@ -41,15 +41,31 @@ const API = "/api";
 
 const withCredentials: RequestInit = { credentials: "include" };
 
+/**
+ * Default ceiling for API calls. Cloud Run allows requests to run for an hour, so
+ * without this a queued or stuck request leaves the UI spinning indefinitely.
+ * Callers needing longer (or shorter) pass their own `signal`.
+ */
+export const DEFAULT_API_TIMEOUT_MS = 120_000;
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...withCredentials,
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...withCredentials,
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(DEFAULT_API_TIMEOUT_MS),
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new Error("The server took too long to respond. Please try again.");
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);
@@ -614,12 +630,20 @@ function isAbortError(err: unknown): boolean {
 
 export function fetchPromptPerformanceContext(
   auditDirOrSlug: string,
-  opts?: { locale?: string; full?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  opts?: {
+    locale?: string;
+    full?: boolean;
+    /** First page load: server picks primary locale (huge audits) or all locales. */
+    bootstrap?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
 ): Promise<PromptPerformanceContext> {
   const slug = auditSlug(auditDirOrSlug);
   const params = new URLSearchParams();
   if (opts?.locale) params.set("locale", opts.locale);
   if (opts?.full) params.set("full", "1");
+  if (opts?.bootstrap) params.set("bootstrap", "1");
   const qs = params.toString();
   const timeoutMs = opts?.timeoutMs ?? PROMPT_PERFORMANCE_FETCH_TIMEOUT_MS;
   return json<PromptPerformanceContext>(

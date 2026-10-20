@@ -3947,6 +3947,7 @@ def app_config() -> dict[str, Any]:
         {"id": "ai-visibility-overview", "label": "Overview", "group": "AI visibility"},
         {"id": "prompts", "label": "Prompts", "group": "AI visibility"},
         {"id": "topics", "label": "Topics", "group": "AI visibility"},
+        {"id": "personas", "label": "Personas", "group": "AI visibility"},
         {"id": "competitor-visibility", "label": "Competitor visibility", "group": "AI visibility"},
         {"id": "citations", "label": "Citations", "group": "AI visibility"},
         {"id": "reddit-citations", "label": "Reddit Citations", "group": "AI visibility"},

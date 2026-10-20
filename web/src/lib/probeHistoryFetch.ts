@@ -34,8 +34,14 @@ function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, data: T): voi
   map.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
 }
 
+/** Hung history requests must fail so the in-flight entry clears and remounts retry. */
+const HISTORY_TIMEOUT_MS = 45_000;
+
 async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { credentials: "include" });
+  const response = await fetch(url, {
+    credentials: "include",
+    signal: AbortSignal.timeout(HISTORY_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`History request failed (${response.status})`);
   }

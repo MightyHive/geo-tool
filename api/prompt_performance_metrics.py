@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -774,7 +776,10 @@ def _keyword_sentiment_from_list_metrics(rows: list[dict[str, Any]]) -> dict[str
 def write_metrics_file(audit_dir: Path, payload: dict[str, Any]) -> Path:
     path = metrics_path(audit_dir)
     audit_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    # Compact JSON: these docs reach tens of MB and are re-read over GCS FUSE.
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
     try:
         from api.audit_json_cache import invalidate_path
 
@@ -1008,38 +1013,41 @@ def persist_metrics_from_full_context(audit_dir: Path, ctx: dict[str, Any]) -> d
     return payload
 
 
-def ensure_persisted_metrics(
-    audit_dir: Path,
-    *,
-    build_full_context: Any,
-) -> dict[str, Any] | None:
-    """Return fresh metrics; lazily backfill by building full context once if stale/missing."""
+# Per-audit locks so concurrent requests never rebuild the same metrics twice, and a
+# cooldown so a probe file whose mtime keeps drifting (GCS FUSE) is not rebuilt in a loop.
+_rebuild_guard = threading.Lock()
+_rebuild_locks: dict[str, threading.Lock] = {}
+_last_background_rebuild: dict[str, float] = {}
+BACKGROUND_REBUILD_COOLDOWN_SEC = 600.0
+
+
+def _audit_rebuild_lock(audit_dir: Path) -> threading.Lock:
+    key = str(audit_dir.resolve())
+    with _rebuild_guard:
+        lock = _rebuild_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _rebuild_locks[key] = lock
+        return lock
+
+
+def _has_usable_payload(metrics: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(metrics, dict)
+        and int(metrics.get("version") or 0) == METRICS_VERSION
+        and (
+            isinstance(metrics.get("overall_metrics"), dict)
+            or isinstance(metrics.get("locales"), dict)
+            or isinstance(metrics.get("live_probe"), dict)
+        )
+    )
+
+
+def _rebuild_metrics_locked(audit_dir: Path, build_full_context: Any) -> dict[str, Any] | None:
+    """Rebuild + persist metrics; caller holds the audit's rebuild lock."""
     existing = read_metrics_file(audit_dir)
     if metrics_are_fresh(audit_dir, existing):
-        return existing
-    probe = audit_dir / LIVE_PROBE_FILE
-    if not probe.is_file():
-        return existing
-    # Prefer serving an existing version-matched metrics doc over a synchronous
-    # full-probe rebuild. On GCS FUSE, loading multi-MB probe JSON blocks the
-    # request (and with low concurrency can hang the whole report page).
-    if (
-        isinstance(existing, dict)
-        and int(existing.get("version") or 0) == METRICS_VERSION
-        and (
-            isinstance(existing.get("overall_metrics"), dict)
-            or isinstance(existing.get("locales"), dict)
-            or isinstance(existing.get("live_probe"), dict)
-        )
-    ):
-        log.warning(
-            "Serving existing prompt metrics for %s despite probe_mtime mismatch "
-            "(stored=%s current=%s); skip synchronous full-probe backfill",
-            audit_dir.name,
-            existing.get("probe_mtime"),
-            probe_mtime(audit_dir),
-        )
-        return existing
+        return existing  # another request finished the rebuild while we waited
     try:
         ctx = build_full_context(audit_dir)
     except Exception:
@@ -1052,6 +1060,59 @@ def ensure_persisted_metrics(
     except Exception:
         log.exception("Failed to write prompt performance metrics for %s", audit_dir)
         return existing
+
+
+def schedule_background_metrics_rebuild(audit_dir: Path, build_full_context: Any) -> bool:
+    """Refresh stale metrics off the request path. Returns True when a rebuild was started."""
+    key = str(audit_dir.resolve())
+    now = time.monotonic()
+    with _rebuild_guard:
+        last = _last_background_rebuild.get(key)
+        if last is not None and now - last < BACKGROUND_REBUILD_COOLDOWN_SEC:
+            return False
+        _last_background_rebuild[key] = now
+    lock = _audit_rebuild_lock(audit_dir)
+    if lock.locked():
+        return False
+
+    def _run() -> None:
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            _rebuild_metrics_locked(audit_dir, build_full_context)
+        finally:
+            lock.release()
+
+    threading.Thread(
+        target=_run, name=f"metrics-rebuild-{audit_dir.name}", daemon=True
+    ).start()
+    return True
+
+
+def ensure_persisted_metrics(
+    audit_dir: Path,
+    *,
+    build_full_context: Any,
+) -> dict[str, Any] | None:
+    """Return metrics for a GET without rebuilding on the request path when avoidable.
+
+    - Fresh metrics: returned as-is.
+    - Stale but usable (probe re-ran / mtime drift): returned immediately while a
+      background thread rebuilds them, so the next load is fresh.
+    - Missing or old version: built synchronously, but only once per audit — other
+      requests wait on the same build instead of each parsing the multi-MB probe.
+    """
+    existing = read_metrics_file(audit_dir)
+    if metrics_are_fresh(audit_dir, existing):
+        return existing
+    probe = audit_dir / LIVE_PROBE_FILE
+    if not probe.is_file():
+        return existing
+    if _has_usable_payload(existing):
+        schedule_background_metrics_rebuild(audit_dir, build_full_context)
+        return existing
+    with _audit_rebuild_lock(audit_dir):
+        return _rebuild_metrics_locked(audit_dir, build_full_context)
 
 
 def context_from_metrics(

@@ -207,8 +207,8 @@ gcloud run deploy "${SERVICE}" \
   --cpu=2 \
   --memory=4Gi \
   --timeout=3600 \
-  --concurrency=2 \
-  --min-instances=0 \
+  --concurrency="${CLOUD_RUN_CONCURRENCY:-8}" \
+  --min-instances="${CLOUD_RUN_MIN_INSTANCES:-1}" \
   --max-instances=5 \
   --cpu-boost \
   --no-cpu-throttling \

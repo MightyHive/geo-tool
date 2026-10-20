@@ -269,6 +269,8 @@ export function buildGroupedPromptEntries(
 export type TopicMarketPrompt = {
   productLabel: string;
   tags: string[];
+  /** Buyer persona the prompt was written for (persona prompts only). */
+  persona?: string;
   sourcePrompt: string;
   localeKey: string;
   row: LiveProbePerPrompt;
@@ -341,6 +343,7 @@ export function buildTopicMarketPromptTree(
       marketsMap.get(marketKey)!.push({
         productLabel: meta.productLabel,
         tags: meta.tags,
+        ...(meta.persona ? { persona: meta.persona } : {}),
         sourcePrompt: meta.sourcePrompt,
         localeKey: marketKey,
         row,

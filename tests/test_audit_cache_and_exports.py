@@ -20,12 +20,17 @@ def test_audit_json_cache_hit_and_invalidate(tmp_path: Path, monkeypatch) -> Non
     first = cache.load_json_cached(path)
     assert first == {"score": 1}
 
-    path.write_text(json.dumps({"score": 2}), encoding="utf-8")
-    # Still cached until invalidate
-    assert cache.load_json_cached(path) == {"score": 1}
+    calls = []
+    # Unchanged file: served from cache without re-reading.
+    assert cache.load_json_cached(path, loader=lambda p: calls.append(1) or {}) == {"score": 1}
+    assert calls == []
+
+    # Rewrites (e.g. by another instance or job) are detected via mtime/size.
+    path.write_text(json.dumps({"score": 22}), encoding="utf-8")
+    assert cache.load_json_cached(path) == {"score": 22}
 
     cache.invalidate_audit(tmp_path)
-    assert cache.load_json_cached(path) == {"score": 2}
+    assert cache.get_cached(path) is None
 
 
 def test_precomputed_html_freshness(tmp_path: Path, monkeypatch) -> None:

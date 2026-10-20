@@ -87,11 +87,33 @@ describe("loadPromptPerformanceBootstrap", () => {
     vi.mocked(fetchPromptPerformanceLocale).mockReset();
   });
 
-  it("loads preferred locale for huge audits (not all-locales)", async () => {
+  it("uses a single server-decided bootstrap request", async () => {
+    vi.mocked(fetchPromptPerformanceContext).mockResolvedValueOnce(localeCtx("BE:en"));
+    const result = await loadPromptPerformanceBootstrap("www.samsung.com_test");
+    expect(fetchPromptPerformanceContext).toHaveBeenCalledWith("www.samsung.com_test", {
+      bootstrap: true,
+    });
+    expect(fetchPromptPerformanceSummary).not.toHaveBeenCalled();
+    expect(fetchPromptPerformanceLocale).not.toHaveBeenCalled();
+    expect(result.default_locale_key).toBe("BE:en");
+  });
+
+  it("does not chain more requests after a bootstrap timeout", async () => {
+    vi.mocked(fetchPromptPerformanceContext).mockRejectedValueOnce(
+      new Error("Timed out loading prompt-performance data."),
+    );
+    await expect(loadPromptPerformanceBootstrap("www.samsung.com_test")).rejects.toThrow(
+      "Timed out",
+    );
+    expect(fetchPromptPerformanceSummary).not.toHaveBeenCalled();
+  });
+
+  it("falls back to preferred locale for huge audits when bootstrap is unavailable", async () => {
     const summary = summaryHuge();
     expect(isHugeMultiLocaleAudit(summary as PromptPerformanceContext)).toBe(true);
     expect(preferredInitialLocaleKey(summary as PromptPerformanceContext)).toBe("BE:en");
 
+    vi.mocked(fetchPromptPerformanceContext).mockRejectedValueOnce(new Error("404"));
     vi.mocked(fetchPromptPerformanceSummary).mockResolvedValue(summary);
     vi.mocked(fetchPromptPerformanceLocale).mockResolvedValue(localeCtx("BE:en"));
 
@@ -101,7 +123,8 @@ describe("loadPromptPerformanceBootstrap", () => {
       "www.samsung.com_test",
       "BE:en",
     );
-    expect(fetchPromptPerformanceContext).not.toHaveBeenCalled();
+    // Only the failed bootstrap call — no all-locales fetch for huge audits.
+    expect(fetchPromptPerformanceContext).toHaveBeenCalledTimes(1);
     expect(result.default_locale_key).toBe("BE:en");
   });
 

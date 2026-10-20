@@ -7,7 +7,11 @@ import {
   personaTag,
   stripPersonaPrompts,
 } from "./personas";
-import { filterContextByPersona, listProbePersonas } from "./promptCategoryGrouping";
+import {
+  buildTopicMarketPromptTree,
+  filterContextByPersona,
+  listProbePersonas,
+} from "./promptCategoryGrouping";
 import {
   buildSelections,
   countIncludedByBudget,
@@ -129,6 +133,13 @@ describe("persona reporting", () => {
       "widget for kids",
     ]);
     expect(filterContextByPersona(ctx, "All personas")).toBe(ctx);
+  });
+
+  it("carries persona onto Prompts-page tree entries", () => {
+    const tree = buildTopicMarketPromptTree(makeCtx().live_probe, makeCtx(), { localeKey: "" });
+    const entries = tree.flatMap((node) => node.markets.flatMap((m) => m.prompts));
+    expect(entries.find((e) => e.row.prompt === "widget for kids")?.persona).toBe("Parents");
+    expect(entries.find((e) => e.row.prompt === "best widget")?.persona).toBeUndefined();
   });
 
   it("computes per-persona performance", () => {

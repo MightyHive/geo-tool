@@ -11,8 +11,11 @@ function pct(value: number): string {
 /** Buyer persona cards + Citation Rate vs Visibility scatter (only when the audit has personas). */
 export default function PersonaOverviewSection({
   ctx,
+  showScatter = true,
 }: {
   ctx: PromptPerformanceContext | null | undefined;
+  /** Hide the scatter when the host page renders its own (Personas tab). */
+  showScatter?: boolean;
 }) {
   const rows = useMemo(() => computePersonaPerformance(ctx), [ctx]);
   const points = useMemo(() => personaCitationVisibilityPoints(ctx), [ctx]);
@@ -59,13 +62,15 @@ export default function PersonaOverviewSection({
           ))}
         </div>
       </div>
-      <CitationVisibilityScatter
-        title="Citation Rate vs Visibility: Personas"
-        subtitle="Your brand by buyer persona"
-        dimensionLabel="Persona"
-        points={points}
-        emptyMessage="No persona responses available yet."
-      />
+      {showScatter && (
+        <CitationVisibilityScatter
+          title="Citation Rate vs Visibility: Personas"
+          subtitle="Your brand by buyer persona"
+          dimensionLabel="Persona"
+          points={points}
+          emptyMessage="No persona responses available yet."
+        />
+      )}
     </section>
   );
 }

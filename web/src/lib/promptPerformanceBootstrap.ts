@@ -41,6 +41,16 @@ export async function loadPromptPerformanceBootstrap(
     }
   }
 
+  // One request: the server decides between the primary locale (huge audits)
+  // and all locales, instead of a /summary round trip before the real fetch.
+  try {
+    return await fetchPromptPerformanceContext(auditDirOrSlug, { bootstrap: true });
+  } catch (err) {
+    // A timeout means the server is struggling; don't queue two more heavy requests.
+    if (err instanceof Error && err.message.startsWith("Timed out")) throw err;
+    /* otherwise fall back to the summary-first path below (older API) */
+  }
+
   let preferred = OVERALL_LOCALE_KEY;
   let huge = false;
   try {

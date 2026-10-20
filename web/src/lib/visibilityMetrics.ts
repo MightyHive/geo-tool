@@ -6,6 +6,7 @@ import {
   VISIBILITY_PLATFORMS,
   type VisibilityPlatform,
 } from "./brandVisibilityRows";
+import { hostsAreSameSite, siteHostKey } from "./urlHost";
 
 export const PRIMARY_VISIBILITY_PLATFORMS = ["gemini", "openai", "google_aio", "claude"] as const;
 export const CHATBOT_PLATFORMS = ["gemini", "openai", "claude"] as const;
@@ -50,6 +51,12 @@ export interface PlatformVisibilityMetrics {
   brandHits: number;
   competitorHits: number;
   sovPct: number;
+  /** All citations across completed responses (counted per run, not URL-deduped). */
+  citationCount: number;
+  /** Citations whose URL is on the brand's own website (incl. subdomains). */
+  brandCitationCount: number;
+  /** brandCitationCount ÷ citationCount × 100. */
+  citationRatePct: number;
 }
 
 export interface VisibilityMetrics {
@@ -68,7 +75,52 @@ export interface VisibilityMetrics {
   competitorCount: number;
   topCompetitorSovPct: number;
   averageCompetitorSovPct: number;
+  citationCount: number;
+  brandCitationCount: number;
+  /** Citations to the brand's own domain ÷ all citations in responses × 100. */
+  citationRatePct: number;
   perPlatform: Record<string, PlatformVisibilityMetrics>;
+}
+
+type RunCitationShape = {
+  error?: string;
+  citation_domains?: string[];
+  citations?: Array<{ domain?: string; url?: string }>;
+};
+
+function citationDomain(citation: { domain?: string; url?: string } | null | undefined): string {
+  if (!citation) return "";
+  return siteHostKey(citation.domain || citation.url || "");
+}
+
+/**
+ * Citation domains for one prompt × platform, counted per completed run.
+ * Uses per-run `citation_domains` (slim) or `citations` (full); falls back to the
+ * run-deduplicated row-level `citations_{platform}` for older saved results.
+ */
+export function rowPlatformCitationDomains(
+  row: LiveProbePerPrompt,
+  platform: string,
+): string[] {
+  const runs = (row.runs as Record<string, RunCitationShape[]> | undefined)?.[platform];
+  if (Array.isArray(runs)) {
+    let hasRunData = false;
+    const domains: string[] = [];
+    for (const run of runs) {
+      if (!run || run.error) continue;
+      if (Array.isArray(run.citation_domains)) {
+        hasRunData = true;
+        domains.push(...run.citation_domains.map((d) => siteHostKey(d)).filter(Boolean));
+      } else if (Array.isArray(run.citations)) {
+        hasRunData = true;
+        domains.push(...run.citations.map(citationDomain).filter(Boolean));
+      }
+    }
+    if (hasRunData) return domains;
+  }
+  const rowCitations = (row as Record<string, unknown>)[`citations_${platform}`];
+  if (!Array.isArray(rowCitations)) return [];
+  return (rowCitations as Array<{ domain?: string; url?: string }>).map(citationDomain).filter(Boolean);
 }
 
 export interface RelativeSovPerformance {
@@ -146,6 +198,7 @@ export function computeVisibilityMetricsForPlatforms(
 
   const brandName = ctx.brand_name ?? "";
   const brandTokens = ctx.live_probe?.brand_match_tokens ?? [];
+  const brandHost = siteHostKey(ctx.brand_site_url);
   const hitRows = accumulateBrandVisibilityHits(ctx);
   const ownHitRow = hitRows.find((row) => row.isOwnBrand);
 
@@ -154,8 +207,16 @@ export function computeVisibilityMetricsForPlatforms(
   for (const platform of platforms) {
     let responseCount = 0;
     let visibleResponseCount = 0;
+    let citationCount = 0;
+    let brandCitationCount = 0;
     for (const row of rows) {
-      for (const run of completedPlatformRuns(row, platform)) {
+      const runs = completedPlatformRuns(row, platform);
+      if (runs.length) {
+        const domains = rowPlatformCitationDomains(row, platform);
+        citationCount += domains.length;
+        brandCitationCount += domains.filter((d) => hostsAreSameSite(d, brandHost)).length;
+      }
+      for (const run of runs) {
         responseCount++;
         const storedBrandSignal = Number(run.scores?.brand_signal ?? 0);
         // When replies are omitted, rely on stored brand_signal (text match unavailable).
@@ -178,6 +239,9 @@ export function computeVisibilityMetricsForPlatforms(
       brandHits,
       competitorHits,
       sovPct: totalHits > 0 ? (brandHits / totalHits) * 100 : 0,
+      citationCount,
+      brandCitationCount,
+      citationRatePct: citationCount > 0 ? (brandCitationCount / citationCount) * 100 : 0,
     };
   }
 
@@ -210,6 +274,11 @@ export function computeVisibilityMetricsForPlatforms(
     ? platforms.reduce((sum, platform) => sum + ownHitRow.globalPlatformTotal[platform], 0)
     : 0;
   const sovPct = totalTableHits > 0 ? (brandHits / totalTableHits) * 100 : 0;
+  const citationCount = platforms.reduce((sum, platform) => sum + perPlatform[platform].citationCount, 0);
+  const brandCitationCount = platforms.reduce(
+    (sum, platform) => sum + perPlatform[platform].brandCitationCount,
+    0,
+  );
 
   return {
     score: Math.min(100, 0.60 * visibilityPct + 0.40 * relativeSov.score),
@@ -224,6 +293,9 @@ export function computeVisibilityMetricsForPlatforms(
     competitorCount: relativeSov.competitorCount,
     topCompetitorSovPct: relativeSov.topCompetitorSovPct,
     averageCompetitorSovPct: relativeSov.averageCompetitorSovPct,
+    citationCount,
+    brandCitationCount,
+    citationRatePct: citationCount > 0 ? (brandCitationCount / citationCount) * 100 : 0,
     perPlatform,
   };
 }

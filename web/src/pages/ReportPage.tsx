@@ -23,6 +23,7 @@ import { ContentOverview } from "../components/ContentOverview";
 import { PlatformReadinessSection } from "../components/PlatformReadinessSection";
 import { PromptPerformanceSection } from "../components/PromptPerformanceSection";
 import { TopicsVisibilitySection } from "../components/TopicsVisibilitySection";
+import { PersonasVisibilitySection } from "../components/PersonasVisibilitySection";
 import { RedditInsightsSection } from "../components/RedditInsightsSection";
 import { RecommendationsSection } from "../components/RecommendationsSection";
 import { ReportHeader } from "../components/ReportHeader";
@@ -74,6 +75,7 @@ const REACT_SECTIONS = new Set([
   "recommendations",
   "prompts",
   "topics",
+  "personas",
   "citations",
   "config",
   "ai-visibility-overview",
@@ -528,6 +530,12 @@ export function ReportPage() {
           <ReportSectionPane id="topics" activeId={section} label="Topics">
             <div className="max-w-[1200px] mx-auto px-6 py-8">
               <TopicsVisibilitySection auditDirOrSlug={auditRef} />
+            </div>
+          </ReportSectionPane>
+
+          <ReportSectionPane id="personas" activeId={section} label="Personas">
+            <div className="max-w-[1200px] mx-auto px-6 py-8">
+              <PersonasVisibilitySection auditDirOrSlug={auditRef} />
             </div>
           </ReportSectionPane>
 

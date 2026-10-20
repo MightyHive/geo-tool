@@ -7,10 +7,10 @@ import { PromptTable } from "./PromptPerformanceSection";
 import { PAGE_PROMPT_LOCALE_KEY, pageAuditPromptContext } from "../lib/pageAuditPromptContext";
 import { activeProbePlatforms } from "../lib/probePlatforms";
 import { computeVisibilityMetrics } from "../lib/visibilityMetrics";
-import SovVisibilityScatter, {
-  platformSovVisibilityPoints,
-  promptSovVisibilityPoints,
-} from "./SovVisibilityScatter";
+import CitationVisibilityScatter, {
+  platformCitationVisibilityPoints,
+  promptCitationVisibilityPoints,
+} from "./CitationVisibilityScatter";
 
 type VisibilityMetrics = {
   score?: number;
@@ -57,8 +57,8 @@ export function PagePromptsSection({
   const { ctx, live } = pageAuditPromptContext(audit);
   const rows = live?.per_prompt ?? [];
   const visibilityMetrics = live ? computeVisibilityMetrics(ctx) : null;
-  const platformChartPoints = platformSovVisibilityPoints(visibilityMetrics);
-  const promptChartPoints = promptSovVisibilityPoints(ctx);
+  const platformChartPoints = platformCitationVisibilityPoints(visibilityMetrics);
+  const promptChartPoints = promptCitationVisibilityPoints(ctx);
   const done = audit.status === "done";
   const promptMetrics = (audit.page_probe as { prompt_metrics?: VisibilityMetrics } | null | undefined)
     ?.prompt_metrics;
@@ -349,19 +349,19 @@ export function PagePromptsSection({
                 Prompt visibility charts
               </h3>
               <p className="mt-1 max-w-3xl text-xs text-gray-500">
-                Visibility and share of voice calculated only from this page’s saved prompt
+                Visibility and citation rate calculated only from this page’s saved prompt
                 responses.
               </p>
             </div>
-            <SovVisibilityScatter
-              title="SOV vs Visibility: Platforms"
+            <CitationVisibilityScatter
+              title="Citation Rate vs Visibility: Platforms"
               subtitle="This page’s brand performance by responding platform"
               dimensionLabel="Platform"
               points={platformChartPoints}
               emptyMessage="No completed platform responses are available yet."
             />
-            <SovVisibilityScatter
-              title="SOV vs Visibility: Prompts"
+            <CitationVisibilityScatter
+              title="Citation Rate vs Visibility: Prompts"
               subtitle="Each point represents one prompt tested for this page"
               dimensionLabel="Prompt"
               points={promptChartPoints}

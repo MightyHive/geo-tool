@@ -83,6 +83,9 @@ import {
   type GeminiSentimentLabel,
 } from "../lib/geminiPromptSentiment";
 import { ViewportOverlay } from "./ViewportOverlay";
+import { isPersonaTag } from "../lib/personas";
+
+const NO_PERSONA_FILTER = "__no_persona__";
 
 const SOV_GREEN = "#00b894";
 const PLATFORM_GEMINI = PLATFORM_META.gemini.color;
@@ -1050,6 +1053,7 @@ export function PromptTable({
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceFilter>("all");
   const [topicFilter, setTopicFilter] = useState<string>("");
   const [tagFilter, setTagFilter] = useState<string>("");
+  const [personaFilter, setPersonaFilter] = useState<string>("");
   /** Topics present in this set are expanded. Overall defaults to all collapsed. */
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   /** Market groups under topics (Overall only). Empty = collapsed. */
@@ -1169,8 +1173,18 @@ export function PromptTable({
     () => topicTree.flatMap((node) => node.markets.flatMap((market) => market.prompts)),
     [topicTree],
   );
+  const allPersonas = useMemo(() => {
+    const present = new Set(
+      allPromptEntries.map((entry) => entry.persona).filter((p): p is string => Boolean(p)),
+    );
+    const ordered = (ctx?.personas ?? []).map((p) => p.name).filter((name) => present.has(name));
+    return [...ordered, ...[...present].filter((name) => !ordered.includes(name)).sort()];
+  }, [allPromptEntries, ctx]);
+  // Persona tags duplicate the Persona filter, so keep them out of the Tag list.
   const allTags = useMemo(
-    () => Array.from(new Set(allPromptEntries.flatMap((entry) => entry.tags))).sort(),
+    () => Array.from(new Set(
+      allPromptEntries.flatMap((entry) => entry.tags).filter((tag) => !isPersonaTag(tag)),
+    )).sort(),
     [allPromptEntries],
   );
 
@@ -1207,7 +1221,7 @@ export function PromptTable({
 
   // Filter tree by topic / platform / surface / tag without flattening the hierarchy.
   const filteredTopicTree = useMemo(() => {
-    if (!topicFilter && !platformFilter && !tagFilter && surfaceFilter === "all") {
+    if (!topicFilter && !platformFilter && !tagFilter && !personaFilter && surfaceFilter === "all") {
       return topicTree;
     }
     const nodes: TopicMarketNode[] = [];
@@ -1226,6 +1240,9 @@ export function PromptTable({
               if (!hasSurfaceResponse) return false;
             }
             if (tagFilter && !entry.tags.includes(tagFilter)) return false;
+            if (personaFilter === NO_PERSONA_FILTER) {
+              if (entry.persona) return false;
+            } else if (personaFilter && entry.persona !== personaFilter) return false;
             return true;
           }),
         }))
@@ -1241,9 +1258,10 @@ export function PromptTable({
       });
     }
     return nodes;
-  }, [topicTree, topicFilter, platformFilter, tagFilter, surfaceFilter, surfacePlatforms]);
+  }, [topicTree, topicFilter, platformFilter, tagFilter, personaFilter, surfaceFilter, surfacePlatforms]);
 
-  const hasFilter = !!platformFilter || !!topicFilter || !!tagFilter || surfaceFilter !== "all";
+  const hasFilter = !!platformFilter || !!topicFilter || !!tagFilter || !!personaFilter
+    || surfaceFilter !== "all";
   const activeConfig = PLATFORM_CONFIG.filter((p) => surfacePlatforms.includes(p.key));
 
   function toggleTopic(topic: string) {
@@ -1617,6 +1635,22 @@ export function PromptTable({
           </ReportFilterSelect>
         )}
 
+        {allPersonas.length > 0 && (
+          <ReportFilterSelect
+            id="prompts-persona-select"
+            label="Persona"
+            hint="Limit the table to prompts written for one buyer persona."
+            value={personaFilter}
+            onChange={(e) => setPersonaFilter(e.target.value)}
+          >
+            <option value="">All personas</option>
+            {allPersonas.map((persona) => (
+              <option key={persona} value={persona}>{persona}</option>
+            ))}
+            <option value={NO_PERSONA_FILTER}>No persona (topic prompts)</option>
+          </ReportFilterSelect>
+        )}
+
         {allTags.length > 0 && (
           <ReportFilterSelect
             id="prompts-tag-select"
@@ -1637,6 +1671,7 @@ export function PromptTable({
               setSurfaceFilter("all");
               setTopicFilter("");
               setTagFilter("");
+              setPersonaFilter("");
             }}
             className="pb-1.5 text-xs text-gray-400 underline hover:text-gray-600"
           >

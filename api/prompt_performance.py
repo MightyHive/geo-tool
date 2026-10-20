@@ -14,7 +14,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api import geo_services as geo
-from api.prompt_selection import select_flat_prompts_for_probing, select_prompts_for_probing
+from api.prompt_selection import (
+    clean_prompt_personas,
+    select_flat_prompts_for_probing,
+    select_prompts_for_probing,
+)
 
 router = APIRouter(prefix="/api/audits", tags=["prompt-performance"])
 log = logging.getLogger(__name__)
@@ -84,6 +88,7 @@ def _normalize_pss_rows(rows: Any) -> list[dict[str, Any]]:
                         for prompt, tags in raw_tags.items()
                         if str(prompt) in prompt_set and isinstance(tags, list)
                     },
+                    "prompt_personas": clean_prompt_personas(r.get("prompt_personas"), prompt_set),
                     "custom_prompts": [
                         str(prompt).strip()
                         for prompt in (r.get("custom_prompts") or [])
@@ -526,6 +531,11 @@ def _build_full_context_response(audit_dir: Path) -> dict[str, Any]:
         "use_pss": use_pss,
         "pss_rows": pss_rows,
         "probed_pss_rows": probed_pss_rows,
+        "personas": [
+            {"name": str(p.get("name") or "").strip(), "description": str(p.get("description") or "").strip()}
+            for p in (ctx.get("personas") or [])
+            if isinstance(p, dict) and str(p.get("name") or "").strip()
+        ],
         "flat_prompts": flat,
         "prompt_count": len(probed_flat) if probed_flat else len(flat),
         "stored_prompt_count": len(flat),
@@ -1745,11 +1755,45 @@ def _audit_dir_or_404(audit_id: str) -> Path:
     return audit_dir
 
 
+# Mirrors web/src/lib/defaultLocaleView.ts (isHugeMultiLocaleAudit).
+HUGE_AUDIT_LOCALE_COUNT = 3
+HUGE_AUDIT_PROMPT_COUNT = 40
+HUGE_AUDIT_OVERALL_ROW_ESTIMATE = 80
+
+
+def bootstrap_locale_key(metrics: dict[str, Any] | None) -> str | None:
+    """Locale a first page load should show, or ``None`` for the all-locales view.
+
+    Huge multi-locale audits open on their primary locale so the first payload
+    stays small; everything else loads all locales (Overall).
+    """
+    if not isinstance(metrics, dict):
+        return None
+    keys = [
+        str(loc.get("key") or "").strip()
+        for loc in (metrics.get("prompt_locales") or [])
+        if isinstance(loc, dict) and str(loc.get("key") or "").strip()
+    ]
+    if len(keys) < 2:
+        return None
+    prompt_count = int(metrics.get("prompt_count") or metrics.get("stored_prompt_count") or 0)
+    huge = (
+        len(keys) >= HUGE_AUDIT_LOCALE_COUNT
+        or prompt_count >= HUGE_AUDIT_PROMPT_COUNT
+        or prompt_count * len(keys) >= HUGE_AUDIT_OVERALL_ROW_ESTIMATE
+    )
+    if not huge:
+        return None
+    preferred = str(metrics.get("default_locale_key") or "").strip()
+    return preferred if preferred in keys else keys[0]
+
+
 @router.get("/{audit_id}/prompt-performance")
 def get_prompt_performance_context(
     audit_id: str,
     locale: str | None = None,
     full: bool = False,
+    bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Return prompt-performance context.
 
@@ -1757,10 +1801,24 @@ def get_prompt_performance_context(
     ``locale`` to scope ``live_probe`` / per-prompt rows to one market
     (``__overall__`` merges slim metrics across locales). Pass ``full=1`` only
     when a caller truly needs reply bodies in one blob (discouraged).
+    Pass ``bootstrap=1`` (first page load) to let the server pick the view: the
+    primary locale for huge multi-locale audits, otherwise all locales. The
+    chosen locale is returned as ``bootstrap_locale_key`` (``None`` = all).
     """
     audit_dir = _audit_dir_or_404(audit_id)
     if full:
         return _build_full_context_response(audit_dir)
+    if bootstrap and locale is None:
+        from api.prompt_performance_metrics import read_metrics_file
+
+        chosen = bootstrap_locale_key(read_metrics_file(audit_dir))
+        resp = _build_context_response(
+            audit_dir,
+            use_persisted_metrics=True,
+            locale_key=chosen,
+            include_all_locales=chosen is None,
+        )
+        return {**resp, "bootstrap_locale_key": chosen}
     return _build_context_response(
         audit_dir,
         use_persisted_metrics=True,

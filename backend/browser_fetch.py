@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
+
+log = logging.getLogger(__name__)
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -58,6 +61,25 @@ def is_bot_wall(
 ) -> bool:
     """True when the response looks like a WAF/bot wall rather than a real page denial."""
     return waf_provider(status, headers, body) is not None
+
+
+def is_transport_failure(status: int | None, error: str | None) -> bool:
+    """True for network failures that a browser transport may recover from."""
+    if status is not None or not error:
+        return False
+    message = error.casefold()
+    return any(
+        marker in message
+        for marker in (
+            "timed out",
+            "timeout",
+            "connection reset",
+            "remote end closed",
+            "incomplete read",
+            "unexpected eof",
+            "internal error",
+        )
+    )
 
 
 def _looks_like_challenge_html(html: str) -> bool:
@@ -127,7 +149,13 @@ class _PlaywrightSession:
             page.close()
         self._warmed_hosts.add(host)
 
-    def _fetch_via_page(self, url: str, *, timeout_ms: int) -> tuple[int, bytes, str]:
+    def _fetch_via_page(
+        self,
+        url: str,
+        *,
+        timeout_ms: int,
+        raw_response: bool = False,
+    ) -> tuple[int, bytes, str]:
         page = self._context.new_page()
         try:
             response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -135,7 +163,8 @@ class _PlaywrightSession:
             html = page.content()
             http_status = response.status if response else 403
             status = _resolve_status(http_status, html)
-            return status, html.encode("utf-8"), page.url
+            body = response.body() if raw_response and response is not None else html.encode("utf-8")
+            return status, body, page.url
         finally:
             page.close()
 
@@ -152,9 +181,28 @@ class _PlaywrightSession:
         self._ensure_started()
         self._warm_host(url, timeout_ms=timeout_ms)
         path = (urlparse(url).path or "").lower()
-        # HTML pages and XML/text artifacts: full navigation handles Cloudflare challenges.
-        if path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".svg")):
-            return self._fetch_via_request(url, timeout_ms=timeout_ms)
+        # Preserve raw bytes for non-HTML resources; page.content() wraps text/XML
+        # responses in browser-generated HTML.
+        if path.endswith(
+            (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".ico",
+                ".avif",
+                ".svg",
+                ".txt",
+                ".xml",
+                ".xml.gz",
+            )
+        ):
+            return self._fetch_via_page(
+                url,
+                timeout_ms=timeout_ms,
+                raw_response=True,
+            )
         return self._fetch_via_page(url, timeout_ms=timeout_ms)
 
     def close(self) -> None:
@@ -183,14 +231,27 @@ def fetch_with_browser_fallback(
     status: int | None,
     headers: Mapping[str, str] | None,
     body: bytes = b"",
+    error: str | None = None,
+    force: bool = False,
 ) -> tuple[int, bytes, str] | None:
-    """Retry ``url`` with Playwright when ``status`` looks like a bot wall. Returns None on skip/failure."""
-    if not is_bot_wall(status, headers, body):
+    """Retry a bot wall or recoverable transport failure with Playwright."""
+    global _session
+    if not force and not (
+        is_bot_wall(status, headers, body) or is_transport_failure(status, error)
+    ):
         return None
     with _lock:
         try:
             return _get_session().fetch(url)
-        except Exception:
+        except Exception as exc:
+            log.warning("Browser fallback failed for %s: %s", url, exc)
+            if _session is not None:
+                try:
+                    _session.close()
+                except Exception:
+                    log.exception("Could not reset failed browser fallback session")
+                finally:
+                    _session = None
             return None
 
 

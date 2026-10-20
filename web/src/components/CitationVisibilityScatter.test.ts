@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   nicePercentAxisMax,
-  promptSovVisibilityPoints,
-} from "../components/SovVisibilityScatter";
+  promptCitationVisibilityPoints,
+} from "../components/CitationVisibilityScatter";
 import type { PromptPerformanceContext } from "../types";
 
 describe("nicePercentAxisMax", () => {
-  it("rounds SOV ceilings to readable ticks", () => {
+  it("rounds citation-rate ceilings to readable ticks", () => {
     expect(nicePercentAxisMax(0)).toBe(10);
     expect(nicePercentAxisMax(9)).toBe(10);
     expect(nicePercentAxisMax(9.4)).toBe(10);
@@ -16,7 +16,7 @@ describe("nicePercentAxisMax", () => {
   });
 });
 
-describe("promptSovVisibilityPoints", () => {
+describe("promptCitationVisibilityPoints", () => {
   it("builds one chart point from each saved prompt response", () => {
     const ctx: PromptPerformanceContext = {
       brand_name: "Example",
@@ -42,6 +42,10 @@ describe("promptSovVisibilityPoints", () => {
             prompt_id: "first",
             prompt: "Which provider is best?",
             gemini_response: "Example is one provider.",
+            citations_gemini: [
+              { url: "https://example.com/custody", domain: "example.com" },
+              { url: "https://news.com/a", domain: "news.com" },
+            ],
           },
           {
             prompt_id: "second",
@@ -52,15 +56,18 @@ describe("promptSovVisibilityPoints", () => {
       },
     };
 
-    const points = promptSovVisibilityPoints(ctx);
+    const points = promptCitationVisibilityPoints(ctx);
 
     expect(points.map((point) => point.id)).toEqual(["first", "second"]);
     expect(points.map((point) => point.label)).toEqual(ctx.flat_prompts);
     expect(points[0]?.visibility).toBe(100);
     expect(points[1]?.visibility).toBe(0);
+    expect(points[0]?.citationRate).toBe(50);
+    expect(points[0]?.citationCount).toBe(2);
+    expect(points[1]?.citationRate).toBe(0);
   });
 
   it("returns no points without saved prompt responses", () => {
-    expect(promptSovVisibilityPoints(null)).toEqual([]);
+    expect(promptCitationVisibilityPoints(null)).toEqual([]);
   });
 });

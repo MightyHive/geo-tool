@@ -18,6 +18,8 @@ import type {
   Ga4TopPagesResponse,
   LocalAudit,
   CompetitorDetail,
+  Persona,
+  PersonaPromptSuggestion,
   ProductServiceRow,
   PromptPerformanceContext,
   PromptSentimentResponse,
@@ -39,15 +41,31 @@ const API = "/api";
 
 const withCredentials: RequestInit = { credentials: "include" };
 
+/**
+ * Default ceiling for API calls. Cloud Run allows requests to run for an hour, so
+ * without this a queued or stuck request leaves the UI spinning indefinitely.
+ * Callers needing longer (or shorter) pass their own `signal`.
+ */
+export const DEFAULT_API_TIMEOUT_MS = 120_000;
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...withCredentials,
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...withCredentials,
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(DEFAULT_API_TIMEOUT_MS),
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new Error("The server took too long to respond. Please try again.");
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);
@@ -328,6 +346,37 @@ export function suggestPromptsForProducts(payload: {
   });
 }
 
+export function suggestPersonas(payload: {
+  brand_website: string;
+  brand_name?: string;
+  industry?: string;
+  products?: string[];
+  market_country?: string;
+  market_country_code?: string;
+  language?: string;
+  language_name?: string;
+}): Promise<{ personas: Persona[] }> {
+  return json("/wizard/suggest-personas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function suggestPersonaPrompts(payload: {
+  brand_website: string;
+  personas: Persona[];
+  products: string[];
+  market_country?: string;
+  market_country_code?: string;
+  language?: string;
+  language_name?: string;
+}): Promise<{ personas: PersonaPromptSuggestion[] }> {
+  return json("/wizard/suggest-persona-prompts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function fetchRedditInsights(
   auditDirOrSlug: string,
 ): Promise<{ posts: RedditPost[]; total: number; brand_name: string }> {
@@ -581,12 +630,20 @@ function isAbortError(err: unknown): boolean {
 
 export function fetchPromptPerformanceContext(
   auditDirOrSlug: string,
-  opts?: { locale?: string; full?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  opts?: {
+    locale?: string;
+    full?: boolean;
+    /** First page load: server picks primary locale (huge audits) or all locales. */
+    bootstrap?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
 ): Promise<PromptPerformanceContext> {
   const slug = auditSlug(auditDirOrSlug);
   const params = new URLSearchParams();
   if (opts?.locale) params.set("locale", opts.locale);
   if (opts?.full) params.set("full", "1");
+  if (opts?.bootstrap) params.set("bootstrap", "1");
   const qs = params.toString();
   const timeoutMs = opts?.timeoutMs ?? PROMPT_PERFORMANCE_FETCH_TIMEOUT_MS;
   return json<PromptPerformanceContext>(
@@ -1023,9 +1080,11 @@ export interface RunAuditPayload {
     product_or_service: string;
     prompts: string[];
     prompt_tags?: Record<string, string[]>;
+    prompt_personas?: Record<string, string>;
     custom_prompts?: string[];
     is_custom_topic?: boolean;
   }[];
+  wizard_personas?: Persona[];
   wizard_additional_markets?: CrawlMarket[];
   wizard_competitors?: {
     competitor_brand: string;

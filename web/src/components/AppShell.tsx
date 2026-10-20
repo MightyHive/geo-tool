@@ -239,7 +239,7 @@ export function AppShell() {
               Audit in progress for{" "}
               <strong>{activeAuditRun.brandName || activeAuditRun.brandWebsite || "your site"}</strong>
               . You can leave this page — it runs in the background.{" "}
-              <Link to="/audit/new?step=8" className="underline font-medium">
+              <Link to="/audit/new?step=9" className="underline font-medium">
                 View progress
               </Link>
             </div>

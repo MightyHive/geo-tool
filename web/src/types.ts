@@ -174,6 +174,9 @@ export interface LocalAudit {
   /** True until the full audit pipeline (crawl + probes + CQ + sentiment) is idle. */
   still_running?: boolean;
   pipeline_phase?: string;
+  /** Terminal status from audit_run_status.json after stale-job reconciliation. */
+  run_status?: string;
+  run_error?: string;
 }
 
 export interface PageAuditScores {
@@ -269,6 +272,9 @@ export interface OnboardingContext {
   competitors_detail?: { competitor_website: string; competitor_brand: string }[];
   accepted_competitors?: string[];
   ga4_property_id?: string;
+  ga4_ai_channel_names?: string;
+  ga4_conversion_event_name?: string;
+  notification_email?: string;
   crawl_urls?: string[];
   additional_crawl_markets?: { country: string; country_code: string }[];
   /** AI-impact business model: publisher | advertiser-retail | advertiser-services */
@@ -433,8 +439,21 @@ export interface ProductServiceRow {
   product_or_service: string;
   prompts: string[];
   prompt_tags?: Record<string, string[]>;
+  /** prompt -> buyer persona name (persona prompts are probed on their own budget). */
+  prompt_personas?: Record<string, string>;
   custom_prompts?: string[];
   is_custom_topic?: boolean;
+}
+
+/** Likely purchaser group for the brand (wizard Personas step). */
+export interface Persona {
+  name: string;
+  description: string;
+}
+
+export interface PersonaPromptSuggestion {
+  name: string;
+  prompts: { prompt: string; product_or_service: string }[];
 }
 
 export interface CrawlMarket {
@@ -475,6 +494,7 @@ export interface PromptPerformancePssRow {
   product_or_service: string;
   prompts: string[];
   prompt_tags?: Record<string, string[]>;
+  prompt_personas?: Record<string, string>;
   custom_prompts?: string[];
   is_custom_topic?: boolean;
 }
@@ -561,6 +581,8 @@ export interface SingleRunData {
   error?: string;
   /** True when a reply existed but the body was stripped from the slim payload. */
   has_response?: boolean;
+  /** Slim payloads: one domain per run citation (for citation rate). */
+  citation_domains?: string[];
 }
 
 export interface LiveProbePerPrompt {
@@ -775,6 +797,10 @@ export interface PromptPerformanceContext {
   pss_rows: PromptPerformancePssRow[];
   /** Rows actually included in live probes (custom prompts always included). */
   probed_pss_rows?: PromptPerformancePssRow[];
+  /** Buyer personas from the wizard (empty when the step was skipped). */
+  personas?: Persona[];
+  /** Set on ?bootstrap=1 responses: locale the server chose (null = all locales). */
+  bootstrap_locale_key?: string | null;
   flat_prompts: string[];
   prompt_count: number;
   /** Total prompts stored on file (may exceed probed count for non-custom lines). */
@@ -832,6 +858,12 @@ export interface PromptPerformanceContext {
     average_competitor_sov_pct?: number;
     visible_prompt_count?: number;
     prompt_count?: number;
+    /** All citations across responses (per run). */
+    citation_count?: number;
+    /** Citations on the brand's own domain. */
+    brand_citation_count?: number;
+    /** brand_citation_count ÷ citation_count × 100. */
+    citation_rate_pct?: number;
     per_platform?: Record<string, {
       response_count?: number;
       visible_response_count?: number;
@@ -839,6 +871,9 @@ export interface PromptPerformanceContext {
       brand_hits?: number;
       competitor_hits?: number;
       sov_pct?: number;
+      citation_count?: number;
+      brand_citation_count?: number;
+      citation_rate_pct?: number;
     }>;
   };
   metrics_from_cache?: boolean;

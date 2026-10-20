@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from api import geo_services as geo
 from api.crawl_jobs import (
@@ -20,6 +22,10 @@ from api.crawl_jobs import (
 )
 
 log = logging.getLogger(__name__)
+
+# Finish before Cloud Run's 7,200-second hard timeout so the worker has time to
+# persist an error status and clear its pending marker.
+DEFAULT_GRACEFUL_TIMEOUT_SECONDS = 115 * 60
 
 
 class _CloudRunJsonFormatter(logging.Formatter):
@@ -40,6 +46,41 @@ def _configure_logging() -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(logging.INFO)
+
+
+def _graceful_timeout_seconds() -> int:
+    raw = (os.getenv("AUDIT_CRAWL_GRACEFUL_TIMEOUT_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            log.warning(
+                "Ignoring invalid AUDIT_CRAWL_GRACEFUL_TIMEOUT_SECONDS=%r",
+                raw,
+            )
+    return DEFAULT_GRACEFUL_TIMEOUT_SECONDS
+
+
+@contextmanager
+def _graceful_timeout(seconds: int) -> Iterator[None]:
+    """Raise before the platform timeout so normal failure cleanup can run."""
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _timeout(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(
+            f"Crawl job exceeded the internal {seconds}-second runtime limit."
+        )
+
+    previous = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _ga4_cred_path(audit_dir: Path, payload: dict[str, Any]) -> str | None:
@@ -90,6 +131,12 @@ def _run_full_audit(audit_dir: Path, payload: dict[str, Any]) -> None:
     finally:
         _cleanup_ga4_adc(audit_dir, payload)
 
+    status = _read_json(audit_dir / "audit_run_status.json") or {}
+    if str(status.get("status") or "") == "error":
+        raise RuntimeError(
+            str(status.get("error") or status.get("detail") or "Audit crawl failed.")
+        )
+
 
 def _run_competitors_only(audit_dir: Path) -> None:
     from api.audit_runner import run_competitor_crawl_job
@@ -127,13 +174,14 @@ def run() -> None:
     )
 
     try:
-        payload = dict(manifest.get("payload") or {})
-        if mode == "full_audit":
-            _run_full_audit(audit_dir, payload)
-        elif mode == "competitors_only":
-            _run_competitors_only(audit_dir)
-        else:
-            raise ValueError(f"Unsupported crawl job mode: {mode}")
+        with _graceful_timeout(_graceful_timeout_seconds()):
+            payload = dict(manifest.get("payload") or {})
+            if mode == "full_audit":
+                _run_full_audit(audit_dir, payload)
+            elif mode == "competitors_only":
+                _run_competitors_only(audit_dir)
+            else:
+                raise ValueError(f"Unsupported crawl job mode: {mode}")
         manifest.update({"status": "completed", "completed_at": _utc_now()})
         _write_json(manifest_path, manifest)
     except Exception as exc:

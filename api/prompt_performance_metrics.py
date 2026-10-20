@@ -10,9 +10,12 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -21,11 +24,12 @@ METRICS_FILE = "prompt_performance_metrics.json"
 # multi‑MB metrics blob on every Citations GET (GCS FUSE cold reads time out).
 CITATIONS_VIEW_FILE = "prompt_performance_citations.json"
 CITATIONS_VIEW_VERSION = 1
-# Slim runs omit per-run citations (row-level citations_* is enough). Older v1
-# blobs are sanitized at response time via sanitize_context_runs_inplace.
+# Slim runs omit per-run citation objects (row-level citations_* is enough) but keep
+# per-run ``citation_domains`` for citation rate. Older v1 blobs are sanitized at
+# response time via sanitize_context_runs_inplace.
 # Bump whenever the persisted slim shape changes. This invalidates Redis/GCS
 # slim caches and forces a one-time rebuild from the stored full probe.
-METRICS_VERSION = 2
+METRICS_VERSION = 3
 LIVE_PROBE_FILE = "prompt_performance_live_probe.json"
 # Per-prompt full reply bodies (one small JSON per prompt×locale) for fast overlay GETs.
 REPLIES_DIR = "prompt_performance_replies"
@@ -104,8 +108,30 @@ def _platform_responses(row: dict[str, Any], platform: str) -> list[str]:
     return [response] if response and not error else []
 
 
+def _citation_domain(citation: Any) -> str:
+    if not isinstance(citation, dict):
+        return ""
+    domain = str(citation.get("domain") or "").strip().lower()
+    if not domain:
+        url = str(citation.get("url") or "").strip()
+        if url:
+            try:
+                domain = (urlparse(url if "://" in url else f"https://{url}").hostname or "").lower()
+            except ValueError:
+                domain = ""
+    return domain.removeprefix("www.")
+
+
+def _run_citation_domains(run: dict[str, Any]) -> list[str]:
+    """One domain per run citation (not de-duplicated) for citation-rate counts."""
+    citations = run.get("citations")
+    if not isinstance(citations, list):
+        return []
+    return [d for d in (_citation_domain(c) for c in citations) if d]
+
+
 def _strip_runs(runs: Any) -> dict[str, Any] | None:
-    """Keep per-run scores/errors; omit citations (duplicated on row-level citations_*)."""
+    """Keep per-run scores/errors + citation domains; omit full citation objects."""
     if not isinstance(runs, dict):
         return None
     out: dict[str, Any] = {}
@@ -122,6 +148,7 @@ def _strip_runs(runs: Any) -> dict[str, Any] | None:
                     "mention_scores": run.get("mention_scores") or {},
                     "error": run.get("error"),
                     "has_response": bool(str(run.get("response") or "").strip()) and not run.get("error"),
+                    "citation_domains": _run_citation_domains(run),
                 }
             )
         if slim_entries:
@@ -412,7 +439,58 @@ def slim_live_probe(
     return out
 
 
-def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, Any] | None:
+def _site_host(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        host = (urlparse(raw if "://" in raw else f"https://{raw}").hostname or "").lower()
+    except ValueError:
+        return ""
+    return host.removeprefix("www.").rstrip(".")
+
+
+def domain_is_on_site(domain: str, site_host: str) -> bool:
+    """Same host or subdomain in either direction (mirrors page_audits.urls_are_same_site)."""
+    host = _site_host(domain)
+    if not host or not site_host:
+        return False
+    return host == site_host or host.endswith(f".{site_host}") or site_host.endswith(f".{host}")
+
+
+def row_platform_citation_domains(row: dict[str, Any], platform: str) -> list[str]:
+    """Citation domains for one prompt × platform, counted per completed run.
+
+    Uses per-run ``citation_domains`` (slim) or ``citations`` (full probe); falls
+    back to the run-deduplicated row-level ``citations_{platform}`` for older data.
+    """
+    runs = row.get("runs") if isinstance(row.get("runs"), dict) else {}
+    entries = runs.get(platform) if isinstance(runs, dict) else None
+    if isinstance(entries, list):
+        per_run: list[str] = []
+        has_run_data = False
+        for run in entries:
+            if not isinstance(run, dict) or run.get("error"):
+                continue
+            if isinstance(run.get("citation_domains"), list):
+                has_run_data = True
+                per_run.extend(str(d).lower().removeprefix("www.") for d in run["citation_domains"] if d)
+            elif isinstance(run.get("citations"), list):
+                has_run_data = True
+                per_run.extend(_run_citation_domains(run))
+        if has_run_data:
+            return per_run
+    citations = row.get(f"citations_{platform}")
+    if not isinstance(citations, list):
+        return []
+    return [d for d in (_citation_domain(c) for c in citations) if d]
+
+
+def visibility_metrics_from_slim_live(
+    live: dict[str, Any] | None,
+    *,
+    brand_site_url: str = "",
+) -> dict[str, Any] | None:
     """Best-effort visibility metrics from a (full or slim) live probe via geo_services helpers."""
     if not isinstance(live, dict) or not (live.get("per_prompt") or []):
         return None
@@ -429,9 +507,12 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
             "visible_response_count": 0,
             "brand_hits": 0.0,
             "competitor_hits": 0.0,
+            "citation_count": 0,
+            "brand_citation_count": 0,
         }
         for platform in platforms
     }
+    site_host = _site_host(brand_site_url)
 
     for row in rows:
         list_m = row.get("list_metrics") if isinstance(row.get("list_metrics"), dict) else None
@@ -451,6 +532,11 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
             response_count += 1
             plat = per_platform_acc[platform]
             plat["response_count"] += 1
+            cited_domains = row_platform_citation_domains(row, platform)
+            plat["citation_count"] += len(cited_domains)
+            plat["brand_citation_count"] += sum(
+                1 for d in cited_domains if domain_is_on_site(d, site_host)
+            )
             signal = float(scores.get("brand_signal") or 0)
             visible = signal > 0
             if visible:
@@ -519,6 +605,8 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
         pb = float(plat["brand_hits"])
         pc = float(plat["competitor_hits"])
         pt = pb + pc
+        p_cits = int(plat["citation_count"])
+        p_brand_cits = int(plat["brand_citation_count"])
         per_platform[platform] = {
             "response_count": pr,
             "visible_response_count": pv,
@@ -526,7 +614,12 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
             "brand_hits": round(pb, 1),
             "competitor_hits": round(pc, 1),
             "sov_pct": round(100.0 * pb / pt, 1) if pt else 0.0,
+            "citation_count": p_cits,
+            "brand_citation_count": p_brand_cits,
+            "citation_rate_pct": round(100.0 * p_brand_cits / p_cits, 1) if p_cits else 0.0,
         }
+    citation_count = sum(int(p["citation_count"]) for p in per_platform_acc.values())
+    brand_citation_count = sum(int(p["brand_citation_count"]) for p in per_platform_acc.values())
     return {
         "score": round(score, 1),
         "visibility_pct": round(visibility_pct, 1),
@@ -545,6 +638,12 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
         "tested_prompt_count": len(rows),
         "brand_hits": round(brand_hits, 1),
         "competitor_hits": round(competitor_hits, 1),
+        # Citation rate = citations to the brand's own domain ÷ all citations.
+        "citation_count": citation_count,
+        "brand_citation_count": brand_citation_count,
+        "citation_rate_pct": (
+            round(100.0 * brand_citation_count / citation_count, 1) if citation_count else 0.0
+        ),
         "per_platform": per_platform,
     }
 
@@ -552,6 +651,7 @@ def visibility_metrics_from_slim_live(live: dict[str, Any] | None) -> dict[str, 
 def build_metrics_payload_from_context(ctx: dict[str, Any], *, probe_mtime_value: float | None) -> dict[str, Any]:
     """Build the persisted metrics document from a (sanitized) full context response."""
     default_key = str(ctx.get("default_locale_key") or "")
+    brand_site_url = str(ctx.get("brand_site_url") or "")
     locale_probes_raw = ctx.get("locale_probes") if isinstance(ctx.get("locale_probes"), dict) else {}
     locales: dict[str, Any] = {}
     for key, entry in locale_probes_raw.items():
@@ -564,7 +664,7 @@ def build_metrics_payload_from_context(ctx: dict[str, Any], *, probe_mtime_value
             "live_probe": slim,
             "prompts_probed": entry.get("prompts_probed") or [],
             "source_prompts": entry.get("source_prompts") or [],
-            "metrics": visibility_metrics_from_slim_live(slim),
+            "metrics": visibility_metrics_from_slim_live(slim, brand_site_url=brand_site_url),
         }
 
     default_live = ctx.get("live_probe") if isinstance(ctx.get("live_probe"), dict) else None
@@ -605,10 +705,10 @@ def build_metrics_payload_from_context(ctx: dict[str, Any], *, probe_mtime_value
             "reply_detected_brands": reply_brands,
             "keyword_sentiment": _keyword_sentiment_from_list_metrics(merged_rows),
         }
-        overall_metrics = visibility_metrics_from_slim_live(overall_live)
+        overall_metrics = visibility_metrics_from_slim_live(overall_live, brand_site_url=brand_site_url)
     else:
         overall_live = slim_default
-        overall_metrics = visibility_metrics_from_slim_live(slim_default)
+        overall_metrics = visibility_metrics_from_slim_live(slim_default, brand_site_url=brand_site_url)
 
     return {
         "version": METRICS_VERSION,
@@ -619,6 +719,7 @@ def build_metrics_payload_from_context(ctx: dict[str, Any], *, probe_mtime_value
         "use_pss": ctx.get("use_pss"),
         "pss_rows": ctx.get("pss_rows") or [],
         "probed_pss_rows": ctx.get("probed_pss_rows") or [],
+        "personas": ctx.get("personas") or [],
         "flat_prompts": ctx.get("flat_prompts") or [],
         "prompt_count": ctx.get("prompt_count"),
         "stored_prompt_count": ctx.get("stored_prompt_count"),
@@ -675,7 +776,10 @@ def _keyword_sentiment_from_list_metrics(rows: list[dict[str, Any]]) -> dict[str
 def write_metrics_file(audit_dir: Path, payload: dict[str, Any]) -> Path:
     path = metrics_path(audit_dir)
     audit_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    # Compact JSON: these docs reach tens of MB and are re-read over GCS FUSE.
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
     try:
         from api.audit_json_cache import invalidate_path
 
@@ -867,6 +971,12 @@ def read_metrics_file(audit_dir: Path) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
+# GCS FUSE often exposes object mtime at whole-second resolution while local
+# writers (and generation/1e6) keep subseconds. A 1ms epsilon forced full
+# multi-MB probe rebuilds on Cloud Run and hung report pages.
+_PROBE_MTIME_FRESH_TOLERANCE_SEC = 2.0
+
+
 def metrics_are_fresh(audit_dir: Path, metrics: dict[str, Any] | None) -> bool:
     if not isinstance(metrics, dict) or int(metrics.get("version") or 0) != METRICS_VERSION:
         return False
@@ -875,7 +985,10 @@ def metrics_are_fresh(audit_dir: Path, metrics: dict[str, Any] | None) -> bool:
     if current is None:
         return True  # no probe file — metrics metadata still usable
     try:
-        return stored is not None and abs(float(stored) - float(current)) < 0.001
+        return (
+            stored is not None
+            and abs(float(stored) - float(current)) < _PROBE_MTIME_FRESH_TOLERANCE_SEC
+        )
     except (TypeError, ValueError):
         return False
 
@@ -900,18 +1013,41 @@ def persist_metrics_from_full_context(audit_dir: Path, ctx: dict[str, Any]) -> d
     return payload
 
 
-def ensure_persisted_metrics(
-    audit_dir: Path,
-    *,
-    build_full_context: Any,
-) -> dict[str, Any] | None:
-    """Return fresh metrics; lazily backfill by building full context once if stale/missing."""
+# Per-audit locks so concurrent requests never rebuild the same metrics twice, and a
+# cooldown so a probe file whose mtime keeps drifting (GCS FUSE) is not rebuilt in a loop.
+_rebuild_guard = threading.Lock()
+_rebuild_locks: dict[str, threading.Lock] = {}
+_last_background_rebuild: dict[str, float] = {}
+BACKGROUND_REBUILD_COOLDOWN_SEC = 600.0
+
+
+def _audit_rebuild_lock(audit_dir: Path) -> threading.Lock:
+    key = str(audit_dir.resolve())
+    with _rebuild_guard:
+        lock = _rebuild_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _rebuild_locks[key] = lock
+        return lock
+
+
+def _has_usable_payload(metrics: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(metrics, dict)
+        and int(metrics.get("version") or 0) == METRICS_VERSION
+        and (
+            isinstance(metrics.get("overall_metrics"), dict)
+            or isinstance(metrics.get("locales"), dict)
+            or isinstance(metrics.get("live_probe"), dict)
+        )
+    )
+
+
+def _rebuild_metrics_locked(audit_dir: Path, build_full_context: Any) -> dict[str, Any] | None:
+    """Rebuild + persist metrics; caller holds the audit's rebuild lock."""
     existing = read_metrics_file(audit_dir)
     if metrics_are_fresh(audit_dir, existing):
-        return existing
-    probe = audit_dir / LIVE_PROBE_FILE
-    if not probe.is_file():
-        return existing
+        return existing  # another request finished the rebuild while we waited
     try:
         ctx = build_full_context(audit_dir)
     except Exception:
@@ -924,6 +1060,59 @@ def ensure_persisted_metrics(
     except Exception:
         log.exception("Failed to write prompt performance metrics for %s", audit_dir)
         return existing
+
+
+def schedule_background_metrics_rebuild(audit_dir: Path, build_full_context: Any) -> bool:
+    """Refresh stale metrics off the request path. Returns True when a rebuild was started."""
+    key = str(audit_dir.resolve())
+    now = time.monotonic()
+    with _rebuild_guard:
+        last = _last_background_rebuild.get(key)
+        if last is not None and now - last < BACKGROUND_REBUILD_COOLDOWN_SEC:
+            return False
+        _last_background_rebuild[key] = now
+    lock = _audit_rebuild_lock(audit_dir)
+    if lock.locked():
+        return False
+
+    def _run() -> None:
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            _rebuild_metrics_locked(audit_dir, build_full_context)
+        finally:
+            lock.release()
+
+    threading.Thread(
+        target=_run, name=f"metrics-rebuild-{audit_dir.name}", daemon=True
+    ).start()
+    return True
+
+
+def ensure_persisted_metrics(
+    audit_dir: Path,
+    *,
+    build_full_context: Any,
+) -> dict[str, Any] | None:
+    """Return metrics for a GET without rebuilding on the request path when avoidable.
+
+    - Fresh metrics: returned as-is.
+    - Stale but usable (probe re-ran / mtime drift): returned immediately while a
+      background thread rebuilds them, so the next load is fresh.
+    - Missing or old version: built synchronously, but only once per audit — other
+      requests wait on the same build instead of each parsing the multi-MB probe.
+    """
+    existing = read_metrics_file(audit_dir)
+    if metrics_are_fresh(audit_dir, existing):
+        return existing
+    probe = audit_dir / LIVE_PROBE_FILE
+    if not probe.is_file():
+        return existing
+    if _has_usable_payload(existing):
+        schedule_background_metrics_rebuild(audit_dir, build_full_context)
+        return existing
+    with _audit_rebuild_lock(audit_dir):
+        return _rebuild_metrics_locked(audit_dir, build_full_context)
 
 
 def context_from_metrics(
@@ -1045,6 +1234,7 @@ def context_from_metrics(
         "use_pss": bool(metrics.get("use_pss")),
         "pss_rows": metrics.get("pss_rows") or [],
         "probed_pss_rows": metrics.get("probed_pss_rows") or [],
+        "personas": metrics.get("personas") or [],
         "flat_prompts": metrics.get("flat_prompts") or [],
         "prompt_count": metrics.get("prompt_count") or 0,
         "stored_prompt_count": metrics.get("stored_prompt_count"),

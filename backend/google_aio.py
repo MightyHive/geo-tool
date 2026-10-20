@@ -31,13 +31,11 @@ from competitor_suggest import (
 from geo_market import lat_lng_for_market, resolve_primary_market
 
 # Grounded search requires a model that supports the google_search tool.
-# gemini-2.0-flash and gemini-2.5-flash support it; fall back to the default
-# model if those aren't accessible. Vertex grounding has slightly different syntax
-# so we only support API-key path here for now.
+# Keep more than one current model so a retired model does not remove the
+# AI Overview surface from an otherwise successful prompt run.
 _GROUNDED_MODELS_PREFERENCE = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
 ]
 
 _AIO_SYSTEM_INSTRUCTION_BASE = (
@@ -98,12 +96,14 @@ def _aio_system_instruction(market_country: str = "", market_country_code: str =
 
 
 def _grounded_model() -> str:
+    return _grounded_models()[0]
+
+
+def _grounded_models() -> list[str]:
+    """Return configured-first grounded models with duplicate fallbacks removed."""
     configured = (_get_config("GEMINI_GROUNDED_MODEL") or "").strip()
-    if configured:
-        return configured
-    # Try to use a model known to support the google_search tool; fall back to
-    # the standard default if not explicitly configured.
-    return _GROUNDED_MODELS_PREFERENCE[0]
+    candidates = ([configured] if configured else []) + _GROUNDED_MODELS_PREFERENCE
+    return list(dict.fromkeys(model for model in candidates if model))
 
 
 def _gemini_grounded_request(
@@ -349,30 +349,45 @@ def gemini_grounded_answer(
             "error": "GEMINI_API_KEY not configured — Google AIO probes unavailable.",
             "grounding_lat_lng": None,
         }
-    model = _grounded_model()
     sys_instr = _aio_system_instruction(market_country=market_country, market_country_code=market_country_code)
     lat_lng = lat_lng_for_market(market_country, market_country_code)
-    try:
-        payload = _gemini_grounded_request(
-            api_key=key,
-            model=model,
-            user_text=user_prompt,
-            system_instruction=sys_instr,
-            lat_lng=lat_lng,
-        )
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:800]
+    models = _grounded_models()
+    payload: dict[str, Any] | None = None
+    for index, model in enumerate(models):
+        try:
+            payload = _gemini_grounded_request(
+                api_key=key,
+                model=model,
+                user_text=user_prompt,
+                system_instruction=sys_instr,
+                lat_lng=lat_lng,
+            )
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:800]
+            # Model retirement/unavailability is reported as 404. Retry the
+            # next known grounded model before recording a platform failure.
+            if e.code == 404 and index < len(models) - 1:
+                continue
+            return {
+                "response": "",
+                "citations": [],
+                "error": f"Gemini HTTP {e.code}: {detail}",
+                "grounding_lat_lng": lat_lng,
+            }
+        except Exception as e:
+            return {
+                "response": "",
+                "citations": [],
+                "error": str(e)[:400],
+                "grounding_lat_lng": lat_lng,
+            }
+
+    if payload is None:
         return {
             "response": "",
             "citations": [],
-            "error": f"Gemini HTTP {e.code}: {detail}",
-            "grounding_lat_lng": lat_lng,
-        }
-    except Exception as e:
-        return {
-            "response": "",
-            "citations": [],
-            "error": str(e)[:400],
+            "error": "No supported Gemini grounded model was available.",
             "grounding_lat_lng": lat_lng,
         }
 

@@ -372,3 +372,81 @@ def test_load_prompt_visibility_metrics_prefers_persisted(tmp_path: Path, monkey
     assert result is not None
     assert "visibility_pct" in result
     assert result["prompt_count"] >= 1
+
+
+def test_metrics_are_fresh_tolerates_fuse_subsecond_skew(tmp_path: Path) -> None:
+    probe = tmp_path / metrics.LIVE_PROBE_FILE
+    probe.write_text("{}", encoding="utf-8")
+    mt = probe.stat().st_mtime
+    doc = {"version": metrics.METRICS_VERSION, "probe_mtime": mt - 0.3}
+    assert metrics.metrics_are_fresh(tmp_path, doc) is True
+    doc_stale = {"version": metrics.METRICS_VERSION, "probe_mtime": mt - 5.0}
+    assert metrics.metrics_are_fresh(tmp_path, doc_stale) is False
+
+
+def test_ensure_persisted_metrics_serves_existing_on_mtime_mismatch(tmp_path: Path) -> None:
+    probe = tmp_path / metrics.LIVE_PROBE_FILE
+    probe.write_text("{}", encoding="utf-8")
+    existing = {
+        "version": metrics.METRICS_VERSION,
+        "probe_mtime": 1.0,
+        "overall_metrics": {"visibility_pct": 40.0},
+        "live_probe": {"per_prompt": []},
+    }
+    (tmp_path / metrics.METRICS_FILE).write_text(json.dumps(existing), encoding="utf-8")
+
+    def _boom(_audit_dir: Path):
+        raise AssertionError("full rebuild must not run when usable metrics exist")
+
+    got = metrics.ensure_persisted_metrics(tmp_path, build_full_context=_boom)
+    assert got is not None
+    assert got["overall_metrics"]["visibility_pct"] == 40.0
+
+
+def test_visibility_metrics_citation_rate_counts_brand_domain_per_run():
+    live = {
+        "per_prompt": [
+            {
+                "prompt": "Best bank?",
+                "has_response_gemini": True,
+                "mention_scores_gemini": {"brand_signal": 1},
+                "runs": {
+                    "gemini": [
+                        {"citation_domains": ["example.com", "news.com"]},
+                        {"citation_domains": ["blog.example.com"]},
+                        {"error": "boom", "citation_domains": ["example.com"]},
+                    ]
+                },
+                "has_response_openai": True,
+                "citations_openai": [
+                    {"url": "https://www.example.com/a", "domain": "example.com"},
+                    {"url": "https://notexample.com/b", "domain": "notexample.com"},
+                ],
+            }
+        ]
+    }
+    out = metrics.visibility_metrics_from_slim_live(live, brand_site_url="https://www.example.com")
+    assert out["per_platform"]["gemini"]["citation_count"] == 3
+    assert out["per_platform"]["gemini"]["brand_citation_count"] == 2
+    assert out["per_platform"]["openai"]["citation_rate_pct"] == 50.0
+    assert out["citation_count"] == 5
+    assert out["brand_citation_count"] == 3
+    assert out["citation_rate_pct"] == 60.0
+
+
+def test_slim_runs_keep_per_run_citation_domains():
+    runs = {
+        "gemini": [
+            {
+                "run_index": 0,
+                "response": "x",
+                "citations": [
+                    {"url": "https://www.example.com/a", "domain": "example.com"},
+                    {"url": "https://news.com/b"},
+                ],
+            }
+        ]
+    }
+    slim = metrics._strip_runs(runs)
+    assert slim["gemini"][0]["citation_domains"] == ["example.com", "news.com"]
+    assert "citations" not in slim["gemini"][0]

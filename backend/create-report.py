@@ -526,6 +526,9 @@ def build_crawl_argv(args: argparse.Namespace) -> list[str]:
         "--mimic-crawl-links-per-page",
         str(max(2, min(60, int(getattr(args, "mimic_crawl_links_per_page", 20) or 20)))),
     ]
+    target_audit_dir = getattr(args, "target_audit_dir", None)
+    if target_audit_dir is not None:
+        cmd.extend(["--target-audit-dir", str(Path(target_audit_dir).resolve())])
     if args.insecure:
         cmd.append("--insecure")
     if args.no_certifi:
@@ -4527,12 +4530,12 @@ def _primary_hero_page(pages: list[dict[str, Any]], homepage_url: str) -> dict[s
 
 
 def _fetch_http_status(url: str, timeout: float = 22.0) -> int | None:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "SEOGECrawlBot/1.0 (+https://example.local; audit)"},
-        method="GET",
-    )
     try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "SEOGECrawlBot/1.0 (+https://example.local; audit)"},
+            method="GET",
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return int(getattr(resp, "status", 200))
     except urllib.error.HTTPError as e:
@@ -4557,12 +4560,17 @@ def _sitemap_access_points(
         notes.append("No Sitemap: lines in robots.txt—add a sitemap URL for discovery.")
         return 0.0, notes
     home_p = urllib.parse.urlparse(homepage_url)
-    for sm in urls[:5]:
+    origin = urllib.parse.urlunsplit((home_p.scheme, home_p.netloc, "/", "", ""))
+    for raw_sm in urls[:5]:
+        sm = urllib.parse.urljoin(origin, raw_sm)
+        smp = urllib.parse.urlparse(sm)
+        if smp.scheme.lower() not in {"http", "https"} or not smp.netloc:
+            notes.append(f"Invalid Sitemap URL in robots.txt: {raw_sm[:120]}")
+            continue
         status = _fetch_http_status(sm)
         if status != 200:
             notes.append(f"Sitemap not HTTP 200 ({status}): {sm[:120]}")
             continue
-        smp = urllib.parse.urlparse(sm)
         same_host = smp.netloc.lower() == home_p.netloc.lower()
         if same_host:
             if rp is not None:
@@ -8423,6 +8431,16 @@ def _add_crawl_arguments(p: argparse.ArgumentParser) -> None:
         default="audit_output",
         help="Base directory for crawl output (default: audit_output)",
     )
+    p.add_argument(
+        "--target-audit-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write crawl and report artifacts to this exact audit directory. "
+            "Overrides the hash-derived folder beneath --out."
+        ),
+    )
     p.add_argument("--max-sitemap-urls", type=int, default=80, help="Max page URLs from sitemaps (default: 80)")
     p.add_argument(
         "--include-urls",
@@ -8602,7 +8620,11 @@ def main() -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
-    audit_dir_for_market = Path(args.out).resolve() / safe_dir_name(primary_base_for_dir)
+    audit_dir_for_market = (
+        args.target_audit_dir.expanduser().resolve()
+        if args.target_audit_dir is not None
+        else Path(args.out).resolve() / safe_dir_name(primary_base_for_dir)
+    )
     _apply_market_from_onboarding(args, audit_dir_for_market)
     # Load user-selected crawl URLs from wizard (stored in onboarding_context.json)
     # when not already provided via --include-urls CLI arg.
@@ -8645,7 +8667,11 @@ def main() -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 2
 
-    audit_dir = Path(args.out).resolve() / safe_dir_name(primary_base)
+    audit_dir = (
+        args.target_audit_dir.expanduser().resolve()
+        if args.target_audit_dir is not None
+        else Path(args.out).resolve() / safe_dir_name(primary_base)
+    )
     maybe_fetch_ga4_traffic(audit_dir, ga4_prop, ga4_ch)
     rc = generate_reports(
         audit_dir,

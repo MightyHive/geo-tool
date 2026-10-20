@@ -40,7 +40,7 @@ export interface CustomPromptCsvRow {
   tags: string[];
 }
 
-function splitCsvLine(line: string): string[] {
+export function splitCsvLine(line: string): string[] {
   const cells: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -66,7 +66,7 @@ function splitCsvLine(line: string): string[] {
   return cells.map((cell) => cell.trim());
 }
 
-function normalizeHeader(value: string): string {
+export function normalizeHeader(value: string): string {
   return value.trim().toLowerCase().replace(/^\ufeff/, "");
 }
 

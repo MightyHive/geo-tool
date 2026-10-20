@@ -2,6 +2,7 @@
 general-sa.json
 *-sa.json
 *credentials*.json
+client_secret*
 
 # Environment & secrets
 .env

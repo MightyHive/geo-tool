@@ -14,6 +14,7 @@ describe("reportSections", () => {
     expect(byLabel["Competitor comparison"]).toBe("competitor-comparison");
     expect(byLabel["Prompts"]).toBe("prompts");
     expect(byLabel["Topics"]).toBe("topics");
+    expect(byLabel["Personas"]).toBe("personas");
     expect(byLabel["Reddit Citations"]).toBe("reddit-citations");
     expect(byLabel["YouTube Citations"]).toBe("youtube-citations");
     expect(byLabel["Crawler access"]).toBe("crawler-access");

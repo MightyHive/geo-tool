@@ -245,4 +245,4 @@ EOF
 | `OPENAI_SEARCH_MODEL` | `gpt-4o-search-preview` | Model used for citation-enabled OpenAI probes |
 | `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | Model used for non-citation OpenAI calls |
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Claude model |
-| `GEMINI_GROUNDED_MODEL` | `gemini-2.5-flash` | Model used for AIO probes |
+| `GEMINI_GROUNDED_MODEL` | `gemini-3.6-flash` | Preferred model used for AIO probes; unavailable models fall back to the next supported grounded model |

@@ -7,9 +7,18 @@ import {
   Loader2,
   Plus,
   Square,
+  Upload,
   X,
 } from "lucide-react";
 import { discoverPages, fetchGa4TopPages } from "../api/client";
+import { siteHostKey } from "../lib/urlHost";
+import {
+  checkSitemapUrl,
+  parseSitemapUrlsCsv,
+  sitemapUrlsCsvTemplate,
+} from "../lib/sitemapUrls";
+
+const MAX_CSV_WARNINGS_SHOWN = 10;
 
 interface WizardPagesStepProps {
   brandWebsite: string;
@@ -66,6 +75,10 @@ export function WizardPagesStep({
   // Whether the user has made any manual changes from the defaults
   const [touched, setTouched] = useState(false);
   const addInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [csvNotice, setCsvNotice] = useState<string | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [csvWarnings, setCsvWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     if (!brandWebsite) return;
@@ -173,14 +186,16 @@ export function WizardPagesStep({
   function addUrl() {
     const raw = addInput.trim();
     if (!raw) return;
-    let normalized = raw;
-    if (!/^https?:\/\//i.test(normalized)) normalized = "https://" + normalized;
-    try {
-      new URL(normalized);
-    } catch {
-      setAddError("Enter a valid URL (e.g. https://example.com/page)");
+    const check = checkSitemapUrl(raw, brandWebsite);
+    if (!check.ok) {
+      setAddError(
+        check.reason === "invalid"
+          ? "Enter a valid URL (e.g. https://example.com/page)"
+          : `URL must be on the website domain (${siteHostKey(brandWebsite)}).`,
+      );
       return;
     }
+    const normalized = check.url;
     setAddError(null);
     if (!extraUrls.includes(normalized) && !discovered.includes(normalized)) {
       setExtraUrls((prev) => [...prev, normalized]);
@@ -189,6 +204,44 @@ export function WizardPagesStep({
     setAddInput("");
     setTouched(true);
     addInputRef.current?.focus();
+  }
+
+  function importSitemapUrlsCsv(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      const result = parseSitemapUrlsCsv(text, brandWebsite, [...discovered, ...extraUrls]);
+      setCsvWarnings(result.warnings);
+      if (result.error) {
+        setCsvNotice(null);
+        setCsvError(result.error);
+        return;
+      }
+      setCsvError(null);
+      setExtraUrls((prev) => [...prev, ...result.urls]);
+      setSelected((prev) => new Set([...prev, ...result.urls, ...result.alreadyListed]));
+      setTouched(true);
+      const parts = [`Imported ${result.urls.length} URL(s) from CSV`];
+      if (result.duplicates > 0) parts.push(`${result.duplicates} duplicate(s) already listed`);
+      if (result.warnings.length > 0) parts.push(`skipped ${result.warnings.length} invalid row(s)`);
+      setCsvNotice(`${parts.join("; ")}.`);
+    };
+    reader.onerror = () => {
+      setCsvNotice(null);
+      setCsvWarnings([]);
+      setCsvError("Could not read the CSV file.");
+    };
+    reader.readAsText(file);
+  }
+
+  function downloadCsvTemplate() {
+    const blob = new Blob([sitemapUrlsCsvTemplate(brandWebsite)], { type: "text/csv" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = "page-urls-template.csv";
+    a.click();
+    URL.revokeObjectURL(href);
   }
 
   function removeExtra(url: string) {
@@ -393,6 +446,73 @@ export function WizardPagesStep({
             </div>
             {addError && (
               <p className="text-xs text-red-600">{addError}</p>
+            )}
+          </div>
+
+          {/* Bulk CSV upload */}
+          <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-gray-700">Bulk upload URLs</p>
+                <p className="text-xs text-gray-500">
+                  CSV with one URL per row (optional <span className="font-mono">URL</span> header).
+                  URLs must be on {siteHostKey(brandWebsite) || "the website domain"}.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={downloadCsvTemplate}
+                  className="text-xs font-medium text-blue-600 hover:underline"
+                >
+                  Download template
+                </button>
+                <input
+                  ref={csvInputRef}
+                  type="file"
+                  accept=".csv,text/csv,.txt,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) importSitemapUrlsCsv(file);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => csvInputRef.current?.click()}
+                  className="btn-secondary text-xs inline-flex items-center gap-1"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Upload CSV
+                </button>
+              </div>
+            </div>
+            {csvError && <div className="alert-error text-sm">{csvError}</div>}
+            {csvNotice && !csvError && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                {csvNotice}
+              </div>
+            )}
+            {csvWarnings.length > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    {csvWarnings.length} row(s) skipped: invalid URL format or not on the website domain
+                  </p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-amber-700">
+                    {csvWarnings.slice(0, MAX_CSV_WARNINGS_SHOWN).map((w) => (
+                      <li key={w} className="break-all">{w}</li>
+                    ))}
+                  </ul>
+                  {csvWarnings.length > MAX_CSV_WARNINGS_SHOWN && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      +{csvWarnings.length - MAX_CSV_WARNINGS_SHOWN} more
+                    </p>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </>

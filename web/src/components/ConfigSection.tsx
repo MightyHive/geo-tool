@@ -140,10 +140,10 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
     promptEstimateMins > 0
       ? `~${promptEstimateMins} minute${promptEstimateMins === 1 ? "" : "s"}`
       : "a few minutes";
-  // Site crawl / config re-run skips prompt probes → flat ETA (upper end of timed runs).
   const crawlEstimate = "About 10 minutes";
+  const fullAuditEstimate = `${crawlEstimate}, then ${promptEstimate} for prompts`;
 
-  const saveAndRerunAudit = async () => {
+  const runFullAudit = async () => {
     if (!brandName.trim() || !brandWebsite.trim()) {
       setRerunError("Brand name and website are required.");
       return;
@@ -166,14 +166,20 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
         wizard_market_country: marketCountry.trim(),
         wizard_market_country_code: marketCountryCode.trim(),
         wizard_prompt_locales: promptLocales,
+        wizard_additional_markets: config.additional_crawl_markets ?? [],
         wizard_products: wizardProducts,
         wizard_competitors: cleanedCompetitors.map((row) => ({
           ...row,
           included: true,
         })),
         ...(config.ga4_property_id ? { ga4_property_id: config.ga4_property_id } : {}),
+        ...(config.ga4_ai_channel_names ? { ga4_ai_channels: config.ga4_ai_channel_names } : {}),
+        ...(config.ga4_conversion_event_name
+          ? { ga4_conversion_event_name: config.ga4_conversion_event_name }
+          : {}),
+        ...(config.notification_email ? { notification_email: config.notification_email } : {}),
         crawl_urls: pageUrls.map((url) => url.trim()).filter(Boolean),
-        skip_prompt_probes: true,
+        skip_prompt_probes: false,
         ...(config.model_category ? { model_category: config.model_category } : {}),
       });
       setFullRunState("running");
@@ -214,11 +220,29 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
         <div className="divide-y divide-gray-100">
           <div className="flex flex-col gap-4 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
+              <p className="text-sm font-semibold text-[#0d0d0d]">Re-run full audit</p>
+              <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                Create a fresh audit from this configuration, including the site crawl and all prompt probes.
+              </p>
+              <p className="mt-1 text-[11px] font-medium text-gray-400">Estimated time: {fullAuditEstimate}</p>
+            </div>
+            <button
+              type="button"
+              onClick={runFullAudit}
+              disabled={fullRunState !== "idle"}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0d0d0d] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${fullRunState !== "idle" ? "animate-spin" : ""}`} />
+              {fullRunState === "starting" ? "Starting…" : fullRunState === "running" ? "Audit running…" : "Run full audit"}
+            </button>
+          </div>
+          <div className="flex flex-col gap-4 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
               <p className="text-sm font-semibold text-[#0d0d0d]">Edit configuration and re-run</p>
               <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                Edit the brand, products and services, competitors, and crawled pages on this page.
+                Edit the brand, products and services, competitors, and crawled pages before a full audit.
               </p>
-              <p className="mt-1 text-[11px] font-medium text-gray-400">Estimated time: {crawlEstimate}</p>
+              <p className="mt-1 text-[11px] font-medium text-gray-400">Estimated time: {fullAuditEstimate}</p>
             </div>
             <button
               type="button"
@@ -400,12 +424,12 @@ export function ConfigSection({ config, auditId, competitorCrawl }: ConfigSectio
             </fieldset>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-5">
-              <p className="text-[11px] font-medium text-gray-400">Estimated re-run time: {crawlEstimate}</p>
+              <p className="text-[11px] font-medium text-gray-400">Estimated re-run time: {fullAuditEstimate}</p>
               <div className="flex gap-2">
                 <button type="button" onClick={() => setEditing(false)} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
-                <button type="button" disabled={fullRunState !== "idle"} onClick={saveAndRerunAudit} className="inline-flex items-center gap-2 rounded-lg bg-[#0d0d0d] px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50">
+                <button type="button" disabled={fullRunState !== "idle"} onClick={runFullAudit} className="inline-flex items-center gap-2 rounded-lg bg-[#0d0d0d] px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-50">
                   <RefreshCw className={`h-4 w-4 ${fullRunState !== "idle" ? "animate-spin" : ""}`} />
-                  Save &amp; re-run audit
+                  Save &amp; run full audit
                 </button>
               </div>
             </div>
